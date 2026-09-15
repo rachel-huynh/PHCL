@@ -43,7 +43,14 @@ nhánh `main`, thư mục gốc.
 
 ## Cài đặt
 
-Chạy theo đúng thứ tự trong Supabase SQL Editor:
+**Cách nhanh:** mở `sql/ALL_IN_ONE.sql`, copy toàn bộ, dán vào Supabase
+SQL Editor, bấm **Run**. Rồi dán tiếp `sql/00_verify.sql` và Run lần nữa.
+
+Chạy lại bao nhiêu lần cũng được — mọi lệnh đều `if not exists` /
+`on conflict do update` nên **không xoá dữ liệu đã có**.
+
+`ALL_IN_ONE.sql` là bản gộp của 7 file dưới đây, theo đúng thứ tự phụ thuộc.
+Muốn chạy từng bước (dễ tìm lỗi hơn) thì chạy lần lượt:
 
 ```
 sql/01_schema.sql         -- bảng
@@ -55,7 +62,18 @@ sql/04_rls.sql            -- RLS & quyền
 sql/05_alr.sql            -- biên bản tem nhãn: cột bổ sung, số hiệu, view in
 ```
 
+Sửa file gốc thì phải dựng lại bản gộp:
+
+```powershell
+.\scripts\build-sql.ps1
+```
+
 Rồi chạy `sql/00_verify.sql` để biết chắc thứ gì đã được tạo.
+
+> `sql/99_reset.sql` xoá sạch mọi bảng/view/hàm `am_*` để làm lại từ đầu.
+> **Không cần dùng trong trường hợp bình thường** — và mất bộ đếm là mất dấu
+> những số đã cấp. Nội dung để trong khối chú thích, phải cố ý bỏ chú thích
+> mới chạy được.
 
 > Supabase SQL Editor **không hiện gì** khi chạy lệnh DDL (`CREATE TABLE` không
 > trả về dòng nào), và đôi khi panel Results báo *“Failed to get project's
