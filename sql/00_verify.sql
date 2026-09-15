@@ -11,12 +11,14 @@
 with chk(ord, nhom, muc, thuc_te, mong_doi, dat) as (
 
   -- ---------------- 1. Cấu trúc ----------------
+  -- 23 = 22 bảng của 01_schema + am_data_source (07). am_data_source_current
+  -- là view nên không nằm trong pg_tables.
   select 1, 'Cấu trúc', 'Số bảng am_*',
          (select count(*) from pg_tables
            where schemaname = 'public' and tablename like 'am\_%')::text,
-         '22',
+         '23',
          (select count(*) from pg_tables
-           where schemaname = 'public' and tablename like 'am\_%') = 22
+           where schemaname = 'public' and tablename like 'am\_%') = 23
 
   union all select 2, 'Cấu trúc', 'Số hàm am_*',
          (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -54,31 +56,39 @@ with chk(ord, nhom, muc, thuc_te, mong_doi, dat) as (
            and tablename = 'am_asset' and cmd = 'DELETE') = 0
 
   -- ---------------- 2. Master data ----------------
+  -- Ngưỡng TỐI THIỂU, không phải con số chính xác: master data sửa thêm được
+  -- trong giao diện, nên đòi bằng đúng số seed sẽ báo hỏng giả mỗi lần chị
+  -- thêm một dòng. Ngưỡng tối thiểu vẫn bắt được lỗi thật là "seed chưa chạy".
   union all select 11, 'Master data', 'am_org (đơn vị/phòng ban)',
-         (select count(*) from am_org)::text, '15', (select count(*) from am_org) = 15
+         (select count(*) from am_org)::text, '>= 15', (select count(*) from am_org) >= 15
   union all select 12, 'Master data', 'am_org_alias',
-         (select count(*) from am_org_alias)::text, '5', (select count(*) from am_org_alias) = 5
+         (select count(*) from am_org_alias)::text, '>= 5',
+         (select count(*) from am_org_alias) >= 5
   union all select 13, 'Master data', 'am_category_group (mã cha)',
-         (select count(*) from am_category_group)::text, '16',
-         (select count(*) from am_category_group) = 16
+         (select count(*) from am_category_group)::text, '>= 16',
+         (select count(*) from am_category_group) >= 16
   union all select 14, 'Master data', 'am_category (mã loại)',
-         (select count(*) from am_category)::text, '36', (select count(*) from am_category) = 36
+         (select count(*) from am_category)::text, '>= 36',
+         (select count(*) from am_category) >= 36
   union all select 15, 'Master data', 'am_unit',
-         (select count(*) from am_unit)::text, '16', (select count(*) from am_unit) = 16
+         (select count(*) from am_unit)::text, '>= 16', (select count(*) from am_unit) >= 16
   union all select 16, 'Master data', 'am_origin (ISO 3166-1)',
-         (select count(*) from am_origin)::text, '240', (select count(*) from am_origin) = 240
+         (select count(*) from am_origin)::text, '>= 240',
+         (select count(*) from am_origin) >= 240
   union all select 17, 'Master data', 'am_origin_alias',
          (select count(*) from am_origin_alias)::text, '>= 50',
          (select count(*) from am_origin_alias) >= 50
   union all select 18, 'Master data', 'am_location (cả 2 toà nhà)',
-         (select count(*) from am_location)::text, '675', (select count(*) from am_location) = 675
+         (select count(*) from am_location)::text, '>= 675',
+         (select count(*) from am_location) >= 675
   union all select 19, 'Master data', 'am_location có office mặc định',
-         (select count(*) from am_location where is_dept_office)::text, '9',
-         (select count(*) from am_location where is_dept_office) = 9
+         (select count(*) from am_location where is_dept_office)::text, '>= 9',
+         (select count(*) from am_location where is_dept_office) >= 9
   union all select 20, 'Master data', 'am_product (catalogue)',
-         (select count(*) from am_product)::text, '420', (select count(*) from am_product) = 420
+         (select count(*) from am_product)::text, '>= 420',
+         (select count(*) from am_product) >= 420
   union all select 21, 'Master data', 'am_setting (ngưỡng giá)',
-         (select count(*) from am_setting)::text, '4', (select count(*) from am_setting) = 4
+         (select count(*) from am_setting)::text, '>= 4', (select count(*) from am_setting) >= 4
   union all select 22, 'Master data', 'am_barcode_seq (2 dải)',
          (select count(*) from am_barcode_seq)::text, '2',
          (select count(*) from am_barcode_seq) = 2
@@ -88,10 +98,18 @@ with chk(ord, nhom, muc, thuc_te, mong_doi, dat) as (
   union all select 24, 'Master data', 'OEM thuộc C2114 (mã riêng, KHÔNG phải OME)',
          coalesce((select group_code from am_category where code = 'OEM'), '(thiếu)'), 'C2114',
          (select group_code from am_category where code = 'OEM') = 'C2114'
+  -- expense_class is read through to_jsonb(g) on purpose. A direct reference
+  -- would make this whole file fail to parse on a database that has not had
+  -- 02b2 run yet, instead of simply reporting the check as failed.
   union all select 28, 'Master data', 'Nhóm OPEX O4000 + 8 mã con',
-         (select count(*) from am_category where group_code = 'O4000')::text, '8',
+         (select count(*) from am_category where group_code = 'O4000')::text
+           || ' mã con, expense_class='
+           || coalesce((select to_jsonb(g) ->> 'expense_class' from am_category_group g
+                         where g.code = 'O4000'), '(chưa chạy 02b2)'),
+         '8 mã con, expense_class=OPEX',
          (select count(*) from am_category where group_code = 'O4000') = 8
-         and (select expense_class from am_category_group where code = 'O4000') = 'OPEX'
+         and coalesce((select to_jsonb(g) ->> 'expense_class' from am_category_group g
+                        where g.code = 'O4000'), '') = 'OPEX'
   union all select 25, 'Master data', 'Cây vị trí: toà nhà CP và SOF',
          (select count(*) from am_location where kind = 'building')::text, '2',
          (select count(*) from am_location where kind = 'building') = 2

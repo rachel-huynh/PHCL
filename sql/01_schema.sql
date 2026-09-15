@@ -60,8 +60,12 @@ create table if not exists am_category_group (
                   check (expense_class in ('CAPEX', 'OPEX')),
   sort_order      int not null default 0
 );
-comment on column am_category_group.expense_class is
-  'CAPEX = các nhóm tài khoản C2xxx. OPEX = đồ dùng vận hành (O4000), không gắn mã kế toán.';
+-- ⚠️ KHÔNG đặt "comment on column am_category_group.expense_class" ở đây.
+-- Trên database đã có sẵn, "create table if not exists" là lệnh rỗng nên cột
+-- chưa tồn tại, và câu COMMENT sẽ chết ngay với
+--   ERROR 42703: column "expense_class" does not exist
+-- làm hỏng toàn bộ ALL_IN_ONE trước khi 02b2 kịp chạy ALTER.
+-- Phần comment nằm trong 02b2_seed_category_opex.sql, sau lệnh ALTER.
 comment on column am_category_group.is_intangible is 'C213x = tài sản vô hình';
 comment on column am_category_group.is_tools is 'C242x = CCDC, không đủ điều kiện ghi nhận TSCĐ';
 
