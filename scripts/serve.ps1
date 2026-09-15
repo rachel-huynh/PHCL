@@ -1,5 +1,5 @@
 param([int]$Port = 8323, [string]$Root = "$PSScriptRoot\..",
-      [string]$Default = 'assetmanagement.html')
+      [string]$Default = 'AssetManagement.html')
 
 $Root = (Resolve-Path $Root).Path
 $listener = New-Object System.Net.HttpListener

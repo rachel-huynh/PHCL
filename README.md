@@ -39,17 +39,44 @@ Không cần cài gì — server tĩnh viết bằng PowerShell:
 
 Rồi mở <http://localhost:8325>.
 
-Trang chính là **`assetmanagement.html`** — repo cố ý **không có `index.html`**.
-Server tĩnh tự phục vụ file này khi gọi `/`; trên GitHub Pages thì phải mở đúng
-đường dẫn đầy đủ:
+Trang chính là **`AssetManagement.html`** — repo cố ý **không có `index.html`**.
+Server tĩnh tự phục vụ file này khi gọi `/`.
 
-```
-https://<tài-khoản>.github.io/asset-intake/assetmanagement.html
-```
+### Đường dẫn trên GitHub Pages
+
+URL **phân biệt hoa/thường**, và có kèm tên repo hay không là tuỳ repo:
+
+| Repo chứa file | URL |
+|---|---|
+| `asset-intake` (repo dự án) | `https://<tài-khoản>.github.io/asset-intake/AssetManagement.html` |
+| `<tài-khoản>.github.io` (repo trang cá nhân) | `https://<tài-khoản>.github.io/AssetManagement.html` |
+
+Muốn URL **không có đoạn `/asset-intake/`** thì file phải nằm trong repo tên
+đúng bằng `<tài-khoản>.github.io`. Đó là quy định của GitHub Pages, không đổi
+được bằng cấu hình.
 
 Trỏ Pages vào nhánh `main`, thư mục gốc. Vì không có `index.html`, mở URL trống
-(`.../asset-intake/`) sẽ ra trang 404 của GitHub — đó là điều bình thường, cứ
-dùng link đầy đủ ở trên.
+sẽ ra trang 404 của GitHub — bình thường, cứ dùng link đầy đủ ở trên.
+
+## Ngôn ngữ
+
+**Tiếng Anh là ngôn ngữ chính thức**; tiếng Việt chỉ hiện khi bấm **VI** ở góc
+phải thanh trên. Lựa chọn lưu trong trình duyệt (`asset-intake.lang`).
+
+Toàn bộ chuỗi giao diện nằm trong `i18n.js`:
+
+- `data-i18n` → `textContent`, `data-i18n-html` → `innerHTML` (chuỗi có
+  `<b>`/`<code>`), `data-i18n-ph` → `placeholder`
+- trong `app.js` gọi `t('key')` hoặc `t('key', {n: 3})`
+- thiếu bản dịch thì tự rơi về tiếng Anh, thiếu luôn thì hiện chính tên khoá —
+  để lỗi lộ ra chứ không im lặng thành ô trống
+
+Đổi ngôn ngữ còn đổi cả **định dạng số** (`39,360,000` ↔ `39.360.000`) và dựng
+lại biên bản đang mở.
+
+> **Biên bản ALR vẫn song ngữ** dù chọn ngôn ngữ nào — đó là chứng từ chính
+> thức của công ty. Ngôn ngữ đang chọn chỉ quyết định vế nào đứng trước:
+> `No./Stt` khi EN, `Stt/No.` khi VI.
 
 ## Cài đặt
 

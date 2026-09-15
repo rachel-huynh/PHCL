@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="vi">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Asset Intake — Quản lý nhập tài sản</title>
+<title>Asset Intake — Plaza Hotel</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2316253c'/%3E%3Cg fill='%23fff'%3E%3Crect x='3' y='4' width='1.4' height='8'/%3E%3Crect x='5.4' y='4' width='.8' height='8'/%3E%3Crect x='7.2' y='4' width='1.6' height='8'/%3E%3Crect x='9.8' y='4' width='.8' height='8'/%3E%3Crect x='11.6' y='4' width='1.4' height='8'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   :root{
@@ -54,6 +54,13 @@
        border-bottom:1px solid var(--line);padding:11px 20px;position:sticky;top:0;z-index:5}
   .top h1{margin:0;font-size:17px;font-weight:700;letter-spacing:-.01em}
   .tools{margin-left:auto;display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  /* Công tắc ngôn ngữ EN/VI — English là ngôn ngữ chính thức */
+  .seg{display:inline-flex;border:1px solid #cfd4da;border-radius:4px;overflow:hidden;flex:none}
+  .seg button{border:none;background:var(--panel);color:var(--dim);padding:5px 11px;
+              font-size:12px;font-weight:600;letter-spacing:.03em;border-radius:0}
+  .seg button + button{border-left:1px solid #cfd4da}
+  .seg button:hover{background:var(--head)}
+  .seg button.on{background:var(--navy);color:#fff}
   main{padding:18px 20px 40px;flex:1}
   .lead{color:var(--dim);font-size:12.5px;margin:-4px 0 16px;max-width:96ch}
 
@@ -201,54 +208,52 @@
 <aside>
   <div class="brand">
     <b>Plaza Hotel<br>Company Limited</b>
-    <span>Asset Intake · Quản lý nhập tài sản</span>
+    <span data-i18n="app.subtitle"></span>
   </div>
   <nav id="nav"></nav>
   <div class="foot">
     <b>Rachel Huynh</b>
     <span>projectassistant@jvcplaza.vn</span>
-    <div class="conn"><i id="dot"></i><span id="connTxt">chưa kết nối</span></div>
-    <div class="sidenote">Dữ liệu nằm trên Supabase. Cấu hình kết nối lưu trong trình duyệt
-      này, không nằm trong mã nguồn.</div>
+    <div class="conn"><i id="dot"></i><span id="connTxt"></span></div>
+    <div class="sidenote" data-i18n="side.note"></div>
   </div>
 </aside>
 
 <div class="content">
   <div class="top">
-    <h1 id="pageTitle">Kết nối</h1>
+    <h1 id="pageTitle"></h1>
     <div class="tools" id="tools"></div>
+    <div class="seg" id="langSeg">
+      <button data-lang="en">EN</button><button data-lang="vi">VI</button>
+    </div>
   </div>
 
   <main>
 
   <section id="v-setup">
-    <p class="lead">Repo này là public nên <b>không nhúng key vào mã nguồn</b>. Nhập một lần ở
-      đây (lưu trong trình duyệt của chị), rồi dùng “Tạo link cài sẵn” để phát cho người khác —
-      key nằm sau dấu <code>#</code> nên không gửi lên server, và app tự xoá khỏi thanh địa chỉ
-      sau khi đọc.</p>
+    <p class="lead" data-i18n-html="setup.lead_html"></p>
     <div class="grid2">
       <div class="card">
-        <h2>Kết nối Supabase</h2>
+        <h2 data-i18n="setup.h.conn"></h2>
         <div class="row" style="margin-bottom:10px">
-          <div class="fld grow"><label>Project URL</label>
+          <div class="fld grow"><label data-i18n="setup.projectUrl"></label>
             <input id="sbUrl" placeholder="https://xxxxxxxx.supabase.co" spellcheck="false"></div>
         </div>
         <div class="row" style="margin-bottom:12px">
-          <div class="fld grow"><label>Anon key</label>
+          <div class="fld grow"><label data-i18n="setup.anonKey"></label>
             <input id="sbKey" placeholder="eyJhbGciOi…" spellcheck="false"></div>
         </div>
         <div class="row">
-          <button class="btn pri" id="btnSave">Lưu &amp; kiểm tra</button>
-          <button class="btn" id="btnLink">Tạo link cài sẵn</button>
-          <button class="btn" id="btnForget">Xoá khỏi máy này</button>
+          <button class="btn pri" id="btnSave" data-i18n="setup.save"></button>
+          <button class="btn" id="btnLink" data-i18n="setup.link"></button>
+          <button class="btn" id="btnForget" data-i18n="setup.forget"></button>
         </div>
         <div id="setupMsg"></div>
       </div>
       <div class="card">
-        <h2>Kiểm tra cài đặt</h2>
-        <p>Đếm số dòng từng bảng và gọi thử hàm, để biết các file trong <code>sql/</code> đã
-          chạy đủ chưa.</p>
-        <button class="btn" id="btnCheck">Kiểm tra schema</button>
+        <h2 data-i18n="setup.h.check"></h2>
+        <p data-i18n-html="setup.check.p_html"></p>
+        <button class="btn" id="btnCheck" data-i18n="setup.check.btn"></button>
         <div id="checkOut"></div>
       </div>
     </div>
@@ -258,76 +263,74 @@
     <p class="lead" id="tableLead"></p>
     <div id="dataMsg"></div>
     <div class="wrap"><table id="grid"><thead></thead><tbody></tbody></table></div>
-    <p class="foots">Sửa trực tiếp trong ô. Vạch <b style="color:var(--amber)">vàng</b> = dòng đã
-      sửa chưa lưu, vạch <b style="color:var(--green)">xanh</b> = dòng mới thêm.
-      Bấm <b>Lưu thay đổi</b> để ghi lên Supabase.</p>
+    <p class="foots" data-i18n-html="table.foot_html"></p>
   </section>
 
   <section id="v-counter">
-    <p class="lead">Bộ đếm không sửa trực tiếp được — kể cả khi lộ anon key. Mọi thay đổi đi qua
-      hàm <code>SECURITY DEFINER</code> trên Supabase và được ghi lại vào
-      <code>am_counter_log</code>.</p>
+    <p class="lead" data-i18n-html="cnt.lead_html"></p>
     <div id="cntOut"></div>
 
     <div class="card">
-      <h2>Nạp bộ đếm từ sổ tài sản cũ</h2>
-      <p>Chỉ <b>nâng</b> bộ đếm, không bao giờ hạ, nên chạy lại nhiều lần vô hại. Màn hình này
-        chỉ gửi lên server <b>số lớn nhất của mỗi khoá</b>, không đẩy cả chục nghìn mã qua mạng.</p>
+      <h2 data-i18n="cnt.seed.h"></h2>
+      <p data-i18n-html="cnt.seed.p_html"></p>
       <div class="fld grow" style="margin-bottom:11px">
-        <label>Tệp sổ tài sản (.xlsx / .csv / .txt — chọn được nhiều tệp)</label>
+        <label data-i18n="cnt.seed.file"></label>
         <input type="file" id="seedFile" multiple accept=".xlsx,.xlsm,.csv,.txt">
       </div>
       <div class="fld grow">
-        <label>hoặc dán mã vào đây</label>
+        <label data-i18n="cnt.seed.paste"></label>
         <textarea id="seedText" placeholder="FBD.C2422.LTU.2025.00309&#10;JVC.000006870&#10;…"></textarea>
       </div>
       <div class="row" style="margin-top:11px">
-        <button class="btn" id="btnScan">Quét mã</button>
-        <button class="btn pri" id="btnSeed" disabled>Nạp bộ đếm</button>
+        <button class="btn" id="btnScan" data-i18n="cnt.seed.scan"></button>
+        <button class="btn pri" id="btnSeed" disabled data-i18n="cnt.seed.run"></button>
       </div>
       <div id="seedOut"></div>
     </div>
   </section>
 
   <section id="v-rules">
-    <p class="lead">Gọi thẳng hàm trên Supabase để đối chiếu kết quả trước khi tin vào nó.</p>
+    <p class="lead" data-i18n="rules.lead"></p>
     <div class="card">
-      <h2>Phân loại theo đơn giá</h2>
+      <h2 data-i18n="rules.classify.h"></h2>
       <div class="row">
-        <div class="fld" style="max-width:180px"><label>Đơn giá (VNĐ)</label>
+        <div class="fld" style="max-width:180px"><label data-i18n="rules.price"></label>
           <input id="rcPrice" type="number" value="35000000"></div>
-        <div class="fld" style="max-width:230px"><label>Mã danh mục</label>
+        <div class="fld" style="max-width:230px"><label data-i18n="rules.category"></label>
           <select id="rcCat"></select></div>
-        <div class="fld" style="max-width:190px"><label>Tài sản vô hình?</label>
-          <select id="rcIntan"><option value="false">Không (hữu hình)</option>
-            <option value="true">Có (license / phần mềm)</option></select></div>
-        <button class="btn pri" id="btnClassify">Kiểm tra</button>
+        <div class="fld" style="max-width:190px"><label data-i18n="rules.intangible"></label>
+          <select id="rcIntan">
+            <option value="false" data-i18n="rules.intNo"></option>
+            <option value="true" data-i18n="rules.intYes"></option></select></div>
+        <button class="btn pri" id="btnClassify" data-i18n="rules.check"></button>
       </div>
       <div id="rcOut"></div>
     </div>
 
     <div class="grid2">
       <div class="card">
-        <h2>Chuẩn hoá xuất xứ</h2>
-        <p>Chỉ gán mã khi khớp đúng <b>một</b> quốc gia có thật. Nhiều quốc gia hoặc không phải
-          quốc gia thì bỏ trống cả mã lẫn tên.</p>
+        <h2 data-i18n="rules.origin.h"></h2>
+        <p data-i18n-html="rules.origin.p_html"></p>
         <div class="row">
           <div class="fld grow"><input id="orRaw" value="USA/Mexico/China/Singapore"></div>
-          <button class="btn pri" id="btnOrigin">Kiểm tra</button>
+          <button class="btn pri" id="btnOrigin" data-i18n="rules.check"></button>
         </div>
-        <div class="hint">Thử: <code>Malaysia</code> · <code>Viet Nam</code> · <code>USA</code> ·
-          <code>Asia</code> · <code>USA/Mexico/China/Singapore</code></div>
+        <div class="hint" data-i18n-html="rules.origin.try_html"></div>
         <div id="orOut"></div>
       </div>
 
       <div class="card">
-        <h2>Ghép mã thử <em>— không cấp số thật</em></h2>
+        <h2><span data-i18n="rules.preview.h"></span> <em data-i18n="rules.preview.em"></em></h2>
         <div class="row">
-          <div class="fld" style="max-width:130px"><label>Phòng ban</label><select id="pvDept"></select></div>
-          <div class="fld" style="max-width:200px"><label>Mã danh mục</label><select id="pvCat"></select></div>
-          <div class="fld" style="max-width:100px"><label>Năm mua</label><input id="pvYear" type="number" value="2026"></div>
-          <div class="fld" style="max-width:100px"><label>Số TT</label><input id="pvSeq" type="number" value="1"></div>
-          <button class="btn pri" id="btnPreview">Ghép</button>
+          <div class="fld" style="max-width:130px"><label data-i18n="rules.dept"></label>
+            <select id="pvDept"></select></div>
+          <div class="fld" style="max-width:200px"><label data-i18n="rules.category"></label>
+            <select id="pvCat"></select></div>
+          <div class="fld" style="max-width:100px"><label data-i18n="rules.year"></label>
+            <input id="pvYear" type="number" value="2026"></div>
+          <div class="fld" style="max-width:100px"><label data-i18n="rules.seq"></label>
+            <input id="pvSeq" type="number" value="1"></div>
+          <button class="btn pri" id="btnPreview" data-i18n="rules.build"></button>
         </div>
         <div id="pvOut"></div>
       </div>
@@ -335,21 +338,19 @@
   </section>
 
   <section id="v-alr">
-    <p class="lead">Dùng đúng mẫu <b>ASSET LABEL RECEIPT / BIÊN BẢN BÀN GIAO TEM NHÃN TÀI SẢN</b>
-      của công ty, 8 cột: Stt · Mã tài sản · Tên tài sản · Số lượng · Thông số kỹ thuật ·
-      <b>Đơn giá · Vị trí</b> · Tem nhãn. Ô thông số là bản gom ngắn từ các trường spec chi tiết.</p>
+    <p class="lead" data-i18n-html="alr.lead_html"></p>
 
     <div class="card">
-      <h2>1 · Chọn tài sản</h2>
+      <h2 data-i18n="alr.step1"></h2>
       <div class="row">
-        <div class="fld" style="max-width:220px"><label>Đợt giao hàng</label>
-          <select id="alShip"><option value="">— tất cả —</option></select></div>
-        <div class="fld" style="max-width:150px"><label>Phòng ban</label>
-          <select id="alDept"><option value="">— tất cả —</option></select></div>
-        <div class="fld" style="max-width:170px"><label>Vị trí</label>
-          <select id="alLoc"><option value="">— tất cả —</option></select></div>
-        <button class="btn pri" id="btnAlLoad">Tải tài sản</button>
-        <button class="btn" id="btnAlDemo">Dữ liệu mẫu</button>
+        <div class="fld" style="max-width:220px"><label data-i18n="alr.shipment"></label>
+          <select id="alShip"><option value="" data-i18n="alr.all"></option></select></div>
+        <div class="fld" style="max-width:150px"><label data-i18n="alr.dept"></label>
+          <select id="alDept"><option value="" data-i18n="alr.all"></option></select></div>
+        <div class="fld" style="max-width:170px"><label data-i18n="alr.loc"></label>
+          <select id="alLoc"><option value="" data-i18n="alr.all"></option></select></div>
+        <button class="btn pri" id="btnAlLoad" data-i18n="alr.load"></button>
+        <button class="btn" id="btnAlDemo" data-i18n="alr.demo"></button>
       </div>
       <div id="alListMsg"></div>
       <div class="wrap" style="max-height:38vh;margin-top:10px">
@@ -358,36 +359,35 @@
     </div>
 
     <div class="card">
-      <h2>2 · Thông tin biên bản</h2>
+      <h2 data-i18n="alr.step2"></h2>
       <div class="row">
-        <div class="fld" style="max-width:220px"><label>Mã dự án (FFE…)</label>
+        <div class="fld" style="max-width:220px"><label data-i18n="alr.project"></label>
           <input id="alProject" value="FFE.KIT.05.2025" spellcheck="false"></div>
-        <div class="fld" style="max-width:190px"><label>No./Số — sửa được</label>
+        <div class="fld" style="max-width:190px"><label data-i18n="alr.no"></label>
           <input id="alCode" spellcheck="false"></div>
-        <div class="fld" style="max-width:150px"><label>Date/Ngày</label>
+        <div class="fld" style="max-width:150px"><label data-i18n="alr.date"></label>
           <input id="alDate" type="date"></div>
-        <div class="fld" style="max-width:190px"><label>Người lập biểu</label>
+        <div class="fld" style="max-width:190px"><label data-i18n="alr.prep"></label>
           <input id="alPrep" value="Huỳnh Thị Trúc Dịu"></div>
-        <div class="fld" style="max-width:190px"><label>Người nhận</label>
-          <input id="alRecv" placeholder="Tên người nhận tem"></div>
+        <div class="fld" style="max-width:190px"><label data-i18n="alr.recv"></label>
+          <input id="alRecv" data-i18n-ph="alr.recvPh"></div>
       </div>
       <div class="fld grow" style="margin-top:11px">
-        <label>Quy trình &amp; lưu ý in ở cuối biên bản</label>
+        <label data-i18n="alr.notesLabel"></label>
         <textarea id="alNotes" style="min-height:130px"></textarea>
       </div>
-      <div class="hint">⚠️ Bản mẫu 2023 của công ty còn nhắc hệ thống <b>Sinnova</b>. Công ty nay
-        dùng <b>Beetrack</b> — sửa lại trong ô trên trước khi in.</div>
+      <div class="hint" data-i18n-html="alr.sinnova_html"></div>
     </div>
 
     <div class="card">
-      <h2>3 · Xuất</h2>
+      <h2 data-i18n="alr.step3"></h2>
       <div class="row">
-        <button class="btn pri" id="btnAlDoc">Dựng biên bản</button>
-        <button class="btn" id="btnAlLabels">Dựng trang tem nhãn</button>
-        <div class="fld" style="max-width:120px"><label>Tem mỗi hàng</label>
+        <button class="btn pri" id="btnAlDoc" data-i18n="alr.buildDoc"></button>
+        <button class="btn" id="btnAlLabels" data-i18n="alr.buildLabels"></button>
+        <div class="fld" style="max-width:120px"><label data-i18n="alr.perRow"></label>
           <input id="alCols" type="number" min="1" max="6" value="3"></div>
-        <button class="btn" id="btnAlPrint" disabled>In / Lưu PDF</button>
-        <button class="btn" id="btnAlSave" disabled>Lưu biên bản lên Supabase</button>
+        <button class="btn" id="btnAlPrint" disabled data-i18n="alr.print"></button>
+        <button class="btn" id="btnAlSave" disabled data-i18n="alr.saveDb"></button>
       </div>
       <div id="alOutMsg"></div>
     </div>
@@ -401,6 +401,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
