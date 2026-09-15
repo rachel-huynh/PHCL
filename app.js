@@ -256,7 +256,7 @@ function renderGrid() {
     const tr = el('tr');
     if (row.isNew) tr.classList.add('new');
     else if (row.dirty) tr.classList.add('dirty');
-    const del = el('button', { className: 'mini', textContent: '✕', title: 'Xoá dòng' });
+    const del = el('button', { className: 'xbtn', textContent: '✕', title: 'Xoá dòng' });
     del.onclick = () => {
       if (row.isNew) CUR.rows.splice(CUR.rows.indexOf(row), 1);
       else if (confirm(`Xoá ${row.cur[spec.pk]}?`)) row.del = true;
@@ -276,8 +276,6 @@ function renderGrid() {
     }
     body.append(tr);
   }
-  $('#dataTitle').textContent = spec.label;
-  $('#dataSub').textContent = spec.sub || '';
   if (!shown) body.append(el('tr', {}, el('td', {
     colSpan: spec.cols.length + 1,
     textContent: q ? 'Không có dòng nào khớp bộ lọc.' : 'Bảng trống.',
@@ -286,9 +284,11 @@ function renderGrid() {
 }
 
 function dirtyCheck() {
+  const b = $('#btnCommit');
+  if (!b || !CUR) return;
   const n = CUR.rows.filter(r => r.isNew || r.dirty || r.del).length;
-  $('#btnCommit').disabled = !n;
-  $('#btnCommit').textContent = n ? `Lưu ${n} thay đổi` : 'Lưu thay đổi';
+  b.disabled = !n;
+  b.textContent = n ? `Lưu ${n} thay đổi` : 'Lưu thay đổi';
 }
 
 async function loadTable(name) {
@@ -467,19 +467,29 @@ async function loadCounters() {
       SB.select('am_counter_log', 'select=*&order=created_at.desc&limit=25')
     ]);
     out.innerHTML = '';
-    const stat = el('div', { className: 'stat' });
+    const kpis = el('div', { className: 'kpis' });
     for (const b of bars) {
       const next = b.kind === 'low'
         ? 'JVC.9' + String(b.next_val).padStart(8, '0')
         : 'JVC.' + String(b.next_val).padStart(9, '0');
-      stat.append(el('div', {}, [
+      kpis.append(el('div', { className: 'kpi ' + (b.kind === 'low' ? 'a' : 'n') }, [
+        el('label', { textContent: `Mã vạch kế tiếp — dải ${b.kind}` }),
         el('b', { textContent: next }),
-        el('span', { textContent: `mã vạch kế tiếp — dải ${b.kind} (còn ${fmtInt(b.max_val - b.next_val + 1)})` })
+        el('small', { textContent: `còn ${fmtInt(b.max_val - b.next_val + 1)} số trong dải` })
       ]));
     }
-    stat.append(el('div', {}, [el('b', { textContent: fmtInt(seqs.length) }),
-      el('span', { textContent: 'khoá (phòng ban × chữ) đang có' })]));
-    out.append(stat);
+    kpis.append(el('div', { className: 'kpi' }, [
+      el('label', { textContent: 'Khoá bộ đếm Mã Tài Sản' }),
+      el('b', { textContent: fmtInt(seqs.length) }),
+      el('small', { textContent: 'cặp (phòng ban × chữ) đang có' })
+    ]));
+    const used = seqs.reduce((s, r) => s + r.next_seq - 1, 0);
+    kpis.append(el('div', { className: 'kpi g' }, [
+      el('label', { textContent: 'Số thứ tự đã cấp' }),
+      el('b', { textContent: fmtInt(used) }),
+      el('small', { textContent: 'cộng dồn mọi khoá, không tái sử dụng' })
+    ]));
+    out.append(kpis);
 
     if (seqs.length) {
       const tb = el('table');
@@ -621,26 +631,105 @@ async function doPreview() {
   } catch (e) { msg(out, 'err', e.message); }
 }
 
-/* ---------------------------------------------------------------- tabs */
-const TABS = [
-  ['t-setup', 'Kết nối'], ['t-data', 'Master data'],
-  ['t-counter', 'Bộ đếm'], ['t-rules', 'Thử quy tắc']
+
+/* --------------------------------------------------------- điều hướng */
+const NAV = [
+  ['Danh mục', [
+    ['tbl:am_org',            'Đơn vị & phòng ban'],
+    ['tbl:am_org_alias',      'Bí danh phòng ban'],
+    ['tbl:am_category_group', 'Nhóm tài sản (mã cha)'],
+    ['tbl:am_category',       'Mã danh mục'],
+    ['tbl:am_unit',           'Đơn vị tính'],
+    ['tbl:am_location',       'Vị trí'],
+    ['tbl:am_product',        'Product catalogue']
+  ]],
+  ['Xuất xứ', [
+    ['tbl:am_origin',          'Danh mục quốc gia'],
+    ['tbl:am_origin_alias',    'Bí danh xuất xứ'],
+    ['tbl:am_origin_rejected', 'Cố ý bỏ trống']
+  ]],
+  ['Bộ đếm & quy tắc', [
+    ['counter', 'Bộ đếm mã'],
+    ['rules',   'Thử quy tắc']
+  ]],
+  ['Hệ thống', [
+    ['tbl:am_setting', 'Cấu hình ngưỡng'],
+    ['setup',          'Kết nối']
+  ]]
 ];
-function setDataHeader(name) {
-  const spec = TABLES[name];
-  $('#dataTitle').textContent = spec.label;
-  $('#dataSub').textContent = spec.sub || '';
-}
-function showTab(id) {
-  $$('section').forEach(s => s.classList.toggle('on', s.id === id));
-  $$('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.id === id));
-  if (id === 't-data') {
-    const name = $('#tablePick').value;
-    setDataHeader(name);
-    if (!CUR) loadTable(name);
+
+let VIEW = 'setup';
+
+function buildNav() {
+  const nav = $('#nav');
+  nav.innerHTML = '';
+  for (const [grp, items] of NAV) {
+    nav.append(el('div', { className: 'grp', textContent: grp }));
+    for (const [id, label] of items) {
+      const a = el('a', { textContent: label, href: '#' });
+      a.dataset.view = id;
+      a.onclick = ev => { ev.preventDefault(); showView(id); };
+      nav.append(a);
+    }
   }
-  if (id === 't-counter' && SB.ready()) loadCounters();
-  if (id === 't-rules' && SB.ready()) fillPickers();
+}
+
+/* Thanh công cụ đổi theo màn hình đang mở */
+function buildTools(view) {
+  const t = $('#tools');
+  t.innerHTML = '';
+  if (view.startsWith('tbl:')) {
+    const f = el('input', { id: 'filter', placeholder: 'Lọc nhanh…', style: 'width:190px' });
+    f.oninput = () => renderGrid();
+    const reload = el('button', { className: 'btn', textContent: 'Tải lại' });
+    reload.onclick = () => loadTable(view.slice(4));
+    const add = el('button', { className: 'btn', textContent: '+ Thêm dòng' });
+    add.onclick = addRow;
+    const save = el('button', { className: 'btn pri', id: 'btnCommit',
+                                textContent: 'Lưu thay đổi', disabled: true });
+    save.onclick = commit;
+    t.append(f, reload, add, save);
+  } else if (view === 'counter') {
+    const a = el('button', { className: 'btn', textContent: 'Tải trạng thái' });
+    a.onclick = loadCounters;
+    const b = el('button', { className: 'btn', textContent: 'Đối chiếu với sổ tài sản' });
+    b.onclick = runAudit;
+    t.append(a, b);
+  }
+}
+
+function addRow() {
+  if (!CUR) return;
+  const spec = TABLES[CUR.table], blank = {};
+  for (const c of spec.cols) blank[c.name] = c.type === 'bool' ? false : null;
+  CUR.rows.unshift({ orig: null, cur: blank, isNew: true });
+  dirtyCheck(); renderGrid();
+}
+
+function showView(view) {
+  if (VIEW.startsWith('tbl:') && view !== VIEW && CUR) {
+    const n = CUR.rows.filter(r => r.isNew || r.dirty || r.del).length;
+    if (n && !confirm(n + ' thay đổi chưa lưu sẽ mất. Vẫn chuyển màn hình?')) return;
+  }
+  VIEW = view;
+  $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.view === view));
+
+  const sect = view.startsWith('tbl:') ? 'v-table' : 'v-' + view;
+  $$('section').forEach(s => s.classList.toggle('on', s.id === sect));
+  buildTools(view);
+
+  if (view.startsWith('tbl:')) {
+    const name = view.slice(4), spec = TABLES[name];
+    $('#pageTitle').textContent = spec.label;
+    $('#tableLead').textContent = spec.sub || '';
+    CUR = null;
+    loadTable(name);
+  } else {
+    $('#pageTitle').textContent =
+      { setup: 'Kết nối', counter: 'Bộ đếm Mã Tài Sản & Mã Vạch', rules: 'Thử quy tắc' }[view];
+    if (view === 'counter' && SB.ready()) loadCounters();
+    if (view === 'rules' && SB.ready()) fillPickers();
+  }
 }
 
 /* ------------------------------------------------------------- connect */
@@ -663,55 +752,43 @@ async function checkSchema() {
   const out = $('#checkOut');
   msg(out, 'info', 'Đang đếm…');
   const extra = ['am_asset_seq', 'am_barcode_seq', 'am_counter_log', 'am_shipment',
-                 'am_shipment_line', 'am_asset', 'am_alr', 'am_xls_template'];
+                 'am_shipment_line', 'am_asset', 'am_alr', 'am_alr_line', 'am_alr_seq',
+                 'am_xls_template', 'am_xls_column'];
   const names = [...Object.keys(TABLES), ...extra];
   const tb = el('table');
   tb.append(el('tr', {}, ['Bảng', 'Số dòng'].map(h => el('th', { textContent: h }))));
   let bad = 0;
   for (const n of names) {
-    let txt, style = '';
+    let txt, cls = 'num';
     try { txt = fmtInt(await SB.count(n)); }
-    catch (e) { txt = 'KHÔNG CÓ'; style = 'color:var(--err);font-weight:600'; bad++; }
+    catch { txt = 'KHÔNG CÓ'; cls = 'num neg'; bad++; }
     tb.append(el('tr', {}, [el('td', {}, el('code', { textContent: n })),
-                            el('td', { className: 'num', textContent: txt, style })]));
+                            el('td', { className: cls, textContent: txt })]));
   }
   out.innerHTML = '';
   out.append(el('div', { className: 'msg ' + (bad ? 'err' : 'ok'), textContent: bad
-    ? `${bad} bảng chưa tồn tại — chạy lại các file sql/ theo thứ tự 01 → 02 → 02b → 02c → 03 → 04.`
-    : 'Đủ cả 22 bảng. Kiểm tra số dòng master data bên dưới.' }));
-  out.append(el('div', { className: 'wrap' }, tb));
-  const fns = ['am_audit_counters'];
-  for (const f of fns) {
+    ? bad + ' bảng chưa tồn tại — chạy lại các file sql/ theo thứ tự 01 → 02 → 02b → 02c → 03 → 04.'
+    : 'Đủ ' + names.length + ' bảng. Kiểm tra số dòng master data bên dưới.' }));
+  for (const f of ['am_audit_counters']) {
     try { await SB.rpc(f); }
-    catch (e) { out.append(el('div', { className: 'msg err',
-      textContent: `Hàm ${f}() gọi không được: ${e.message} — kiểm tra 03_functions.sql và 04_rls.sql.` })); }
+    catch (e) {
+      out.append(el('div', { className: 'msg err', textContent:
+        'Hàm ' + f + '() gọi không được: ' + e.message +
+        ' — kiểm tra 03_functions.sql và 04_rls.sql.' }));
+    }
   }
+  out.append(el('div', { className: 'wrap' }, tb));
 }
 
 /* ---------------------------------------------------------------- init */
 function init() {
-  const nav = $('#tabs');
-  for (const [id, label] of TABS) {
-    const b = el('button', { textContent: label });
-    b.dataset.id = id; b.onclick = () => showTab(id);
-    nav.append(b);
-  }
-  const pick = $('#tablePick');
-  for (const [k, v] of Object.entries(TABLES))
-    pick.append(el('option', { value: k, textContent: v.label }));
-  pick.onchange = () => {
-    const n = CUR?.rows.filter(r => r.isNew || r.dirty || r.del).length || 0;
-    if (n && !confirm(`${n} thay đổi chưa lưu sẽ mất. Vẫn đổi bảng?`)) {
-      pick.value = CUR.table; return;
-    }
-    setDataHeader(pick.value); loadTable(pick.value);
-  };
+  buildNav();
 
   $('#btnSave').onclick = async () => {
     CFG = { url: $('#sbUrl').value.trim().replace(/\/+$/, ''), key: $('#sbKey').value.trim() };
     localStorage.setItem(LS_KEY, JSON.stringify(CFG));
     Object.keys(LOOK).forEach(k => delete LOOK[k]);
-    if (await testConn()) { fillPickers(); }
+    if (await testConn()) fillPickers();
   };
   $('#btnLink').onclick = () => {
     if (!SB.ready()) return msg('#setupMsg', 'err', 'Nhập URL và key trước đã.');
@@ -729,31 +806,14 @@ function init() {
   };
   $('#btnCheck').onclick = checkSchema;
 
-  $('#btnReload').onclick = () => loadTable(pick.value);
-  $('#filter').oninput = () => renderGrid();
-  $('#btnAdd').onclick = () => {
-    const spec = TABLES[CUR?.table || pick.value];
-    if (!CUR) CUR = { table: pick.value, rows: [] };
-    const blank = {};
-    for (const c of spec.cols) blank[c.name] = c.type === 'bool' ? false : null;
-    CUR.rows.unshift({ orig: null, cur: blank, isNew: true });
-    dirtyCheck(); renderGrid();
-  };
-  $('#btnCommit').onclick = commit;
-
-  $('#btnCnt').onclick = loadCounters;
-  $('#btnAudit').onclick = runAudit;
   $('#btnScan').onclick = scanSeed;
   $('#btnSeed').onclick = runSeed;
-
   $('#btnClassify').onclick = doClassify;
   $('#btnOrigin').onclick = doOrigin;
   $('#btnPreview').onclick = doPreview;
 
   loadCfg();
-  showTab('t-setup');
-  testConn(true).then(ok => {
-    if (ok) { showTab('t-data'); loadTable(pick.value); fillPickers(); }
-  });
+  showView('setup');
+  testConn(true).then(ok => { if (ok) { showView('tbl:am_org'); fillPickers(); } });
 }
 document.addEventListener('DOMContentLoaded', init);

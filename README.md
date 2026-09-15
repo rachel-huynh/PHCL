@@ -54,6 +54,14 @@ sql/03_functions.sql      -- chuẩn hóa, cấp phát bộ đếm, quy tắc ph
 sql/04_rls.sql            -- RLS & quyền
 ```
 
+Rồi chạy `sql/00_verify.sql` để biết chắc thứ gì đã được tạo.
+
+> Supabase SQL Editor **không hiện gì** khi chạy lệnh DDL (`CREATE TABLE` không
+> trả về dòng nào), và đôi khi panel Results báo *“Failed to get project's
+> logs”*. Đó là lỗi của giao diện dashboard, **không phải lỗi SQL** —
+> `00_verify.sql` sẽ cho biết thật sự có bao nhiêu bảng, hàm, policy và dòng
+> master data, kèm mấy phép thử quy tắc không ghi gì vào database.
+
 `02c_seed_location.sql` do `scripts/genloc.ps1` sinh ra từ các biên bản kiểm
 kê — sửa script rồi chạy lại, đừng sửa file SQL bằng tay:
 
