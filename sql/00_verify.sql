@@ -206,6 +206,22 @@ with chk(ord, nhom, muc, thuc_te, mong_doi, dat) as (
   union all select 73, 'Bộ đếm', 'Khoá có bộ đếm TỤT SAU sổ (phải = 0)',
          (select count(*) from am_audit_counters() where gap < 0)::text, '0',
          (select count(*) from am_audit_counters() where gap < 0) = 0
+
+  -- ---------------- 8. Gợi ý danh mục (11_suggest.sql) ----------------
+  union all select 81, 'Gợi ý', 'Hàm am_suggest_lines đã tạo',
+         (select count(*) from pg_proc where proname = 'am_suggest_lines')::text, '1',
+         (select count(*) from pg_proc where proname = 'am_suggest_lines') = 1
+  union all select 82, 'Gợi ý', 'Index trên am_norm(name_vi)',
+         (select count(*) from pg_indexes
+           where tablename = 'am_asset' and indexname = 'am_asset_name_norm_ix')::text, '1',
+         (select count(*) from pg_indexes
+           where tablename = 'am_asset' and indexname = 'am_asset_name_norm_ix') = 1
+  -- Thử trên một tên có thật trong sổ: phải ra danh mục kèm số dòng làm căn cứ.
+  union all select 83, 'Gợi ý', 'Thử tra "Ghế" -> danh mục',
+         coalesce((select category_code || ' (' || n || ' dòng)'
+                     from am_suggest_lines(array['Ghế'])), '(không có)'),
+         'ra một mã danh mục nếu sổ đã nạp',
+         (select category_code from am_suggest_lines(array['Ghế'])) is not null
 )
 select nhom       as "Nhóm",
        muc        as "Mục kiểm tra",

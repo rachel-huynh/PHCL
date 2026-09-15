@@ -2098,7 +2098,7 @@ function btExport(rows, stamp) {
 }
 
 /* ------------------------------------------------------------ the screen */
-const IN = { lines: [], checked: null, committed: [] };
+const IN = { lines: [], checked: null, committed: [], sugRan: false };
 
 const inBlank = () => ({
   name_vi: '', name_en: '', category_code: '', qty: 1, unit_code: 'pcs',
@@ -2135,7 +2135,26 @@ function inRender() {
     };
 
     tr.append(txt('name_vi', 200));
-    tr.append(pick('category_code', (window.__CATS || []).map(c => c.code), 110));
+
+    // Category, plus the evidence behind the suggestion. A code filled in from
+    // 40 historical rows and one filled in from a single row are not the same
+    // claim, so the count is shown rather than hidden behind a tick.
+    const catTd = pick('category_code', (window.__CATS || []).map(c => c.code), 110);
+    if (ln._sug) {
+      const weak = ln._sug.n < 3 && ln._sug.src !== 'product';
+      catTd.append(el('span', {
+        className: 'sug' + (weak ? ' weak' : ''),
+        title: t(ln._sug.src === 'product' ? 'in.sugProduct' : 'in.sugHistory',
+                 { n: ln._sug.n }),
+        textContent: ln._sug.src === 'product' ? '★' : '×' + fmtInt(ln._sug.n)
+      }));
+    } else if (ln.name_vi && IN.sugRan) {
+      // Only claim "the register does not know this name" once the lookup has
+      // actually run. Before that, saying so would be a guess of our own.
+      catTd.append(el('span', { className: 'sug none', title: t('in.sugNone'),
+                                textContent: '?' }));
+    }
+    tr.append(catTd);
     tr.append(txt('qty', 60, 'number'));
     tr.append(pick('unit_code', IN.units || [], 90));
     tr.append(txt('unit_price', 120, 'number'));
@@ -2243,6 +2262,19 @@ async function inCheck() {
     const ser = inSerials(ln);
     if (ser.length && ser.length !== Number(ln.qty))
       warns.push(t('in.warnSerial', { i: n, have: ser.length, qty: ln.qty }));
+
+    // Doubt raised while reading the delivery note must survive into the
+    // register, not stop at this screen.
+    for (const f of ln._unsure || []) {
+      warns.push(t('in.warnUnsure', { i: n, field: f }));
+      ln._review.push({ field: f, reason: 'unreadable_on_note' });
+    }
+    if (ln._src && ln._src !== 'printed') {
+      warns.push(t('in.warnQtySrc', { i: n, src: ln._src }));
+      ln._review.push({ field: 'qty', reason: 'qty_' + ln._src });
+    }
+    if (ln._unitRaw && !ln.unit_code)
+      warns.push(t('in.warnUnit', { i: n, raw: ln._unitRaw }));
 
     warns.push(t('in.warnStatus', { i: n }));
     ln._review.push({ field: 'status_code', reason: 'no_source' });
@@ -2363,14 +2395,221 @@ async function inFill() {
   } catch { /* the Connection screen already reports it */ }
 }
 
+/* ======================================================== DELIVERY NOTE
+   A delivery note carries the goods, the quantities and the prices. It does
+   NOT carry the asset category, the department, the location or the purpose,
+   so those can never be "extracted" -- they have to come from somewhere else.
+
+   They come from history: the register already holds ~16,000 rows, and in it
+   a "Ghe" has always been LTU/C2422. am_suggest_lines() looks the name up and
+   returns the category together with the number of rows backing it, so the
+   reviewer sees the evidence instead of a bare guess.
+
+   Extraction itself is deliberately kept to what is printed on the paper.
+   The app -- not the model -- applies the 5,000,000 threshold, picks the
+   accounting group, allocates the sequence and builds the barcode, because
+   those must be reproducible and auditable. */
+
+/* The instructions handed to Claude along with the PDF. Kept verbatim in one
+   place so the Edge Function (step 2) and the paste-in path cannot drift. */
+const DN_PROMPT = `You are reading one or more delivery notes ("phiếu giao hàng") for a hotel's asset intake. Extract ONLY what is on the page and return JSON.
+
+OUTPUT: a single JSON object, no prose, no markdown fence:
+
+{"deliveries":[{
+  "delivery_no": string|null,
+  "delivery_date": "YYYY-MM-DD"|null,
+  "supplier": string|null,
+  "invoice_no": string|null,
+  "note": string|null,
+  "lines": [{
+    "name_vi": string,
+    "name_en": string|null,
+    "description": string|null,
+    "qty": number|null,
+    "qty_source": "printed"|"handwritten"|"inferred",
+    "unit_raw": string|null,
+    "unit_price": number|null,
+    "currency": string|null,
+    "serials": [string],
+    "brand": string|null,
+    "model": string|null,
+    "origin_raw": string|null,
+    "uncertain": [string],
+    "note": string|null
+  }]
+}]}
+
+RULES
+
+1. One file may hold SEVERAL delivery notes. Return one object per note. Do not merge them.
+
+2. The PRINTED "Số lượng giao" is the authoritative quantity. If a handwritten
+   figure differs from it, use the PRINTED one, set "qty_source":"printed", add
+   "qty" to "uncertain", and record the handwritten value in the line "note".
+   Only use a handwritten number when nothing is printed; then set
+   "qty_source":"handwritten" and add "qty" to "uncertain".
+
+3. Never invent a value. If a field is not on the paper, return null and add its
+   name to "uncertain". An empty "uncertain" means every field was read off the page.
+
+4. "origin_raw": copy the origin EXACTLY as written. If it names several
+   countries ("USA/Mexico/China") or is not a country ("Asia", "EU"), copy that
+   text unchanged. Do NOT pick one country and do NOT translate it.
+
+5. Numbers: return plain numbers with no separators. Vietnamese notes use "." for
+   thousands and "," for decimals, so "1.250.000" is 1250000 and "1,5" is 1.5.
+
+6. Dates: ISO "YYYY-MM-DD". Vietnamese notes write dd/mm/yyyy.
+
+7. Serial numbers: one array entry per unit. If none are printed, return [].
+
+8. Do NOT output an asset category, asset code, barcode, department, location,
+   condition code or depreciation. None of those are on a delivery note; the
+   application derives them. Adding them would be a guess.
+
+9. If a page is a scan and a character is unreadable, prefer null plus an
+   "uncertain" entry over a plausible-looking reading.`;
+
+const DN = { parsed: [] };
+
+async function dnCopyPrompt() {
+  try {
+    await navigator.clipboard.writeText(DN_PROMPT);
+    msg('#dnMsg', 'ok', t('dn.copied'));
+  } catch {
+    // Clipboard needs a secure context; show the text so it can be copied by hand.
+    $('#dnJson').value = DN_PROMPT;
+    msg('#dnMsg', 'warn', t('dn.copyFail'));
+  }
+}
+
+const dnNum = v => {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+function dnParse() {
+  const out = $('#dnMsg');
+  let raw = $('#dnJson').value.trim();
+  if (!raw) return msg(out, 'err', t('dn.noJson'));
+  // Tolerate a ```json fence, since that is what a chat window tends to hand back.
+  raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  let data;
+  try { data = JSON.parse(raw); }
+  catch (e) { return msg(out, 'err', t('dn.badJson', { err: e.message })); }
+
+  // Accept the full envelope, a bare array, or a single delivery.
+  const list = Array.isArray(data) ? data
+             : Array.isArray(data.deliveries) ? data.deliveries
+             : data.lines ? [data] : null;
+  if (!list || !list.length) return msg(out, 'err', t('dn.noDeliveries'));
+  for (const d of list)
+    if (!Array.isArray(d.lines)) return msg(out, 'err', t('dn.noLines'));
+
+  DN.parsed = list;
+  dnRender();
+  msg(out, 'ok', t('dn.parsed', {
+    n: list.length,
+    r: list.reduce((s, d) => s + d.lines.length, 0)
+  }));
+}
+
+function dnRender() {
+  const box = $('#dnList');
+  box.innerHTML = '';
+  if (!DN.parsed.length) return;
+  for (let i = 0; i < DN.parsed.length; i++) {
+    const d = DN.parsed[i];
+    const unsure = d.lines.filter(l => (l.uncertain || []).length).length;
+    const row = el('div', { className: 'row', style: 'align-items:center;gap:10px' });
+    row.append(el('div', { className: 'grow', textContent:
+      `${d.delivery_no || t('dn.noNumber')} · ${d.delivery_date || '—'} · ` +
+      `${d.supplier || '—'} · ` + t('dn.nLines', { n: d.lines.length }) +
+      (unsure ? ' · ' + t('dn.nUnsure', { n: unsure }) : '') }));
+    const b = el('button', { className: 'btn pri', textContent: t('dn.load') });
+    b.onclick = () => dnApply(i);
+    row.append(b);
+    box.append(row);
+  }
+}
+
+async function dnApply(i) {
+  const d = DN.parsed[i];
+  const out = $('#dnMsg');
+  if (IN.lines.length && !confirm(t('dn.replace', { n: IN.lines.length }))) return;
+
+  if (d.delivery_date) $('#inDate').value = d.delivery_date;
+  if (d.supplier) $('#inSupplier').value = d.supplier;
+  if (d.invoice_no) $('#inInvoice').value = d.invoice_no;
+
+  IN.lines = d.lines.map(l => {
+    const ln = inBlank();
+    ln.name_vi = (l.name_vi || '').trim();
+    ln.name_en = (l.name_en || '').trim();
+    ln.description = [l.description, l.brand && `Brand: ${l.brand}`,
+                      l.model && `Model: ${l.model}`, l.note]
+                     .filter(Boolean).join(' · ') || '';
+    ln.qty = dnNum(l.qty) ?? 1;
+    ln.unit_price = dnNum(l.unit_price) ?? '';
+    ln.origin_raw = (l.origin_raw || '').trim();
+    ln.serials = (l.serials || []).join('\n');
+    // Carried into needs_review at Confirm, so the doubt survives into the register.
+    ln._src = l.qty_source || null;
+    ln._unsure = l.uncertain || [];
+    ln._unitRaw = l.unit_raw || null;
+    return ln;
+  });
+  IN.checked = null; IN.sugRan = false;
+  inRender();
+  msg(out, 'ok', t('dn.applied', { n: IN.lines.length }));
+  await inSuggest();
+}
+
+/* Fill category / unit / depreciation from what the register already knows. */
+async function inSuggest() {
+  const names = IN.lines.map(l => l.name_vi).filter(Boolean);
+  if (!names.length) return;
+  let sug;
+  try { sug = await SB.rpc('am_suggest_lines', { p_names: names }); }
+  catch (e) {
+    IN.sugRan = false; inRender();
+    return msg('#dnMsg', 'warn', t('dn.sugFail', { err: e.message }));
+  }
+  IN.sugRan = true;
+
+  const by = new Map((sug || []).map(s => [s.name, s]));
+  let filled = 0, none = 0;
+  for (const ln of IN.lines) {
+    const s = by.get(ln.name_vi);
+    if (!s || !s.category_code) { ln._sug = null; none++; continue; }
+    if (!ln.category_code) { ln.category_code = s.category_code; filled++; }
+    if (!ln.unit_code && s.unit_code) ln.unit_code = s.unit_code;
+    ln._sug = { n: s.n, src: s.src };
+  }
+  inRender();
+  msg('#dnMsg', none ? 'warn' : 'ok', t('dn.suggested', { n: filled, none }));
+}
+
+function initDelivery() {
+  $('#btnDnPrompt').onclick = dnCopyPrompt;
+  $('#btnDnParse').onclick = dnParse;
+  $('#btnDnClear').onclick = () => {
+    $('#dnJson').value = ''; DN.parsed = []; dnRender(); msg('#dnMsg', '', '');
+  };
+  $('#btnInSuggest').onclick = inSuggest;
+}
+
 function initIntake() {
   $('#inDate').value = new Date().toISOString().slice(0, 10);
   $('#btnInAdd').onclick = () => { IN.lines.push(inBlank()); IN.checked = null; inRender(); };
-  $('#btnInClear').onclick = () => { IN.lines = []; IN.checked = null; inRender(); };
+  $('#btnInClear').onclick = () => { IN.lines = []; IN.checked = null; IN.sugRan = false; inRender(); };
   $('#btnInCheck').onclick = inCheck;
   $('#btnInConfirm').onclick = inConfirm;
   $('#btnInXlsx').onclick = inXlsx;
   $('#btnInAlr').onclick = inToAlr;
+  initDelivery();
   inRender();
 }
 

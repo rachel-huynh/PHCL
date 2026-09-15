@@ -144,6 +144,12 @@
   tr.dirty td:first-child{box-shadow:inset 3px 0 0 var(--amber)}
   tr.new td:first-child{box-shadow:inset 3px 0 0 var(--green)}
   .num{text-align:right;font-family:var(--mono)}
+  /* Evidence badge beside a suggested category: how many register rows back it. */
+  .sug{display:inline-block;margin-left:6px;padding:1px 5px;border-radius:9px;
+       font-family:var(--mono);font-size:10.5px;font-weight:700;cursor:help;
+       background:#e6f2ea;color:#1c6b3f}
+  .sug.weak{background:#fdf1dc;color:#8a5a12}
+  .sug.none{background:#fbe3e3;color:#95241f}
   .neg{color:var(--red);font-weight:600} .pos{color:var(--green)}
   code{font-family:var(--mono);font-size:12px}
 
@@ -463,6 +469,21 @@
     <p class="lead" data-i18n-html="in.lead_html"></p>
 
     <div class="card">
+      <h2 data-i18n="dn.h"></h2>
+      <p class="hint" data-i18n-html="dn.p_html"></p>
+      <div class="row" style="margin-bottom:10px">
+        <button class="btn" id="btnDnPrompt" data-i18n="dn.copyPrompt"></button>
+        <button class="btn pri" id="btnDnParse" data-i18n="dn.parse"></button>
+        <button class="btn" id="btnDnClear" data-i18n="dn.clear"></button>
+      </div>
+      <textarea id="dnJson" rows="6" spellcheck="false"
+                style="width:100%;font-family:var(--mono);font-size:12px"
+                data-i18n-ph="dn.ph"></textarea>
+      <div id="dnList" style="margin-top:10px"></div>
+      <div id="dnMsg"></div>
+    </div>
+
+    <div class="card">
       <h2 data-i18n="in.h.batch"></h2>
       <div class="row">
         <div class="fld" style="max-width:120px"><label data-i18n="in.company"></label>
@@ -484,6 +505,7 @@
       <h2 data-i18n="in.h.lines"></h2>
       <div class="row" style="margin-bottom:10px">
         <button class="btn pri" id="btnInAdd" data-i18n="in.addLine"></button>
+        <button class="btn" id="btnInSuggest" data-i18n="in.suggest"></button>
         <button class="btn" id="btnInClear" data-i18n="in.clear"></button>
       </div>
       <div class="wrap" style="max-height:44vh">
