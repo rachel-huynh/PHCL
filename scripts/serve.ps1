@@ -1,4 +1,5 @@
-param([int]$Port = 8323, [string]$Root = "$PSScriptRoot\..")
+param([int]$Port = 8323, [string]$Root = "$PSScriptRoot\..",
+      [string]$Default = 'assetmanagement.html')
 
 $Root = (Resolve-Path $Root).Path
 $listener = New-Object System.Net.HttpListener
@@ -19,7 +20,8 @@ try {
     $path = '/'
     try {
       $path = [uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath)
-      if ($path -eq '/') { $path = '/index.html' }
+      # Repo cố ý KHÔNG có index.html — trang chính là assetmanagement.html.
+      if ($path -eq '/') { $path = '/' + $Default }
       $file = Join-Path $Root ($path.TrimStart('/') -replace '/', '\')
       $full = [System.IO.Path]::GetFullPath($file)
 

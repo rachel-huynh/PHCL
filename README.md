@@ -37,8 +37,19 @@ Không cần cài gì — server tĩnh viết bằng PowerShell:
 .\scripts\serve.ps1 -Port 8325
 ```
 
-Rồi mở <http://localhost:8325>. Trên GitHub Pages thì chỉ cần trỏ Pages vào
-nhánh `main`, thư mục gốc.
+Rồi mở <http://localhost:8325>.
+
+Trang chính là **`assetmanagement.html`** — repo cố ý **không có `index.html`**.
+Server tĩnh tự phục vụ file này khi gọi `/`; trên GitHub Pages thì phải mở đúng
+đường dẫn đầy đủ:
+
+```
+https://<tài-khoản>.github.io/asset-intake/assetmanagement.html
+```
+
+Trỏ Pages vào nhánh `main`, thư mục gốc. Vì không có `index.html`, mở URL trống
+(`.../asset-intake/`) sẽ ra trang 404 của GitHub — đó là điều bình thường, cứ
+dùng link đầy đủ ở trên.
 
 ## Cài đặt
 
