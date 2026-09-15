@@ -395,6 +395,70 @@
     <div id="printRoot"></div>
   </section>
 
+  <section id="v-backup">
+    <p class="lead" data-i18n-html="bk.lead_html"></p>
+    <div id="bkCounts"></div>
+
+    <div class="grid2">
+      <div class="card">
+        <h2 data-i18n="bk.h.pull"></h2>
+        <p data-i18n="bk.p.pull"></p>
+        <div class="row">
+          <button class="btn pri" id="btnBkPull" data-i18n="bk.pull"></button>
+          <button class="btn" id="btnBkXlsx" data-i18n="bk.xlsx"></button>
+        </div>
+        <div id="bkPullMsg"></div>
+      </div>
+
+      <div class="card">
+        <h2 data-i18n="bk.h.push"></h2>
+        <p data-i18n-html="bk.p.push_html"></p>
+        <div class="msg warn" data-i18n-html="bk.pushWarnBox_html"></div>
+        <div class="fld grow" style="margin-bottom:11px">
+          <label data-i18n="bk.pickFile"></label>
+          <input type="file" id="bkFile" accept=".json">
+        </div>
+        <div class="row">
+          <button class="btn pri" id="btnBkPush" data-i18n="bk.push"></button>
+        </div>
+        <div id="bkPushMsg"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="bk.h.reseed"></h2>
+      <p data-i18n="bk.p.reseed"></p>
+      <button class="btn" id="btnBkReseed" data-i18n="bk.reseed"></button>
+      <div id="bkReseedMsg"></div>
+    </div>
+  </section>
+
+  <section id="v-sources">
+    <p class="lead" data-i18n-html="src.lead_html"></p>
+    <div id="srcCurrent"></div>
+
+    <div class="card">
+      <h2 data-i18n="src.h.upload"></h2>
+      <p data-i18n-html="src.p.upload_html"></p>
+      <div class="row">
+        <div class="fld grow"><label data-i18n="src.pick"></label>
+          <input type="file" id="srcFiles" multiple accept=".xlsx,.xlsm"></div>
+        <div class="fld" style="max-width:220px"><label data-i18n="src.who"></label>
+          <input id="srcWho" value="Rachel Huynh"></div>
+      </div>
+      <div class="row" style="margin-top:11px">
+        <button class="btn" id="btnSrcRead" data-i18n="src.analyse"></button>
+        <button class="btn pri" id="btnSrcImport" disabled data-i18n="src.import"></button>
+      </div>
+      <div id="srcMsg"></div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="src.h.history"></h2>
+      <div id="srcHistory"></div>
+    </div>
+  </section>
+
   </main>
 </div>
 </div>

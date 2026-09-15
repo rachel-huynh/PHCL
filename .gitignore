@@ -2,3 +2,6 @@
 Thumbs.db
 *.local
 config.local.json
+
+# Ban clone long nhau do tai qua GitHub web - khong phai mot phan cua repo
+/PHCL/

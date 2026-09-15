@@ -937,8 +937,9 @@ const NAV = [
     ['tbl:am_origin', null], ['tbl:am_origin_alias', null], ['tbl:am_origin_rejected', null]
   ]],
   ['nav.counters', [['counter', 'nav.counter'], ['rules', 'nav.rules']]],
-  ['nav.docs',     [['alr', 'nav.alr']]],
-  ['nav.system',   [['tbl:am_setting', null], ['setup', 'nav.setup']]]
+  ['nav.docs',      [['alr', 'nav.alr']]],
+  ['nav.backupGrp', [['backup', 'nav.backup']]],
+  ['nav.system',    [['sources', 'nav.sources'], ['tbl:am_setting', null], ['setup', 'nav.setup']]]
 ];
 
 let VIEW = 'setup';
@@ -983,6 +984,10 @@ function buildTools(view) {
     const b = el('button', { className: 'btn', textContent: t('tool.audit') });
     b.onclick = runAudit;
     box.append(a, b);
+  } else if (view === 'backup') {
+    const c = el('button', { className: 'btn', textContent: t('bk.count') });
+    c.onclick = bkCount;
+    box.append(c);
   }
 }
 
@@ -1015,6 +1020,8 @@ function showView(view) {
     if (view === 'counter' && SB.ready()) loadCounters();
     if (view === 'rules' && SB.ready()) fillPickers();
     if (view === 'alr' && SB.ready()) fillAlrPickers();
+    if (view === 'backup' && SB.ready()) bkCount();
+    if (view === 'sources' && SB.ready()) srcLoad();
   }
 }
 
@@ -1125,8 +1132,500 @@ function init() {
   $('#btnPreview').onclick = doPreview;
 
   initAlr();
+  initBackup();
+  initSources();
   loadCfg();
   showView('setup');
   testConn(true).then(ok => { if (ok) { showView('tbl:am_org'); fillPickers(); } });
 }
 document.addEventListener('DOMContentLoaded', init);
+
+/* =============================================================== BACKUP
+   Pull  = read every table into one JSON file on this computer.
+   Push  = load the MASTER DATA back from such a file.
+
+   Push deliberately stops at master data. Assets, deliveries and label
+   receipts use bigserial keys, so restoring them would also have to fix the
+   sequences and reconcile the counters -- getting that wrong issues duplicate
+   asset codes, which is exactly the failure this whole app exists to prevent. */
+
+// Read order does not matter; WRITE order does, because of the foreign keys.
+const BK_ALL = [
+  'am_setting', 'am_org', 'am_org_alias', 'am_category_group', 'am_category',
+  'am_unit', 'am_origin', 'am_origin_alias', 'am_origin_rejected',
+  'am_location', 'am_product',
+  'am_shipment', 'am_shipment_line', 'am_asset', 'am_alr', 'am_alr_line',
+  'am_asset_seq', 'am_barcode_seq', 'am_counter_log'
+];
+
+// Parents before children. am_org and am_location also need an inner sort,
+// because a row may reference another row of the same table.
+const BK_PUSH = [
+  'am_setting', 'am_org', 'am_org_alias', 'am_category_group', 'am_category',
+  'am_unit', 'am_origin', 'am_origin_alias', 'am_origin_rejected',
+  'am_location', 'am_product'
+];
+const BK_SELF_REF = { am_org: 'parent_code', am_location: 'parent_code' };
+const BK_PK = {
+  am_setting: 'key', am_org: 'code', am_org_alias: 'alias',
+  am_category_group: 'code', am_category: 'code', am_unit: 'code',
+  am_origin: 'iso2', am_origin_alias: 'alias_norm', am_origin_rejected: 'raw_norm',
+  am_location: 'code', am_product: 'raw_name_norm'
+};
+
+const BK_PAGE = 1000;   // PostgREST caps a plain select at 1000 rows
+const BK_CHUNK = 400;   // rows per upsert request
+
+async function bkSelectAll(table) {
+  const rows = [];
+  for (let off = 0; ; off += BK_PAGE) {
+    const page = await SB.select(table, `select=*&limit=${BK_PAGE}&offset=${off}`);
+    rows.push(...page);
+    if (page.length < BK_PAGE) break;
+  }
+  return rows;
+}
+
+function bkDownload(text, filename, mime = 'application/json') {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const a = el('a', { href: url, download: filename });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+const bkStamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, '');
+
+async function bkCount() {
+  const out = $('#bkCounts');
+  msg(out, 'info', t('bk.counting'));
+  try {
+    const tb = el('table');
+    tb.append(el('tr', {}, [t('setup.col.table'), t('setup.col.rows')]
+      .map(h => el('th', { textContent: h }))));
+    let total = 0;
+    for (const table of BK_ALL) {
+      let txt, cls = 'num';
+      try { const n = await SB.count(table); total += n; txt = fmtInt(n); }
+      catch { txt = t('setup.missing'); cls = 'num neg'; }
+      tb.append(el('tr', {}, [el('td', {}, el('code', { textContent: table })),
+                              el('td', { className: cls, textContent: txt })]));
+    }
+    out.innerHTML = '';
+    const kpis = el('div', { className: 'kpis' });
+    kpis.append(el('div', { className: 'kpi n' }, [
+      el('label', { textContent: t('bk.h.counts') }),
+      el('b', { textContent: fmtInt(total) }),
+      el('small', { textContent: `${BK_ALL.length} tables` })
+    ]));
+    out.append(kpis);
+    const d = el('details');
+    d.append(el('summary', { textContent: t('bk.h.counts') }));
+    d.append(el('div', { className: 'wrap' }, tb));
+    out.append(d);
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+async function bkPull() {
+  const out = $('#bkPullMsg');
+  const snap = { meta: { app: 'PHCL Asset Intake', at: new Date().toISOString(),
+                         host: CFG.url, lang: LANG }, tables: {} };
+  let rows = 0, table = '';
+  try {
+    for (table of BK_ALL) {
+      msg(out, 'info', t('bk.pulling', { table }));
+      snap.tables[table] = await bkSelectAll(table);
+      rows += snap.tables[table].length;
+    }
+  } catch (e) { return msg(out, 'err', t('bk.err', { table, err: e.message })); }
+  const file = `phcl-asset-snapshot-${bkStamp()}.json`;
+  bkDownload(JSON.stringify(snap, null, 1), file);
+  msg(out, 'ok', t('bk.pulled', { file, n: BK_ALL.length, rows: fmtInt(rows) }));
+}
+
+async function bkXlsx() {
+  const out = $('#bkPullMsg');
+  let table = '';
+  try {
+    const wb = XLSX.utils.book_new();
+    for (table of BK_PUSH) {
+      const data = await bkSelectAll(table);
+      // Sheet names are capped at 31 characters by the format itself.
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data),
+                                   table.replace(/^am_/, '').slice(0, 31));
+    }
+    XLSX.writeFile(wb, `phcl-master-data-${bkStamp()}.xlsx`);
+    msg(out, 'ok', t('bk.pulled', { file: `phcl-master-data-${bkStamp()}.xlsx`,
+                                    n: BK_PUSH.length, rows: '-' }));
+  } catch (e) { msg(out, 'err', t('bk.err', { table, err: e.message })); }
+}
+
+/* Order self-referencing rows so a parent is always written before its child. */
+function bkSortByDepth(rows, pkField, parentField) {
+  const have = new Set(rows.map(r => r[pkField]));
+  const done = new Set();
+  const outRows = [];
+  let guard = 0;
+  while (outRows.length < rows.length && guard++ < 50) {
+    for (const r of rows) {
+      if (done.has(r[pkField])) continue;
+      const p = r[parentField];
+      // A parent outside this snapshot is already on the server, so it is fine.
+      if (!p || !have.has(p) || done.has(p)) { outRows.push(r); done.add(r[pkField]); }
+    }
+  }
+  for (const r of rows) if (!done.has(r[pkField])) outRows.push(r);
+  return outRows;
+}
+
+async function bkReadFile() {
+  const f = $('#bkFile').files?.[0];
+  if (!f) { return null; }
+  return JSON.parse(await f.text());
+}
+
+async function bkPush() {
+  const out = $('#bkPushMsg');
+  let snap;
+  try {
+    snap = await bkReadFile();
+    if (!snap) return msg(out, 'err', t('bk.noFile'));
+    if (!snap.tables) throw new Error('missing "tables"');
+  } catch (e) { return msg(out, 'err', t('bk.badFile', { err: e.message })); }
+
+  const host = CFG.url ? new URL(CFG.url).hostname : '?';
+  if (!confirm(t('bk.pushConfirm', { host, at: (snap.meta?.at || '?').slice(0, 19) }))) return;
+
+  let tables = 0, rows = 0, table = '';
+  try {
+    for (table of BK_PUSH) {
+      let data = snap.tables[table];
+      if (!Array.isArray(data) || !data.length) continue;
+      if (BK_SELF_REF[table]) data = bkSortByDepth(data, BK_PK[table], BK_SELF_REF[table]);
+      for (let i = 0; i < data.length; i += BK_CHUNK) {
+        msg(out, 'info', t('bk.pushing', { table, done: i, total: data.length }));
+        await SB.call(table, {
+          method: 'POST',
+          headers: SB.hdr({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+          body: JSON.stringify(data.slice(i, i + BK_CHUNK))
+        });
+      }
+      tables++; rows += data.length;
+    }
+  } catch (e) { return msg(out, 'err', t('bk.err', { table, err: e.message })); }
+
+  Object.keys(LOOK).forEach(k => delete LOOK[k]);
+  const skipped = BK_ALL.filter(x => !BK_PUSH.includes(x) && snap.tables[x]?.length);
+  out.innerHTML = '';
+  out.append(el('div', { className: 'msg ok',
+    textContent: t('bk.pushed', { n: tables, rows: fmtInt(rows) }) }));
+  if (skipped.length)
+    out.append(el('div', { className: 'msg warn',
+      textContent: t('bk.pushSkip', { list: skipped.join(', ') }) }));
+}
+
+async function bkReseed() {
+  const out = $('#bkReseedMsg');
+  let snap;
+  try {
+    snap = await bkReadFile();
+    if (!snap) return msg(out, 'err', t('bk.noFile'));
+  } catch (e) { return msg(out, 'err', t('bk.badFile', { err: e.message })); }
+
+  // Reuse the scanner from the counter screen: keep only the highest number
+  // per key, so the request stays small however big the snapshot is.
+  const acc = { asset: new Map(), bar: new Map(), nAsset: 0, nBar: 0, files: [] };
+  for (const a of (snap.tables?.am_asset || []))
+    scanText(`${a.asset_code || ''} ${a.barcode || ''}`.toUpperCase(), acc);
+
+  const codes = [...[...acc.asset.values()].map(v => v.code),
+                 ...[...acc.bar.values()].map(v => v.code)];
+  if (!codes.length) return msg(out, 'warn', t('bk.reseedNone'));
+  try {
+    const res = await SB.rpc('am_seed_from_codes', { p_codes: codes });
+    msg(out, 'ok', t('bk.reseedDone', { n: (res || []).length, c: codes.length }));
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+function initBackup() {
+  $('#btnBkPull').onclick = bkPull;
+  $('#btnBkXlsx').onclick = bkXlsx;
+  $('#btnBkPush').onclick = bkPush;
+  $('#btnBkReseed').onclick = bkReseed;
+}
+
+/* ========================================================== DATA SOURCES
+   Shows which master data is live, where it came from and when it landed,
+   and imports the Beetrack template workbooks straight into Supabase.
+
+   The row-shaping rules below mirror scripts/genseed.ps1. Change one and you
+   must change the other, or the in-app import and the generated SQL seed will
+   disagree about the same workbook. */
+
+const SRC_TABLES = ['am_org', 'am_category_group', 'am_category', 'am_unit',
+                    'am_origin', 'am_location', 'am_product'];
+
+// Workbooks are recognised by sheet name, so file names and order do not matter.
+const SRC_SHEET = {
+  'Categories':      'cat',
+  'DepartmentList':  'dept',
+  'Group&Trackable': 'loc',
+  'ProductCatalogue':'prod'
+};
+
+const srcTxt = v => (v == null ? '' : String(v).trim());
+
+/* Read one workbook into { kind, tables: { am_x: [rows] } }. */
+function srcParse(wb, fileName) {
+  const grid = name => XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 'A', defval: '' });
+  let kind = null;
+  for (const s of wb.SheetNames) if (SRC_SHEET[s]) { kind = SRC_SHEET[s]; break; }
+
+  if (!kind) {
+    // unit and origin workbooks have generic sheet names; detect by header.
+    const first = grid(wb.SheetNames[0]);
+    const h = first[0] || {};
+    const cells = Object.values(h).map(v => srcTxt(v).toLowerCase());
+    if (cells.some(c => c.includes('mã đơn vị'))) kind = 'unit';
+    else if (cells.some(c => c.includes('mã xuất xứ'))) kind = 'origin';
+  }
+  if (!kind) return null;
+
+  const out = { kind, file: fileName, tables: {} };
+
+  if (kind === 'dept') {
+    const rows = grid('DepartmentList').slice(1).filter(r => srcTxt(r.B));
+    const byCode = {}; rows.forEach(r => byCode[srcTxt(r.B)] = r);
+    const depth = c => { let n = 0, x = c; while (x && byCode[x] && srcTxt(byCode[x].C)) { x = srcTxt(byCode[x].C); n++; if (n > 6) break; } return n; };
+    const lvl = ['TCT', 'BRANCH', 'DEPT1', 'DEPT2', 'DEPT2'];
+    const companies = ['PHCL', 'JVC', 'CP', 'CEN', 'SOF'];
+    out.tables.am_org = rows.map(r => ({
+      code: srcTxt(r.B), name_vi: srcTxt(r.F) || srcTxt(r.D), name_en: srcTxt(r.D),
+      level: lvl[depth(srcTxt(r.B))] || 'DEPT2',
+      is_company: companies.includes(srcTxt(r.B)), is_department: true,
+      parent_code: srcTxt(r.C) || null
+    }));
+  }
+
+  if (kind === 'cat') {
+    const rows = grid('Categories').slice(1).filter(r => srcTxt(r.B));
+    const groups = [], types = [], seen = {};
+    for (const r of rows) {
+      if (srcTxt(r.G) === '2') { if (!seen[srcTxt(r.B)]) { seen[srcTxt(r.B)] = 1; groups.push(r); } }
+      else types.push(r);
+    }
+    let i = 0;
+    out.tables.am_category_group = groups.map(r => ({
+      code: srcTxt(r.B), name_vi: srcTxt(r.D), name_en: srcTxt(r.E),
+      is_intangible: /^C213/.test(srcTxt(r.B)), is_tools: /^C242/.test(srcTxt(r.B)),
+      sort_order: (i += 10)
+    }));
+    out.tables.am_category = types.map(r => {
+      const code = srcTxt(r.B), letters = code.replace('-QR', '');
+      const quantity = /^(STG|LTG)/.test(code);
+      return {
+        code, group_code: srcTxt(r.C), name_vi: srcTxt(r.D), name_en: srcTxt(r.E),
+        label_letters: letters, manage_by: quantity ? 'quantity' : 'code',
+        note: code.endsWith('-QR') ? 'One shared QR label for the whole batch ("Cung QR").'
+              : quantity ? 'A separate QR label per unit ("Khac QR").' : null
+      };
+    });
+  }
+
+  if (kind === 'unit') {
+    const rows = grid(wb.SheetNames[0]).slice(1).filter(r => srcTxt(r.B));
+    let i = 0;
+    out.tables.am_unit = rows.map(r => ({
+      code: srcTxt(r.B), name_en: srcTxt(r.A), sort_order: (i += 10)
+    }));
+  }
+
+  if (kind === 'origin') {
+    const rows = grid(wb.SheetNames[0]).slice(1).filter(r => /^[A-Z]{2}$/.test(srcTxt(r.A)));
+    out.tables.am_origin = rows.map(r => ({ iso2: srcTxt(r.A), name_en: srcTxt(r.B) }));
+  }
+
+  if (kind === 'loc') {
+    const list = [];
+    for (const r of grid('Group&Trackable').slice(1)) {
+      if (!srcTxt(r.C)) continue;
+      list.push({ code: srcTxt(r.C), parent_code: srcTxt(r.D) || null, name: srcTxt(r.E),
+                  kind: srcTxt(r.B) === '1' ? 'building' : 'floor' });
+    }
+    if (wb.Sheets['Internal']) {
+      for (const r of grid('Internal').slice(1)) {
+        if (!srcTxt(r.C)) continue;
+        // NB: the Internal sheet puts the parent in B and the code in C.
+        list.push({ code: srcTxt(r.C), parent_code: srcTxt(r.B) || null, name: srcTxt(r.D),
+                    kind: 'room' });
+      }
+    }
+    out.tables.am_location = list;
+  }
+
+  if (kind === 'prod') {
+    const rows = grid('ProductCatalogue').slice(1).filter(r => srcTxt(r.D));
+    const seen = {};
+    out.tables.am_product = rows.filter(r => {
+      const k = srcTxt(r.D).toLowerCase();
+      if (seen[k]) return false; seen[k] = 1; return true;
+    }).map(r => {
+      const full = srcTxt(r.D), i = full.indexOf('/');
+      return {
+        raw_name: full,
+        raw_name_norm: srcNorm(full),
+        std_name_vi: i > 0 ? full.slice(0, i).trim() : full,
+        std_name_en: i > 0 ? full.slice(i + 1).trim() : null,
+        default_category: srcTxt(r.C) || null,
+        default_unit: srcTxt(r.H) || null,
+        default_brand: srcTxt(r.F) || null
+      };
+    });
+  }
+  return out;
+}
+
+/* Must produce exactly what am_norm() produces in Postgres, because that is
+   the key am_product is looked up by. Same character table as 03_functions.sql. */
+const SRC_FROM = 'áàảãạăắằẳẵặâấầẩẫậđéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵ'
+               + 'àáâãäåçèéêëìíîïñòóôõöùúûüýÿ';
+const SRC_TO   = 'aaaaaaaaaaaaaaaaadeeeeeeeeeeeiiiiiooooooooooooooooouuuuuuuuuuuyyyyy'
+               + 'aaaaaaceeeeiiiinooooouuuuyy';
+function srcNorm(s) {
+  let r = '';
+  for (const ch of String(s).toLowerCase()) {
+    const i = SRC_FROM.indexOf(ch);
+    r += i >= 0 ? SRC_TO[i] : ch;
+  }
+  return r.trim().replace(/\s+/g, ' ');
+}
+
+let SRC_PENDING = null;
+
+async function srcRead() {
+  const out = $('#srcMsg');
+  const files = [...($('#srcFiles').files || [])];
+  if (!files.length) return msg(out, 'err', t('bk.noFile'));
+  const found = [], skipped = [];
+  msg(out, 'info', t('src.loading'));
+  for (const f of files) {
+    try {
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+      const parsed = srcParse(wb, f.name);
+      if (parsed) found.push(parsed); else skipped.push(f.name);
+    } catch (e) { skipped.push(`${f.name} (${e.message})`); }
+  }
+  out.innerHTML = '';
+  if (!found.length) { $('#btnSrcImport').disabled = true; return msg(out, 'warn', t('src.nothing')); }
+
+  SRC_PENDING = found;
+  out.append(el('div', { className: 'msg info', textContent: t('src.recognised', { n: found.length }) }));
+  const tb = el('table');
+  tb.append(el('tr', {}, [t('src.col.file'), t('src.col.table'), t('src.col.rows')]
+    .map(h => el('th', { textContent: h }))));
+  for (const p of found)
+    for (const [tbl, rows] of Object.entries(p.tables))
+      tb.append(el('tr', {}, [
+        el('td', { textContent: p.file }),
+        el('td', {}, el('code', { textContent: tbl })),
+        el('td', { className: 'num', textContent: fmtInt(rows.length) })
+      ]));
+  out.append(el('div', { className: 'wrap' }, tb));
+  for (const s of skipped)
+    out.append(el('div', { className: 'msg warn', textContent: t('src.unknown', { file: s }) }));
+  $('#btnSrcImport').disabled = false;
+}
+
+// Parents before children, and category groups before the types that use them.
+const SRC_ORDER = ['am_org', 'am_category_group', 'am_category', 'am_unit',
+                   'am_origin', 'am_location', 'am_product'];
+
+async function srcImport() {
+  if (!SRC_PENDING) return;
+  const out = $('#srcMsg');
+  const merged = {}, fileOf = {};
+  for (const p of SRC_PENDING)
+    for (const [tbl, rows] of Object.entries(p.tables)) { merged[tbl] = rows; fileOf[tbl] = p.file; }
+
+  let nT = 0, nR = 0, table = '';
+  try {
+    for (table of SRC_ORDER) {
+      let rows = merged[table];
+      if (!rows?.length) continue;
+      if (table === 'am_org' || table === 'am_location')
+        rows = bkSortByDepth(rows, table === 'am_org' ? 'code' : 'code', 'parent_code');
+      for (let i = 0; i < rows.length; i += BK_CHUNK) {
+        msg(out, 'info', t('src.importing', { table, done: i, total: rows.length }));
+        await SB.call(table, {
+          method: 'POST',
+          headers: SB.hdr({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+          body: JSON.stringify(rows.slice(i, i + BK_CHUNK))
+        });
+      }
+      await SB.insert('am_data_source', [{
+        table_name: table, source_file: fileOf[table], source_kind: 'beetrack-template',
+        rows_loaded: rows.length, loaded_by: $('#srcWho').value.trim() || null
+      }]);
+      nT++; nR += rows.length;
+    }
+  } catch (e) { return msg(out, 'err', t('src.importFail', { table, err: e.message })); }
+
+  Object.keys(LOOK).forEach(k => delete LOOK[k]);
+  msg(out, 'ok', t('src.imported', { n: nT, rows: fmtInt(nR) }));
+  $('#btnSrcImport').disabled = true;
+  SRC_PENDING = null;
+  srcLoad();
+}
+
+async function srcLoad() {
+  const cur = $('#srcCurrent'), hist = $('#srcHistory');
+  msg(cur, 'info', t('src.loading'));
+  try {
+    const [latest, log] = await Promise.all([
+      SB.select('am_data_source_current', 'select=*'),
+      SB.select('am_data_source', 'select=*&order=loaded_at.desc&limit=40')
+    ]);
+    const byTable = new Map(latest.map(r => [r.table_name, r]));
+
+    const tb = el('table');
+    tb.append(el('tr', {}, ['src.col.table', 'src.col.rows', 'src.col.file',
+      'src.col.when', 'src.col.kind', 'src.col.by'].map(k => el('th', { textContent: t(k) }))));
+    for (const table of SRC_TABLES) {
+      let n = '—';
+      try { n = fmtInt(await SB.count(table)); } catch {}
+      const r = byTable.get(table);
+      tb.append(el('tr', {}, [
+        el('td', {}, el('code', { textContent: table })),
+        el('td', { className: 'num', textContent: n }),
+        el('td', { textContent: r?.source_file || t('src.never') }),
+        el('td', { textContent: (r?.loaded_at || '').slice(0, 19).replace('T', ' ') }),
+        el('td', { textContent: r ? t('src.kind.' + r.source_kind) : '' }),
+        el('td', { textContent: r?.loaded_by || '' })
+      ]));
+    }
+    cur.innerHTML = '';
+    cur.append(el('div', { className: 'wrap' }, tb));
+
+    hist.innerHTML = '';
+    if (!log.length) { msg(hist, 'warn', t('src.noHistory')); return; }
+    const h = el('table');
+    h.append(el('tr', {}, ['src.col.when', 'src.col.table', 'src.col.file',
+      'src.col.rows', 'src.col.kind', 'src.col.by'].map(k => el('th', { textContent: t(k) }))));
+    for (const r of log)
+      h.append(el('tr', {}, [
+        el('td', { textContent: (r.loaded_at || '').slice(0, 19).replace('T', ' ') }),
+        el('td', {}, el('code', { textContent: r.table_name })),
+        el('td', { textContent: r.source_file || '' }),
+        el('td', { className: 'num', textContent: fmtInt(r.rows_loaded) }),
+        el('td', { textContent: t('src.kind.' + r.source_kind) }),
+        el('td', { textContent: r.loaded_by || '' })
+      ]));
+    hist.append(el('div', { className: 'wrap' }, h));
+  } catch (e) {
+    msg(cur, 'err', e.message + '\nsql/07_data_source.sql');
+  }
+}
+
+function initSources() {
+  $('#btnSrcRead').onclick = srcRead;
+  $('#btnSrcImport').onclick = srcImport;
+}

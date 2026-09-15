@@ -5,8 +5,12 @@
 # Chạy lại mỗi khi sửa file gốc.
 
 $SqlDir = (Resolve-Path $SqlDir).Path
-$order = @('01_schema.sql', '02_seed_master.sql', '02b_seed_origin.sql',
-           '02c_seed_location.sql', '03_functions.sql', '04_rls.sql', '05_alr.sql')
+# 06_seed_product.sql must come after 03_functions.sql: it calls am_norm().
+$order = @('01_schema.sql', '02_seed_settings.sql',
+           '02a_seed_org.sql', '02b_seed_category.sql', '02c_seed_unit.sql',
+           '02d_seed_origin.sql', '02e_seed_location.sql',
+           '03_functions.sql', '04_rls.sql', '05_alr.sql',
+           '06_seed_product.sql', '07_data_source.sql')
 
 $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine('-- =====================================================================')

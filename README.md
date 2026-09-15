@@ -19,10 +19,11 @@ từ bộ đếm bền vững, xuất Excel đăng ký tài sản và PDF tem nh
 |---|---|
 | 1. Schema master data + bộ đếm | ✅ đã chạy trên Supabase; hàm sinh mã cho kết quả đúng |
 | 2. Nạp bộ đếm từ register hiện có | ✅ màn hình quét + nạp đã chạy, chờ file export đầy đủ |
-| 3. Màn hình quản lý master data | ✅ lưới sửa trực tiếp cho 11 bảng |
+| 3. Màn hình quản lý master data | ✅ lưới sửa trực tiếp 11 bảng; master data nạp từ template Beetrack |
 | 4. Upload PDF + trích xuất bằng Claude vision | ⏳ |
 | 5. Xuất Excel (2 sheet Unique / Low-value) | ⏳ |
 | 6. PDF tem nhãn Code128 + biên bản ALR | ✅ biên bản 8 cột + trang tem, in được |
+| 7. Sao lưu & đồng bộ | ✅ pull/push bản chụp JSON, xuất Excel, nạp lại bộ đếm |
 
 Máy đang dùng không có Python / Node / Docker / psql, nên SQL không chạy thử
 được tại chỗ — phải chạy thẳng trên Supabase SQL Editor (xem mục **Cài đặt**).
@@ -91,20 +92,38 @@ Chạy lại bao nhiêu lần cũng được — mọi lệnh đều `if not exi
 Muốn chạy từng bước (dễ tìm lỗi hơn) thì chạy lần lượt:
 
 ```
-sql/01_schema.sql         -- bảng
-sql/02_seed_master.sql    -- org, nhóm, mã loại, đơn vị tính, khởi tạo bộ đếm
-sql/02b_seed_origin.sql   -- ISO 3166-1 alpha-2 đầy đủ + bí danh
-sql/02c_seed_location.sql -- 82 vị trí hệ mã dài + cây tầng/phòng (sinh tự động)
-sql/03_functions.sql      -- chuẩn hóa, cấp phát bộ đếm, quy tắc phân loại
-sql/04_rls.sql            -- RLS & quyền
-sql/05_alr.sql            -- biên bản tem nhãn: cột bổ sung, số hiệu, view in
+sql/01_schema.sql          -- bảng
+sql/02_seed_settings.sql   -- ngưỡng giá, khởi tạo bộ đếm          [viết tay]
+sql/02a_seed_org.sql       -- 15 đơn vị/phòng ban + bí danh         [sinh ra]
+sql/02b_seed_category.sql  -- 15 nhóm cha + 28 mã loại              [sinh ra]
+sql/02c_seed_unit.sql      -- 16 đơn vị tính                        [sinh ra]
+sql/02d_seed_origin.sql    -- 240 quốc gia + bí danh + loại trừ     [sinh ra]
+sql/02e_seed_location.sql  -- 675 vị trí, cả 2 toà nhà              [sinh ra]
+sql/03_functions.sql       -- chuẩn hoá, cấp phát bộ đếm, quy tắc
+sql/04_rls.sql             -- RLS & quyền
+sql/05_alr.sql             -- biên bản tem nhãn
+sql/06_seed_product.sql    -- 420 sản phẩm chuẩn hoá                [sinh ra]
 ```
 
-Sửa file gốc thì phải dựng lại bản gộp:
+⚠️ `06_seed_product.sql` đánh số 06 **có chủ đích**: nó gọi `am_norm()`, mà hàm
+đó chỉ tồn tại sau khi `03_functions.sql` chạy. Đừng đổi sang `02f`.
+
+## Master data sinh từ template Beetrack
+
+Sáu file `02a`–`02e` và `06` **không viết tay** — chúng được sinh từ bộ template
+gốc của công ty (`Template Beetrack_PHCL`, thư mục `Khánh\Asset Management
+System\...\Sinnova - Amis - Beetrack\`):
 
 ```powershell
+.\scripts\genseed.ps1 -Src "<thư-mục-Template Beetrack_PHCL>"
 .\scripts\build-sql.ps1
 ```
+
+Sửa template rồi chạy lại hai lệnh trên; **đừng sửa file SQL bằng tay**.
+
+> Nếu template đang mở trong Excel, `genseed.ps1` sẽ báo *"used by another
+> process"* và bỏ qua đúng file đó. Đóng Excel, hoặc copy template sang thư mục
+> khác rồi trỏ `-Src` vào đó.
 
 Rồi chạy `sql/00_verify.sql` — **một câu truy vấn duy nhất** trả về ~35 dòng
 kiểm tra, cột cuối là `✔` hoặc `✘ HỎNG`.
@@ -121,13 +140,6 @@ kiểm tra, cột cuối là `✔` hoặc `✘ HỎNG`.
 > Chạy `ALL_IN_ONE.sql` xong thì Results **trống** — bình thường, vì `CREATE
 > TABLE` không trả về dòng nào. Nếu panel Results báo *“Failed to get project's
 > logs”* thì đó cũng là lỗi giao diện dashboard, **không phải lỗi SQL**.
-
-`02c_seed_location.sql` do `scripts/genloc.ps1` sinh ra từ các biên bản kiểm
-kê — sửa script rồi chạy lại, đừng sửa file SQL bằng tay:
-
-```powershell
-.\scripts\genloc.ps1 -s <thư-mục-chứa-file-kiểm-kê> -out .\sql\02c_seed_location.sql
-```
 
 Sau đó nạp bộ đếm từ sổ tài sản cũ (xem mục dưới).
 

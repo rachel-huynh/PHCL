@@ -55,31 +55,58 @@ with chk(ord, nhom, muc, thuc_te, mong_doi, dat) as (
 
   -- ---------------- 2. Master data ----------------
   union all select 11, 'Master data', 'am_org (đơn vị/phòng ban)',
-         (select count(*) from am_org)::text, '14', (select count(*) from am_org) = 14
+         (select count(*) from am_org)::text, '15', (select count(*) from am_org) = 15
   union all select 12, 'Master data', 'am_org_alias',
          (select count(*) from am_org_alias)::text, '5', (select count(*) from am_org_alias) = 5
   union all select 13, 'Master data', 'am_category_group (mã cha)',
          (select count(*) from am_category_group)::text, '15',
          (select count(*) from am_category_group) = 15
   union all select 14, 'Master data', 'am_category (mã loại)',
-         (select count(*) from am_category)::text, '27', (select count(*) from am_category) = 27
+         (select count(*) from am_category)::text, '28', (select count(*) from am_category) = 28
   union all select 15, 'Master data', 'am_unit',
-         (select count(*) from am_unit)::text, '15', (select count(*) from am_unit) = 15
+         (select count(*) from am_unit)::text, '16', (select count(*) from am_unit) = 16
   union all select 16, 'Master data', 'am_origin (ISO 3166-1)',
-         (select count(*) from am_origin)::text, '>= 240', (select count(*) from am_origin) >= 240
+         (select count(*) from am_origin)::text, '240', (select count(*) from am_origin) = 240
   union all select 17, 'Master data', 'am_origin_alias',
          (select count(*) from am_origin_alias)::text, '>= 50',
          (select count(*) from am_origin_alias) >= 50
-  union all select 18, 'Master data', 'am_location (vị trí)',
-         (select count(*) from am_location)::text, '82', (select count(*) from am_location) = 82
+  union all select 18, 'Master data', 'am_location (cả 2 toà nhà)',
+         (select count(*) from am_location)::text, '675', (select count(*) from am_location) = 675
   union all select 19, 'Master data', 'am_location có office mặc định',
          (select count(*) from am_location where is_dept_office)::text, '9',
          (select count(*) from am_location where is_dept_office) = 9
-  union all select 20, 'Master data', 'am_setting (ngưỡng giá)',
+  union all select 20, 'Master data', 'am_product (catalogue)',
+         (select count(*) from am_product)::text, '420', (select count(*) from am_product) = 420
+  union all select 21, 'Master data', 'am_setting (ngưỡng giá)',
          (select count(*) from am_setting)::text, '4', (select count(*) from am_setting) = 4
-  union all select 21, 'Master data', 'am_barcode_seq (2 dải)',
+  union all select 22, 'Master data', 'am_barcode_seq (2 dải)',
          (select count(*) from am_barcode_seq)::text, '2',
          (select count(*) from am_barcode_seq) = 2
+  union all select 23, 'Master data', 'OME thuộc C2112',
+         coalesce((select group_code from am_category where code = 'OME'), '(thiếu)'), 'C2112',
+         (select group_code from am_category where code = 'OME') = 'C2112'
+  union all select 24, 'Master data', 'OEM thuộc C2114 (mã riêng, KHÔNG phải OME)',
+         coalesce((select group_code from am_category where code = 'OEM'), '(thiếu)'), 'C2114',
+         (select group_code from am_category where code = 'OEM') = 'C2114'
+  union all select 25, 'Master data', 'Cây vị trí: toà nhà CP và SOF',
+         (select count(*) from am_location where kind = 'building')::text, '2',
+         (select count(*) from am_location where kind = 'building') = 2
+  union all select 26, 'Master data', 'Vị trí mồ côi (cha không tồn tại)',
+         (select count(*) from am_location l
+           where l.parent_code is not null
+             and not exists (select 1 from am_location p where p.code = l.parent_code))::text,
+         '0',
+         (select count(*) from am_location l
+           where l.parent_code is not null
+             and not exists (select 1 from am_location p where p.code = l.parent_code)) = 0
+  union all select 27, 'Master data', 'Sản phẩm có mã danh mục không tồn tại',
+         (select count(*) from am_product p
+           where p.default_category is not null
+             and not exists (select 1 from am_category c where c.code = p.default_category))::text,
+         '0',
+         (select count(*) from am_product p
+           where p.default_category is not null
+             and not exists (select 1 from am_category c where c.code = p.default_category)) = 0
 
   -- ---------------- 3. Quy tắc bỏ hậu tố -QR ----------------
   union all select 31, 'Quy tắc -QR', 'am_letters(''LTG-QR'')',
