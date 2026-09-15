@@ -18,15 +18,28 @@ từ bộ đếm bền vững, xuất Excel đăng ký tài sản và PDF tem nh
 | Giai đoạn | Trạng thái |
 |---|---|
 | 1. Schema master data + bộ đếm | ✅ viết xong, **chưa chạy thử trên Postgres** |
-| 2. Nạp bộ đếm từ register hiện có | ⏳ hàm đã sẵn, chờ file export đầy đủ |
-| 3. Màn hình quản lý master data | ⏳ |
+| 2. Nạp bộ đếm từ register hiện có | ✅ màn hình quét + nạp đã chạy, chờ file export đầy đủ |
+| 3. Màn hình quản lý master data | ✅ lưới sửa trực tiếp cho 11 bảng |
 | 4. Upload PDF + trích xuất bằng Claude vision | ⏳ |
 | 5. Xuất Excel (2 sheet Unique / Low-value) | ⏳ |
 | 6. PDF tem nhãn Code128 + biên bản ALR | ⏳ |
 
 Máy đang dùng không có Python / Node / Docker / psql, nên **SQL chưa được thực
 thi lần nào**. Cách kiểm chứng: dán lần lượt các file trong `sql/` vào
-Supabase SQL Editor — lỗi (nếu có) sẽ hiện ngay ở bước đó.
+Supabase SQL Editor — lỗi (nếu có) sẽ hiện ngay ở bước đó. Sau đó mở app, vào
+tab **Kết nối → Kiểm tra schema**: nó đếm số dòng từng bảng và gọi thử hàm để
+báo bảng/hàm nào còn thiếu.
+
+## Chạy thử tại chỗ
+
+Không cần cài gì — server tĩnh viết bằng PowerShell:
+
+```powershell
+.\scripts\serve.ps1 -Port 8325
+```
+
+Rồi mở <http://localhost:8325>. Trên GitHub Pages thì chỉ cần trỏ Pages vào
+nhánh `main`, thư mục gốc.
 
 ## Cài đặt
 
