@@ -652,6 +652,9 @@ const NAV = [
     ['counter', 'Bộ đếm mã'],
     ['rules',   'Thử quy tắc']
   ]],
+  ['Xuất chứng từ', [
+    ['alr', 'Biên bản tem nhãn']
+  ]],
   ['Hệ thống', [
     ['tbl:am_setting', 'Cấu hình ngưỡng'],
     ['setup',          'Kết nối']
@@ -725,10 +728,13 @@ function showView(view) {
     CUR = null;
     loadTable(name);
   } else {
-    $('#pageTitle').textContent =
-      { setup: 'Kết nối', counter: 'Bộ đếm Mã Tài Sản & Mã Vạch', rules: 'Thử quy tắc' }[view];
+    $('#pageTitle').textContent = {
+      setup: 'Kết nối', counter: 'Bộ đếm Mã Tài Sản & Mã Vạch',
+      rules: 'Thử quy tắc', alr: 'Biên bản bàn giao tem nhãn'
+    }[view];
     if (view === 'counter' && SB.ready()) loadCounters();
     if (view === 'rules' && SB.ready()) fillPickers();
+    if (view === 'alr' && SB.ready()) fillAlrPickers();
   }
 }
 
@@ -812,8 +818,322 @@ function init() {
   $('#btnOrigin').onclick = doOrigin;
   $('#btnPreview').onclick = doPreview;
 
+  initAlr();
   loadCfg();
   showView('setup');
   testConn(true).then(ok => { if (ok) { showView('tbl:am_org'); fillPickers(); } });
 }
 document.addEventListener('DOMContentLoaded', init);
+
+/* ================================================================== ALR
+   Biên bản bàn giao tem nhãn + trang tem Code128.
+   Mẫu gốc: ASSET LABEL RECEIPT.xlsx (5 cột) + 2 cột Đơn giá / Vị trí
+   chèn TRƯỚC cột Tem nhãn theo yêu cầu.                                */
+
+const ALR_NOTES_DEFAULT =
+`1. Sau khi tiếp nhận tem nhãn tài sản, bộ phận nhận bàn giao có trách nhiệm dán tem nhãn trực tiếp lên tài sản khi hoàn tất quá trình giao nhận với đơn vị vận chuyển, đồng thời chụp hai (2) hình ảnh (gồm một (1) hình ảnh chụp cận tem nhãn đã được dán và một (1) ảnh toàn cảnh tài sản có tem nhãn).
+After receiving the asset label, the handover department is required to immediately attach the label to the asset when the delivery process with the carrier is completed, and to take two (2) images (one close-up of the label and one of the asset with the label attached).
+
+2. Hai (2) hình ảnh đã chụp cần được cập nhật trên Hệ thống Quản lý Tài sản tại mục Thẻ tài sản, đồng thời được in ra và đính kèm vào Biên bản nghiệm thu (Asset Handover Form).
+Two (2) taken images must be uploaded on the Asset Management System (Asset Section) and simultaneously printed and attached to the Asset Handover Form.
+
+Lưu ý: Nếu hai (2) hình ảnh về tem nhãn tài sản không được đính kèm vào Biên bản nghiệm thu, yêu cầu hoàn tất thanh toán đợt cuối sẽ không được thông qua.
+Note: If two (2) images of the asset label are not attached to the Asset Handover Form, the final payment request will not be approved.`;
+
+const ALR = { rows: [], mode: null, demo: false };
+
+const fmtVnd = n => n == null || n === '' ? '' : Number(n).toLocaleString('vi-VN');
+const fmtDate = iso => {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-');
+  return `${d}.${m}.${y}`;
+};
+
+/* Ô "Thông số kỹ thuật cơ bản": gom ngắn từ các trường spec chi tiết.
+   Cùng thứ tự với view am_alr_print để bản in và bản DB khớp nhau. */
+function specSummary(a) {
+  if (a.spec_summary) return a.spec_summary;
+  const dim = [a.spec_length, a.spec_width, a.spec_height]
+    .map(v => (v || '').trim()).filter(Boolean).join(' x ');
+  return [a.spec_brand, a.spec_model, a.spec_function, a.spec_capacity, dim,
+          a.spec_material, a.spec_color,
+          a.serial ? 'S/N ' + a.serial : null]
+    .map(v => (v || '').trim()).filter(Boolean).join(' · ');
+}
+
+function alrCodeFromProject(p) {
+  p = (p || '').trim();
+  if (!p) return '';
+  const i = p.indexOf('.');
+  return 'AL.' + (i > 0 ? p.slice(i + 1) : p);
+}
+
+/* ------------------------------------------------------- chọn tài sản */
+const DEMO_ROWS = [
+  { asset_code: 'KIT.C2112.KME.2025.00183', barcode: 'JVC.000006873', asset_kind: 'unique',
+    name_vi: 'Tủ lạnh', name_en: 'Refrigerator', qty: 1, unit_code: 'pcs',
+    unit_price: 39360000, location_code: 'S0111B0', location_name: 'Kitchen office',
+    spec_brand: 'Berjaya', spec_model: 'BS3D2C1F7/Z', spec_capacity: '558L',
+    spec_length: '2100mm', spec_width: '760mm', spec_height: '840mm', serial: 'BJ25-0183' },
+  { asset_code: 'KIT.C2422.LTU.2025.00241', barcode: 'JVC.000006874', asset_kind: 'unique',
+    name_vi: 'Bàn inox 2 tầng', name_en: 'Stainless steel table', qty: 1, unit_code: 'pcs',
+    unit_price: 8450000, location_code: 'S1809B0', location_name: 'Club kitchen',
+    spec_material: 'Inox 304', spec_length: '1500mm', spec_width: '700mm', spec_height: '850mm' },
+  { asset_code: 'FBD.C2422.LTG.2025.00281', barcode: 'JVC.900000042', asset_kind: 'low',
+    name_vi: 'Ly thuỷ tinh chân cao', name_en: 'Stemmed glass', qty: 48, unit_code: 'pcs',
+    unit_price: 145000, location_code: 'SB142B0', location_name: 'F&B office',
+    spec_brand: 'Ocean', spec_capacity: '350ml', spec_color: 'Trong suốt' },
+  { asset_code: 'ITD.C2112.ITO.2025.00506', barcode: 'JVC.000006875', asset_kind: 'unique',
+    name_vi: 'Máy tính xách tay', name_en: 'Laptop', qty: 1, unit_code: 'pcs',
+    unit_price: 32900000, location_code: 'S0103B0', location_name: 'It office',
+    spec_brand: 'Dell', spec_model: 'Latitude 5450', spec_function: 'i7 / 16GB / 512GB',
+    spec_color: 'Xám', serial: 'CN0X7Y2Z' }
+];
+
+function renderAlrList() {
+  const head = $('#alGrid thead'), body = $('#alGrid tbody');
+  head.innerHTML = ''; body.innerHTML = '';
+  head.append(el('tr', {}, ['', 'Mã tài sản', 'Tên', 'SL', 'Đơn giá', 'Vị trí', 'Mã vạch']
+    .map(h => el('th', { textContent: h }))));
+  if (!ALR.rows.length) {
+    body.append(el('tr', {}, el('td', { colSpan: 7, style: 'color:var(--dim);padding:14px',
+      textContent: 'Chưa có tài sản nào. Bấm “Tải tài sản”, hoặc “Dữ liệu mẫu” để xem thử bố cục.' })));
+    return;
+  }
+  for (const r of ALR.rows) {
+    const cb = el('input', { type: 'checkbox', checked: r._pick !== false });
+    cb.onchange = () => { r._pick = cb.checked; };
+    body.append(el('tr', {}, [
+      el('td', {}, cb),
+      el('td', {}, el('code', { textContent: r.asset_code })),
+      el('td', { textContent: r.name_vi || '' }),
+      el('td', { className: 'num', textContent: fmtVnd(r.qty) }),
+      el('td', { className: 'num', textContent: fmtVnd(r.unit_price) }),
+      el('td', { textContent: [r.location_code, r.location_name].filter(Boolean).join(' — ') }),
+      el('td', {}, el('code', { textContent: r.barcode }))
+    ]));
+  }
+}
+
+async function loadAlrAssets() {
+  const box = $('#alListMsg');
+  const q = ['select=*', 'order=asset_code'];
+  const ship = $('#alShip').value, dept = $('#alDept').value, loc = $('#alLoc').value;
+  if (ship) q.push('shipment_id=eq.' + ship);
+  if (dept) q.push('dept_code=eq.' + dept);
+  if (loc)  q.push('location_code=eq.' + loc);
+  msg(box, 'info', 'Đang tải…');
+  try {
+    const rows = await SB.select('am_asset', q.join('&'));
+    const locs = await lookup('am_location').catch(() => []);
+    const lmap = new Map(locs.map(l => [l.v, l.t]));
+    ALR.rows = rows.map(r => ({ ...r, _pick: true,
+      location_name: (lmap.get(r.location_code) || '').split(' — ')[1] || '' }));
+    ALR.demo = false;
+    msg(box, ALR.rows.length ? 'ok' : 'warn', ALR.rows.length
+      ? `Tải được ${ALR.rows.length} tài sản.`
+      : 'Không có tài sản nào khớp bộ lọc. Sổ am_asset còn trống cho tới khi làm xong phần nhập đợt hàng — dùng “Dữ liệu mẫu” để xem bố cục biên bản.');
+  } catch (e) {
+    msg(box, 'err', e.message);
+    ALR.rows = [];
+  }
+  renderAlrList();
+}
+
+function loadAlrDemo() {
+  ALR.rows = DEMO_ROWS.map(r => ({ ...r, _pick: true }));
+  ALR.demo = true;
+  msg('#alListMsg', 'warn',
+    'Đang dùng DỮ LIỆU MẪU — chỉ để kiểm tra bố cục và thử in. Không phải tài sản thật, không lưu lên Supabase được.');
+  renderAlrList();
+}
+
+const alrPicked = () => ALR.rows.filter(r => r._pick !== false);
+
+/* ---------------------------------------------------- dựng biên bản */
+function docHeader() {
+  const h = el('div', { className: 'doc-head' }, [
+    el('div', { className: 'co', textContent: 'Công ty TNHH Liên Doanh Khách Sạn Plaza' }),
+    el('div', { className: 'addr', textContent: '17 Lê Duẩn, Bến Nghé, Quận 1, TP. Hồ Chí Minh' }),
+    el('div', { className: 'ttl',
+                textContent: 'Asset Label Receipt / Biên bản bàn giao tem nhãn tài sản' })
+  ]);
+  const meta = el('div', { className: 'doc-meta' }, [
+    el('div', {}, [el('b', { textContent: 'No./Số: ' }), $('#alCode').value || '—']),
+    el('div', {}, [el('b', { textContent: 'Date/Ngày: ' }), fmtDate($('#alDate').value)]),
+    el('div', {}, [el('b', { textContent: 'Mã dự án/Project: ' }), $('#alProject').value || '—'])
+  ]);
+  return [h, meta];
+}
+
+function barcodeSvg(code, opts = {}) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  try {
+    JsBarcode(svg, code, Object.assign({
+      format: 'CODE128', displayValue: true, fontSize: 11, textMargin: 1,
+      height: 28, width: 1.3, margin: 0
+    }, opts));
+  } catch (e) {
+    svg.remove();
+    return el('code', { textContent: code });
+  }
+  return svg;
+}
+
+function buildDoc() {
+  const rows = alrPicked();
+  const root = $('#printRoot');
+  root.innerHTML = '';
+  if (!rows.length) { msg('#alOutMsg', 'err', 'Chưa chọn tài sản nào.'); return; }
+
+  root.append(...docHeader());
+
+  const COLS = [
+    ['Stt<br>No.', '4%'], ['Mã tài sản<br>Asset code', '13%'],
+    ['Tên tài sản<br>Asset name', '15%'], ['Số lượng<br>Quantity', '6%'],
+    ['Thông số kỹ thuật cơ bản<br>Specification', '24%'],
+    ['Đơn giá<br>Unit price', '9%'], ['Vị trí<br>Location', '12%'],
+    ['Tem nhãn<br>Label', '17%']
+  ];
+  const tb = el('table', { className: 'doc' });
+  const cg = el('colgroup');
+  for (const [, w] of COLS) cg.append(el('col', { style: 'width:' + w }));
+  const hr = el('tr');
+  for (const [h] of COLS) { const th = el('th'); th.innerHTML = h; hr.append(th); }
+  tb.append(cg, el('thead', {}, hr));
+
+  const body = el('tbody');
+  rows.forEach((r, i) => {
+    const name = [r.name_vi, r.name_en].filter(Boolean).join(' / ');
+    body.append(el('tr', {}, [
+      el('td', { className: 'c', textContent: String(i + 1) }),
+      el('td', { textContent: r.asset_code }),
+      el('td', { textContent: name }),
+      el('td', { className: 'c', textContent: fmtVnd(r.qty) + (r.unit_code ? ' ' + r.unit_code : '') }),
+      el('td', { textContent: specSummary(r) }),
+      el('td', { className: 'r', textContent: fmtVnd(r.unit_price) }),
+      el('td', { textContent: [r.location_code, r.location_name].filter(Boolean).join(' — ') }),
+      el('td', { className: 'lbl' }, barcodeSvg(r.barcode, { height: 26, width: 1.2, fontSize: 10 }))
+    ]));
+  });
+  tb.append(body);
+  root.append(tb);
+
+  root.append(el('div', { className: 'doc-notes' }, [
+    el('b', { textContent: 'Quy trình và lưu ý khi tiếp nhận và sử dụng tem nhãn tài sản / Process and notes:' }),
+    document.createTextNode('\n' + $('#alNotes').value)
+  ]));
+  root.append(el('div', { className: 'doc-sign' }, [
+    el('div', {}, [el('b', { textContent: 'Prepared by / Người lập biểu' }),
+                   el('i', {}), document.createTextNode($('#alPrep').value || '')]),
+    el('div', {}, [el('b', { textContent: 'Received by / Người nhận' }),
+                   el('i', {}), document.createTextNode($('#alRecv').value || '')])
+  ]));
+
+  ALR.mode = 'doc';
+  $('#btnAlPrint').disabled = false;
+  $('#btnAlSave').disabled = ALR.demo || !SB.ready();
+  msg('#alOutMsg', 'ok', `Đã dựng biên bản ${$('#alCode').value || ''} — ${rows.length} dòng. ` +
+    'In ra khổ A4 nằm ngang.' + (ALR.demo ? '\n(Đang là dữ liệu mẫu nên không lưu được.)' : ''));
+}
+
+function buildLabels() {
+  const rows = alrPicked();
+  const root = $('#printRoot');
+  root.innerHTML = '';
+  if (!rows.length) { msg('#alOutMsg', 'err', 'Chưa chọn tài sản nào.'); return; }
+
+  root.append(...docHeader());
+  root.append(el('div', { className: 'doc-notes', style: 'margin:0 0 6mm',
+    textContent: `Trang tem nhãn — ${rows.length} tem. Cắt theo đường viền rồi dán lên đúng tài sản.` }));
+
+  const cols = Math.min(6, Math.max(1, Number($('#alCols').value) || 3));
+  const sheet = el('div', { className: 'sheet', style: `--cols:${cols}` });
+  for (const r of rows) {
+    sheet.append(el('div', { className: 'lab' }, [
+      barcodeSvg(r.barcode, { height: 34, width: 1.5, fontSize: 12 }),
+      el('div', { className: 'nm', textContent: r.name_vi || r.name_en || '' }),
+      el('div', { className: 'cd', textContent: r.asset_code })
+    ]));
+  }
+  root.append(sheet);
+
+  ALR.mode = 'labels';
+  $('#btnAlPrint').disabled = false;
+  msg('#alOutMsg', 'ok', `Đã dựng ${rows.length} tem, ${cols} tem mỗi hàng. In khổ A4 dọc.`);
+}
+
+/* Đổi hướng giấy theo thứ đang in: biên bản 8 cột cần nằm ngang. */
+function printNow() {
+  const id = 'am-page-rule';
+  document.getElementById(id)?.remove();
+  const st = el('style', { id });
+  st.textContent = `@page{size:A4 ${ALR.mode === 'doc' ? 'landscape' : 'portrait'};margin:10mm}`;
+  document.head.append(st);
+  window.print();
+}
+
+/* ------------------------------------------------------- lưu Supabase */
+async function saveAlr() {
+  const rows = alrPicked();
+  if (ALR.demo) return msg('#alOutMsg', 'err', 'Dữ liệu mẫu không lưu được.');
+  if (!rows.length) return;
+  try {
+    const [alr] = await SB.insert('am_alr', [{
+      code: $('#alCode').value.trim(),
+      issue_date: $('#alDate').value || null,
+      project_code: $('#alProject').value.trim() || null,
+      prepared_by: $('#alPrep').value.trim() || null,
+      received_by: $('#alRecv').value.trim() || null,
+      notes_text: $('#alNotes').value,
+      shipment_id: $('#alShip').value || null,
+      dept_code: $('#alDept').value || null,
+      location_code: $('#alLoc').value || null
+    }]);
+    await SB.insert('am_alr_line',
+      rows.map((r, i) => ({ alr_id: alr.id, line_no: i + 1, asset_id: r.id })));
+    msg('#alOutMsg', 'ok', `Đã lưu biên bản ${alr.code} (id ${alr.id}) với ${rows.length} dòng.`);
+  } catch (e) {
+    msg('#alOutMsg', 'err', 'Lưu thất bại: ' + e.message +
+      '\nNếu báo thiếu cột project_code / notes_text: chạy sql/05_alr.sql.');
+  }
+}
+
+/* --------------------------------------------------------- khởi tạo */
+async function fillAlrPickers() {
+  try {
+    const [deps, locs] = await Promise.all([
+      SB.select('am_org', 'select=code,name_vi&is_department=is.true&order=code'),
+      SB.select('am_location', 'select=code,name&order=code')
+    ]);
+    const d = $('#alDept'), l = $('#alLoc');
+    d.length = 1; l.length = 1;
+    for (const o of deps) d.append(el('option', { value: o.code, textContent: `${o.code} — ${o.name_vi}` }));
+    for (const o of locs) l.append(el('option', { value: o.code, textContent: `${o.code} — ${o.name}` }));
+    const sh = await SB.select('am_shipment', 'select=id,code,delivery_date,purpose_code&order=id.desc&limit=100');
+    const s = $('#alShip'); s.length = 1;
+    for (const o of sh)
+      s.append(el('option', { value: o.id,
+        textContent: [o.code || '#' + o.id, o.purpose_code, o.delivery_date].filter(Boolean).join(' · ') }));
+  } catch { /* chưa kết nối — màn hình Kết nối đã báo rồi */ }
+}
+
+function initAlr() {
+  $('#alNotes').value = ALR_NOTES_DEFAULT;
+  $('#alDate').value = new Date().toISOString().slice(0, 10);
+  const sync = () => { $('#alCode').value = alrCodeFromProject($('#alProject').value); };
+  sync();
+  $('#alProject').oninput = sync;
+  $('#alShip').onchange = () => {
+    const t = $('#alShip').selectedOptions[0]?.textContent || '';
+    const m = /\b((?:FFE|CAPEX)\.[A-Z]+\.\d+\.\d{4})\b/i.exec(t);
+    if (m) { $('#alProject').value = m[1]; sync(); }
+  };
+  $('#btnAlLoad').onclick = loadAlrAssets;
+  $('#btnAlDemo').onclick = loadAlrDemo;
+  $('#btnAlDoc').onclick = buildDoc;
+  $('#btnAlLabels').onclick = buildLabels;
+  $('#btnAlPrint').onclick = printNow;
+  $('#btnAlSave').onclick = saveAlr;
+  renderAlrList();
+}

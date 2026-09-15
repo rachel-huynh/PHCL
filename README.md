@@ -22,7 +22,7 @@ từ bộ đếm bền vững, xuất Excel đăng ký tài sản và PDF tem nh
 | 3. Màn hình quản lý master data | ✅ lưới sửa trực tiếp cho 11 bảng |
 | 4. Upload PDF + trích xuất bằng Claude vision | ⏳ |
 | 5. Xuất Excel (2 sheet Unique / Low-value) | ⏳ |
-| 6. PDF tem nhãn Code128 + biên bản ALR | ⏳ |
+| 6. PDF tem nhãn Code128 + biên bản ALR | ✅ biên bản 8 cột + trang tem, in được |
 
 Máy đang dùng không có Python / Node / Docker / psql, nên **SQL chưa được thực
 thi lần nào**. Cách kiểm chứng: dán lần lượt các file trong `sql/` vào
@@ -52,6 +52,7 @@ sql/02b_seed_origin.sql   -- ISO 3166-1 alpha-2 đầy đủ + bí danh
 sql/02c_seed_location.sql -- 82 vị trí hệ mã dài + cây tầng/phòng (sinh tự động)
 sql/03_functions.sql      -- chuẩn hóa, cấp phát bộ đếm, quy tắc phân loại
 sql/04_rls.sql            -- RLS & quyền
+sql/05_alr.sql            -- biên bản tem nhãn: cột bổ sung, số hiệu, view in
 ```
 
 Rồi chạy `sql/00_verify.sql` để biết chắc thứ gì đã được tạo.
@@ -159,6 +160,39 @@ select * from am_audit_counters();   -- gap < 0 nghĩa là bộ đếm ĐANG T�
 
 > ⚠️ Phải nạp từ bản export **đầy đủ** trước khi cấp mã cho đợt hàng đầu tiên.
 > Nạp thiếu sẽ cấp trùng mã với tài sản cũ. Xem `docs/data-issues.md` §6.
+
+## Biên bản bàn giao tem nhãn (ALR)
+
+Theo đúng mẫu `ASSET LABEL RECEIPT.xlsx` của công ty, mở rộng thành **8 cột**:
+
+```
+Stt | Mã tài sản | Tên tài sản | Số lượng | Thông số kỹ thuật cơ bản | Đơn giá | Vị trí | Tem nhãn
+```
+
+`Đơn giá` và `Vị trí` chèn **trước** cột Tem nhãn. Ô *Thông số kỹ thuật cơ bản*
+là bản gom ngắn từ các trường spec chi tiết, theo đúng thứ tự:
+
+```
+Nhãn hiệu · Mô đen · Công dụng · Capacity · Dài x Rộng x Cao · Chất liệu · Màu · S/N
+```
+
+Cùng một thứ tự được dùng ở cả hai nơi: hàm dựng phía trình duyệt và view
+`am_alr_print` trong `05_alr.sql`, để bản in và bản lưu trong database luôn khớp.
+
+**Số hiệu** = `AL.` + phần đuôi của mã dự án FFE, và luôn sửa tay được:
+
+| Mã dự án | Số hiệu biên bản |
+|---|---|
+| `FFE.CP.28.2023` | `AL.CP.28.2023` |
+| `FFE.KIT.05.2025` | `AL.KIT.05.2025` |
+
+Trang tem nhãn in riêng: lưới Code128 (1–6 tem mỗi hàng) kèm tên tài sản và Mã
+Tài Sản, có đường cắt. Biên bản in khổ A4 **nằm ngang**, trang tem in **dọc** —
+app tự đặt `@page` trước khi gọi in.
+
+> Phần "Quy trình và lưu ý" ở cuối biên bản sửa được trong giao diện và lưu theo
+> từng biên bản (`am_alr.notes_text`). Bản mẫu 2023 của công ty còn nhắc hệ thống
+> **Sinnova**; bản mặc định trong app đã bỏ tên đó vì công ty nay dùng Beetrack.
 
 ## Định dạng Excel
 

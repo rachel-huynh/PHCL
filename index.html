@@ -143,6 +143,48 @@
   section{display:none}
   section.on{display:block}
 
+  /* ------------------------------------------------- biên bản ALR / tem */
+  #printRoot{background:#fff;border:1px solid var(--line);border-radius:6px;
+             padding:12mm 10mm;margin-top:14px;color:#000}
+  #printRoot:empty{display:none}
+  .doc-head{text-align:center;margin-bottom:10px}
+  .doc-head .co{font-weight:700;font-size:13px;text-transform:uppercase}
+  .doc-head .addr{font-size:11.5px;color:#333;margin-top:1px}
+  .doc-head .ttl{font-weight:700;font-size:14.5px;margin-top:11px;text-transform:uppercase}
+  .doc-meta{display:flex;gap:34px;font-size:12px;margin:9px 0 12px}
+  .doc-meta b{font-weight:600}
+  table.doc{border-collapse:collapse;width:100%;font-size:11px;table-layout:fixed}
+  table.doc th,table.doc td{border:1px solid #000;padding:3px 5px;vertical-align:top;
+                            white-space:normal;word-wrap:break-word}
+  table.doc th{background:#eceff3;text-align:center;font-size:10px;font-weight:700;
+               text-transform:none;letter-spacing:0;position:static;color:#000}
+  table.doc td.c{text-align:center} table.doc td.r{text-align:right}
+  table.doc .lbl{text-align:center}
+  table.doc .lbl svg{display:block;margin:0 auto;max-width:100%}
+  .doc-notes{margin-top:12px;font-size:10.5px;line-height:1.45;white-space:pre-wrap}
+  .doc-sign{display:flex;justify-content:space-between;margin-top:26px;font-size:11.5px;
+            text-align:center}
+  .doc-sign div{width:44%}
+  .doc-sign b{display:block;font-weight:600}
+  .doc-sign i{display:block;height:58px}
+
+  .sheet{display:grid;gap:4mm;grid-template-columns:repeat(var(--cols,3),1fr)}
+  .lab{border:1px dashed #999;border-radius:2px;padding:3mm;text-align:center;
+       break-inside:avoid}
+  .lab svg{display:block;margin:0 auto;max-width:100%}
+  .lab .nm{font-size:9px;margin-top:1mm;line-height:1.25;color:#000;
+           overflow:hidden;max-height:2.6em}
+  .lab .cd{font-size:8.5px;color:#333;font-family:var(--mono)}
+
+  @media print{
+    aside,.top,.lead,.card,.foots,section:not(.on){display:none!important}
+    body{background:#fff}
+    main{padding:0}
+    .shell{display:block}
+    #printRoot{border:none;border-radius:0;padding:0;margin:0}
+    .lab{border-style:solid;border-color:#ccc}
+  }
+
   @media (max-width:860px){
     .shell{flex-direction:column}
     aside{width:auto;height:auto;position:static}
@@ -292,11 +334,73 @@
     </div>
   </section>
 
+  <section id="v-alr">
+    <p class="lead">Dùng đúng mẫu <b>ASSET LABEL RECEIPT / BIÊN BẢN BÀN GIAO TEM NHÃN TÀI SẢN</b>
+      của công ty, 8 cột: Stt · Mã tài sản · Tên tài sản · Số lượng · Thông số kỹ thuật ·
+      <b>Đơn giá · Vị trí</b> · Tem nhãn. Ô thông số là bản gom ngắn từ các trường spec chi tiết.</p>
+
+    <div class="card">
+      <h2>1 · Chọn tài sản</h2>
+      <div class="row">
+        <div class="fld" style="max-width:220px"><label>Đợt giao hàng</label>
+          <select id="alShip"><option value="">— tất cả —</option></select></div>
+        <div class="fld" style="max-width:150px"><label>Phòng ban</label>
+          <select id="alDept"><option value="">— tất cả —</option></select></div>
+        <div class="fld" style="max-width:170px"><label>Vị trí</label>
+          <select id="alLoc"><option value="">— tất cả —</option></select></div>
+        <button class="btn pri" id="btnAlLoad">Tải tài sản</button>
+        <button class="btn" id="btnAlDemo">Dữ liệu mẫu</button>
+      </div>
+      <div id="alListMsg"></div>
+      <div class="wrap" style="max-height:38vh;margin-top:10px">
+        <table id="alGrid"><thead></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2 · Thông tin biên bản</h2>
+      <div class="row">
+        <div class="fld" style="max-width:220px"><label>Mã dự án (FFE…)</label>
+          <input id="alProject" value="FFE.KIT.05.2025" spellcheck="false"></div>
+        <div class="fld" style="max-width:190px"><label>No./Số — sửa được</label>
+          <input id="alCode" spellcheck="false"></div>
+        <div class="fld" style="max-width:150px"><label>Date/Ngày</label>
+          <input id="alDate" type="date"></div>
+        <div class="fld" style="max-width:190px"><label>Người lập biểu</label>
+          <input id="alPrep" value="Huỳnh Thị Trúc Dịu"></div>
+        <div class="fld" style="max-width:190px"><label>Người nhận</label>
+          <input id="alRecv" placeholder="Tên người nhận tem"></div>
+      </div>
+      <div class="fld grow" style="margin-top:11px">
+        <label>Quy trình &amp; lưu ý in ở cuối biên bản</label>
+        <textarea id="alNotes" style="min-height:130px"></textarea>
+      </div>
+      <div class="hint">⚠️ Bản mẫu 2023 của công ty còn nhắc hệ thống <b>Sinnova</b>. Công ty nay
+        dùng <b>Beetrack</b> — sửa lại trong ô trên trước khi in.</div>
+    </div>
+
+    <div class="card">
+      <h2>3 · Xuất</h2>
+      <div class="row">
+        <button class="btn pri" id="btnAlDoc">Dựng biên bản</button>
+        <button class="btn" id="btnAlLabels">Dựng trang tem nhãn</button>
+        <div class="fld" style="max-width:120px"><label>Tem mỗi hàng</label>
+          <input id="alCols" type="number" min="1" max="6" value="3"></div>
+        <button class="btn" id="btnAlPrint" disabled>In / Lưu PDF</button>
+        <button class="btn" id="btnAlSave" disabled>Lưu biên bản lên Supabase</button>
+      </div>
+      <div id="alOutMsg"></div>
+    </div>
+
+    <div id="printRoot"></div>
+  </section>
+
   </main>
 </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
