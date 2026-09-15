@@ -20,8 +20,9 @@ từ bộ đếm bền vững, xuất Excel đăng ký tài sản và PDF tem nh
 | 1. Schema master data + bộ đếm | ✅ đã chạy trên Supabase; hàm sinh mã cho kết quả đúng |
 | 2. Nạp bộ đếm từ register hiện có | ✅ đã có bản export 17.036 tài sản → sql/08_seed_counters.sql (92 khoá) |
 | 3. Màn hình quản lý master data | ✅ lưới sửa trực tiếp 11 bảng; master data nạp từ template Beetrack |
-| 4. Upload PDF + trích xuất bằng Claude vision | ⏳ |
-| 5. Xuất Excel (2 sheet Unique / Low-value) | ⏳ |
+| 4. Nhập liệu đợt hàng + kiểm tra + xác nhận cấp mã | ✅ |
+| 4b. Upload PDF + trích xuất bằng Claude vision | ⏳ cần Edge Function giấu API key |
+| 5. Xuất Excel 2 sheet đúng format Beetrack | ✅ Unique A–AX, Low-value A–AJ |
 | 6. PDF tem nhãn Code128 + biên bản ALR | ✅ biên bản 8 cột + trang tem, in được |
 | 7. Sao lưu & đồng bộ | ✅ pull/push bản chụp JSON, xuất Excel, nạp lại bộ đếm |
 | 8. Sổ tài sản (lọc, sắp xếp, chọn/đổi thứ tự cột, Excel, in) | ✅ |

@@ -458,6 +458,56 @@
     </div>
   </section>
 
+  <section id="v-intake">
+    <p class="lead" data-i18n-html="in.lead_html"></p>
+
+    <div class="card">
+      <h2 data-i18n="in.h.batch"></h2>
+      <div class="row">
+        <div class="fld" style="max-width:120px"><label data-i18n="in.company"></label>
+          <select id="inCompany"></select></div>
+        <div class="fld" style="max-width:120px"><label data-i18n="in.dept"></label>
+          <select id="inDept"></select></div>
+        <div class="fld" style="max-width:180px"><label data-i18n="in.purpose"></label>
+          <input id="inPurpose" placeholder="FFE.KIT.05.2025" spellcheck="false"></div>
+        <div class="fld" style="max-width:150px"><label data-i18n="in.invoice"></label>
+          <input id="inInvoice"></div>
+        <div class="fld" style="max-width:180px"><label data-i18n="in.supplier"></label>
+          <input id="inSupplier"></div>
+        <div class="fld" style="max-width:150px"><label data-i18n="in.date"></label>
+          <input id="inDate" type="date"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="in.h.lines"></h2>
+      <div class="row" style="margin-bottom:10px">
+        <button class="btn pri" id="btnInAdd" data-i18n="in.addLine"></button>
+        <button class="btn" id="btnInClear" data-i18n="in.clear"></button>
+      </div>
+      <div class="wrap" style="max-height:44vh">
+        <table id="inGrid"><thead></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="in.h.check"></h2>
+      <div class="row">
+        <button class="btn" id="btnInCheck" data-i18n="in.check"></button>
+        <button class="btn pri" id="btnInConfirm" disabled data-i18n="in.confirm"></button>
+      </div>
+      <div id="inMsg"></div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="in.h.result"></h2>
+      <div class="row">
+        <button class="btn pri" id="btnInXlsx" disabled data-i18n="in.xlsxBeetrack"></button>
+        <button class="btn" id="btnInAlr" data-i18n="in.alr"></button>
+      </div>
+    </div>
+  </section>
+
   <section id="v-register">
     <p class="lead" data-i18n-html="reg.lead_html"></p>
     <div class="card">

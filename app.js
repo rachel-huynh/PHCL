@@ -937,7 +937,7 @@ const NAV = [
     ['tbl:am_origin', null], ['tbl:am_origin_alias', null], ['tbl:am_origin_rejected', null]
   ]],
   ['nav.counters', [['counter', 'nav.counter'], ['rules', 'nav.rules']]],
-  ['nav.registerGrp', [['register', 'nav.register']]],
+  ['nav.registerGrp', [['intake', 'nav.intake'], ['register', 'nav.register']]],
   ['nav.docs',      [['alr', 'nav.alr']]],
   ['nav.backupGrp', [['backup', 'nav.backup']]],
   ['nav.system',    [['sources', 'nav.sources'], ['tbl:am_setting', null], ['setup', 'nav.setup']]]
@@ -1061,6 +1061,7 @@ function showView(view) {
     if (view === 'backup' && SB.ready()) bkCount();
     if (view === 'sources' && SB.ready()) srcLoad();
     if (view === 'register' && SB.ready()) { regFillPickers(); regLoad(true); }
+    if (view === 'intake' && SB.ready()) inFill();
   }
 }
 
@@ -1174,6 +1175,7 @@ function init() {
   initBackup();
   initSources();
   initRegister();
+  initIntake();
   loadCfg();
   showView('setup');
   testConn(true).then(ok => { if (ok) { showView('tbl:am_org'); fillPickers(); } });
@@ -1917,4 +1919,371 @@ function initRegister() {
   };
   $('#btnRegPrev').onclick = () => { if (REG.page > 0) { REG.page--; regLoad(); } };
   $('#btnRegNext').onclick = () => { REG.page++; regLoad(); };
+}
+
+/* ============================================================ NEW DELIVERY
+   Enter the goods of one delivery, apply the rules, allocate the codes and
+   commit to am_asset. Nothing is written until Confirm.
+
+   Export format: "asset-template-file (Beetrack - original).xlsx" — the sheet
+   Beetrack actually accepts on upload. Unique asset is A..AX, Low-value is
+   A..AJ, and in BOTH the asset code sits in H and the barcode in K.
+   The workbook is built from scratch rather than by editing the template, so
+   no sample row's Text (@) number format can survive and corrupt the numbers
+   and dates. */
+
+const BT_UNIQUE = [
+  ['STT (*)', '#'], ['Asset Id', null], ['Mã Sản Phẩm', null],
+  ['Mã Danh Mục (*)', 'category_code'], ['Tên (*)', '#name'], ['Tên Khác', null],
+  ['Mô Tả', 'description'], ['Mã Tài Sản', 'asset_code'], ['Mã Tài Sản Cha', null],
+  ['Mã Dự Án', 'purpose_code'], ['Mã Vạch', 'barcode'], ['Biển Số Xe', null],
+  ['Số Lượng Ban Đầu', 'qty'], ['Số Lượng', 'qty'], ['Đơn Vị Tính', 'unit_code'],
+  ['Số Seri', 'serial'], ['Mã Vị Trí (*)', 'location_code'], ['Mã Phòng', null],
+  ['Mã Phòng Ban', 'dept_code'], ['Mã Phòng Ban Quản Lý', null],
+  ['Mã Công Ty Thành Viên (*)', 'company_code'], ['Mã Người Dùng', null],
+  ['Mã Thiết Bị', null], ['Mã Xuất Xứ', 'origin_iso2'], ['Mã Nhà Cung Cấp', null],
+  ['Mã Nhà Sản Xuất', null], ['Số Hóa Đơn', 'invoice_no'], ['Giá Ngoại Tệ', 'price_fx'],
+  ['Ngoại Tệ', 'currency'], ['Tỉ Giá', 'fx_rate'], ['Đơn Giá', 'unit_price'],
+  ['Giá Thanh Lý', null], ['Hoá Đơn Thanh Lý', null], ['Có Tính Khấu Hao', '#dep'],
+  ['Thời Gian Khấu Hao', 'depreciate_months'], ['Giá Trị Còn Lại', null],
+  ['Năm Sản Xuất', 'spec_mfg_year'], ['Ngày Mua', '#d:purchase_date'],
+  ['Ngày Sử Dụng', '#d:in_use_date'], ['Ngày Tính Khấu Hao', '#d:in_use_date'],
+  ['Mã Tình Trạng (*)', 'status_code'], ['Nguồn Mua', null],
+  ['Mục đích Tài Sản', 'purpose_code'], ['Đã In Nhãn', '#lbl'],
+  ['Ngày Hết Hạn Bảo Hành', null], ['Lịch Bảo Dưỡng', null],
+  ['Đơn Vị Thời Gian Bảo Dưỡng', null], ['Tên Người Bảo Dưỡng', null],
+  ['Email Người Bảo Dưỡng', null], ['Ghi Chú', 'note']
+];
+
+const BT_LOW = [
+  ['STT (*)', '#'], ['Asset Id', null], ['Mã Sản Phẩm', null],
+  ['Mã Danh Mục (*)', 'category_code'], ['Tên (*)', '#name'], ['Tên Khác', null],
+  ['Mô Tả', 'description'], ['Mã Tài Sản', 'asset_code'],
+  ['Mã Vạch Tài Sản Cha', null], ['Mã Dự Án', 'purpose_code'], ['Mã Vạch', 'barcode'],
+  ['Số Lượng Ban Đầu', 'qty'], ['Số Lượng', 'qty'], ['Đơn Vị Tính', 'unit_code'],
+  ['Số Seri', 'serial'], ['Mã Vị Trí (*)', 'location_code'],
+  ['Mã Phòng Ban', 'dept_code'], ['Mã Phòng Ban Quản Lý', null],
+  ['Mã Công Ty Thành Viên (*)', 'company_code'], ['Mã Người Dùng', null],
+  ['Mã Thiết Bị', null], ['Mã Xuất Xứ', 'origin_iso2'], ['Mã Nhà Cung Cấp', null],
+  ['Mã Nhà Sản Xuất', null], ['Số Hóa Đơn', 'invoice_no'], ['Giá Ngoại Tệ', 'price_fx'],
+  ['Ngoại Tệ', 'currency'], ['Tỉ Giá', 'fx_rate'], ['Giá Đơn Vị', 'unit_price'],
+  ['Ngày Mua', '#d:purchase_date'], ['Ngày Sử Dụng', '#d:in_use_date'],
+  ['Mã Tình Trạng (*)', 'status_code'], ['Nguồn Mua', null],
+  ['Mục đích Tài Sản', 'purpose_code'], ['Đã In Nhãn', '#lbl'], ['Ghi Chú', 'note']
+];
+
+function btCell(spec, row, i) {
+  if (spec === null) return '';
+  if (spec === '#') return i + 1;
+  if (spec === '#name') return [row.name_vi, row.name_en].filter(Boolean).join('/');
+  if (spec === '#dep') return row.depreciate ? 1 : 0;
+  if (spec === '#lbl') return row.label_printed ? 1 : 0;
+  if (spec.startsWith('#d:')) {
+    const v = row[spec.slice(3)];
+    return v ? new Date(v + 'T00:00:00') : '';
+  }
+  const v = row[spec];
+  return v == null ? '' : v;
+}
+
+function btSheet(cols, rows) {
+  const aoa = [cols.map(c => c[0])];
+  rows.forEach((r, i) => aoa.push(cols.map(c => btCell(c[1], r, i))));
+  const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true });
+  // Dates must carry an explicit format, otherwise Excel shows the serial.
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  for (let R = 1; R <= range.e.r; R++)
+    for (let C = 0; C <= range.e.c; C++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+      if (cell && cell.t === 'd') cell.z = 'dd/mm/yyyy';
+    }
+  return ws;
+}
+
+function btExport(rows, stamp) {
+  const uniq = rows.filter(r => r.asset_kind === 'unique');
+  const low = rows.filter(r => r.asset_kind === 'low');
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, btSheet(BT_UNIQUE, uniq), 'Unique asset');
+  XLSX.utils.book_append_sheet(wb, btSheet(BT_LOW, low), 'Low-value asset');
+  const file = `phcl-asset-upload-${stamp || bkStamp()}.xlsx`;
+  XLSX.writeFile(wb, file);
+  return { file, u: uniq.length, l: low.length };
+}
+
+/* ------------------------------------------------------------ the screen */
+const IN = { lines: [], checked: null, committed: [] };
+
+const inBlank = () => ({
+  name_vi: '', name_en: '', category_code: '', qty: 1, unit_code: 'pcs',
+  unit_price: '', serials: '', origin_raw: '', location_code: '', description: ''
+});
+
+function inRender() {
+  const head = $('#inGrid thead'), body = $('#inGrid tbody');
+  head.innerHTML = ''; body.innerHTML = '';
+  head.append(el('tr', {}, ['', 'in.col.name', 'in.col.cat', 'in.col.qty', 'in.col.unit',
+    'in.col.price', 'in.col.serial', 'in.col.origin', 'in.col.loc', 'in.col.kind', 'in.col.rows']
+    .map(k => el('th', { textContent: k ? t(k) : '' }))));
+
+  IN.lines.forEach((ln, i) => {
+    const tr = el('tr');
+    const del = el('button', { className: 'xbtn', textContent: '✕' });
+    del.onclick = () => { IN.lines.splice(i, 1); IN.checked = null; inRender(); };
+    tr.append(el('td', {}, del));
+
+    const txt = (field, w, type) => {
+      const inp = el('input', { value: ln[field] ?? '', style: `width:${w}px`,
+                                type: type || 'text' });
+      inp.onchange = () => { ln[field] = type === 'number' ? inp.value : inp.value;
+                             IN.checked = null; inRender(); };
+      return el('td', {}, inp);
+    };
+    const pick = (field, list, w) => {
+      const s = el('select', { style: `width:${w}px` });
+      s.append(el('option', { value: '', textContent: '—' }));
+      for (const o of list)
+        s.append(el('option', { value: o, textContent: o, selected: o === ln[field] }));
+      s.onchange = () => { ln[field] = s.value; IN.checked = null; inRender(); };
+      return el('td', {}, s);
+    };
+
+    tr.append(txt('name_vi', 200));
+    tr.append(pick('category_code', (window.__CATS || []).map(c => c.code), 110));
+    tr.append(txt('qty', 60, 'number'));
+    tr.append(pick('unit_code', IN.units || [], 90));
+    tr.append(txt('unit_price', 120, 'number'));
+    tr.append(txt('serials', 170));
+    tr.append(txt('origin_raw', 130));
+    tr.append(txt('location_code', 110));
+
+    const price = Number(ln.unit_price) || 0;
+    const kind = price >= (IN.thUnique || 5000000) ? 'unique' : 'low';
+    const rows = kind === 'unique' ? (Number(ln.qty) || 0)
+                 : (inSerials(ln).length || 1);
+    tr.append(el('td', { textContent: kind === 'unique' ? t('reg.kindUnique') : t('reg.kindLow') }));
+    tr.append(el('td', { className: 'num', textContent: String(rows) }));
+    body.append(tr);
+  });
+
+  if (!IN.lines.length)
+    body.append(el('tr', {}, el('td', { colSpan: 11, style: 'color:var(--dim);padding:14px',
+      textContent: t('in.noLines') })));
+}
+
+const inSerials = ln => String(ln.serials || '')
+  .split(/[\n,;]/).map(s => s.trim()).filter(Boolean);
+
+/* Expand one entered line into the asset rows it will become. */
+function inExpand(ln) {
+  const price = Number(ln.unit_price) || 0;
+  const kind = price >= (IN.thUnique || 5000000) ? 'unique' : 'low';
+  const cat = (window.__CATS || []).find(c => c.code === ln.category_code);
+  const serials = inSerials(ln);
+  const base = {
+    asset_kind: kind,
+    category_code: ln.category_code,
+    group_code: cat?.group_code,
+    letters: cat?.label_letters,
+    name_vi: ln.name_vi, name_en: ln.name_en || null,
+    description: ln.description || null,
+    unit_code: ln.unit_code || null,
+    unit_price: price,
+    currency: 'VND',
+    location_code: ln.location_code || null,
+    company_code: $('#inCompany').value,
+    dept_code: $('#inDept').value,
+    purpose_code: $('#inPurpose').value.trim() || null,
+    invoice_no: $('#inInvoice').value.trim() || null,
+    supplier: $('#inSupplier').value.trim() || null,
+    purchase_date: $('#inDate').value || null,
+    in_use_date: $('#inDate').value || null,
+    purchase_year: Number(($('#inDate').value || '').slice(0, 4)) || new Date().getFullYear(),
+    origin_iso2: ln._iso || null,
+    status_code: null,
+    needs_review: ln._review || []
+  };
+  const out = [];
+  if (kind === 'unique') {
+    const n = Math.max(1, Number(ln.qty) || 1);
+    for (let i = 0; i < n; i++)
+      out.push({ ...base, qty: 1, serial: serials[i] || null });
+  } else if (serials.length) {
+    for (const s of serials) out.push({ ...base, qty: 1, serial: s });
+  } else {
+    out.push({ ...base, qty: Number(ln.qty) || 1, serial: null });
+  }
+  return out;
+}
+
+async function inCheck() {
+  const out = $('#inMsg');
+  if (!IN.lines.length) return msg(out, 'err', t('in.noLines'));
+  msg(out, 'info', t('in.checking'));
+  const errs = [], warns = [];
+  let rows = 0;
+
+  for (let i = 0; i < IN.lines.length; i++) {
+    const ln = IN.lines[i], n = i + 1;
+    ln._review = [];
+    if (!ln.name_vi?.trim()) errs.push(t('in.errNoName', { i: n }));
+    if (!ln.category_code) errs.push(t('in.errNoCat', { i: n }));
+    const price = Number(ln.unit_price);
+    if (!price) errs.push(t('in.errNoPrice', { i: n }));
+    if (!(Number(ln.qty) >= 1)) errs.push(t('in.errNoQty', { i: n }));
+
+    if (ln.category_code && price) {
+      try {
+        const r = (await SB.rpc('am_classify', {
+          p_unit_price: price, p_category_code: ln.category_code,
+          p_is_intangible: false
+        }))[0];
+        if (r.violates_capex) errs.push(t('in.errCapex', { i: n, code: ln.category_code }));
+        for (const w of r.warnings || []) warns.push(`${n}: ${w}`);
+      } catch (e) { errs.push(`${n}: ${e.message}`); }
+    }
+
+    if (ln.origin_raw?.trim()) {
+      try {
+        const o = (await SB.rpc('am_resolve_origin', { p_raw: ln.origin_raw }))[0];
+        ln._iso = o.iso2 || null;
+        if (!o.iso2) {
+          warns.push(t('in.warnOrigin', { i: n, why: t('why.' + o.reason) }));
+          ln._review.push({ field: 'origin_iso2', reason: o.reason, raw: ln.origin_raw });
+        }
+      } catch { ln._iso = null; }
+    } else ln._iso = null;
+
+    const ser = inSerials(ln);
+    if (ser.length && ser.length !== Number(ln.qty))
+      warns.push(t('in.warnSerial', { i: n, have: ser.length, qty: ln.qty }));
+
+    warns.push(t('in.warnStatus', { i: n }));
+    ln._review.push({ field: 'status_code', reason: 'no_source' });
+
+    rows += inExpand(ln).length;
+  }
+
+  IN.checked = errs.length ? null : { rows };
+  out.innerHTML = '';
+  if (errs.length) {
+    out.append(el('div', { className: 'msg err', textContent: t('in.hasErr', { n: errs.length }) }));
+    for (const e of errs) out.append(el('div', { className: 'msg err', textContent: e }));
+  } else {
+    out.append(el('div', { className: 'msg ok',
+      textContent: t('in.okAll', { n: IN.lines.length, r: rows }) }));
+  }
+  if (warns.length) {
+    out.append(el('div', { className: 'msg warn', textContent: t('in.hasWarn', { n: warns.length }) }));
+    for (const w of warns) out.append(el('div', { className: 'msg warn', textContent: w }));
+  }
+  $('#btnInConfirm').disabled = !IN.checked;
+  inRender();
+}
+
+async function inConfirm() {
+  if (!IN.checked) return;
+  const out = $('#inMsg');
+  // Expand first, then group by (dept, letters) so each key needs one
+  // allocation call, and each barcode range one more.
+  const all = IN.lines.flatMap(inExpand);
+  msg(out, 'info', t('in.writing', { n: all.length }));
+  try {
+    const byKey = new Map();
+    for (const r of all) {
+      const k = `${r.dept_code}|${r.letters}`;
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(r);
+    }
+    for (const [k, list] of byKey) {
+      const [dept, letters] = k.split('|');
+      const first = await SB.rpc('am_alloc_asset_seq',
+        { p_dept: dept, p_letters: letters, p_count: list.length, p_actor: 'intake' });
+      list.forEach((r, i) => {
+        r.seq = first + i;
+        r.asset_code = `${r.dept_code}.${r.group_code}.${r.letters}.${r.purchase_year}.` +
+                       String(r.seq).padStart(5, '0');
+      });
+    }
+    for (const kind of ['unique', 'low']) {
+      const list = all.filter(r => r.asset_kind === kind);
+      if (!list.length) continue;
+      const first = await SB.rpc('am_alloc_barcode',
+        { p_kind: kind, p_count: list.length, p_actor: 'intake' });
+      list.forEach((r, i) => {
+        const v = first + i;
+        r.barcode = kind === 'low' ? 'JVC.9' + String(v).padStart(8, '0')
+                                   : 'JVC.' + String(v).padStart(9, '0');
+      });
+    }
+    const payload = all.map(r => {
+      const o = { ...r };
+      delete o._iso; delete o._review;
+      o.needs_review = r.needs_review || [];
+      return o;
+    });
+    const saved = await SB.insert('am_asset', payload);
+    IN.committed = saved || payload;
+    const codes = IN.committed.map(r => r.asset_code).sort();
+    msg(out, 'ok', t('in.written', { n: IN.committed.length,
+                                     from: codes[0], to: codes[codes.length - 1] }));
+    $('#btnInXlsx').disabled = false;
+    $('#btnInConfirm').disabled = true;
+    IN.lines = []; IN.checked = null; inRender();
+    try {
+      await SB.insert('am_data_source', [{
+        table_name: 'am_asset', source_file: $('#inPurpose').value.trim() || 'manual intake',
+        source_kind: 'manual', rows_loaded: IN.committed.length, loaded_by: 'intake'
+      }]);
+    } catch { /* the provenance log is optional, never block on it */ }
+  } catch (e) {
+    msg(out, 'err', t('in.writeFail', { err: e.message }));
+  }
+}
+
+function inXlsx() {
+  if (!IN.committed.length) return msg('#inMsg', 'warn', t('in.nothingYet'));
+  const r = btExport(IN.committed);
+  msg('#inMsg', 'ok', t('in.exported', { u: r.u, l: r.l, file: r.file }));
+}
+
+function inToAlr() {
+  if (!IN.committed.length) return msg('#inMsg', 'warn', t('in.nothingYet'));
+  ALR.rows = IN.committed.map(r => ({ ...r, _pick: true }));
+  ALR.demo = false;
+  showView('alr');
+  renderAlrList();
+  msg('#alListMsg', 'ok', t('alr.loaded', { n: ALR.rows.length }));
+}
+
+async function inFill() {
+  try {
+    const [orgs, units, th] = await Promise.all([
+      SB.select('am_org', 'select=code,is_company,is_department&order=code'),
+      SB.select('am_unit', 'select=code&order=sort_order'),
+      SB.select('am_setting', 'select=key,value&key=eq.unique_threshold')
+    ]);
+    IN.units = units.map(u => u.code);
+    IN.thUnique = Number(th?.[0]?.value) || 5000000;
+    const fill = (sel, list, keep) => {
+      const s = $(sel); s.innerHTML = '';
+      for (const c of list) s.append(el('option', { value: c, textContent: c }));
+      if (keep && list.includes(keep)) s.value = keep;
+    };
+    fill('#inCompany', orgs.filter(o => o.is_company).map(o => o.code), 'SOF');
+    fill('#inDept', orgs.filter(o => o.is_department).map(o => o.code));
+    if (!window.__CATS) await fillPickers();
+    inRender();
+  } catch { /* the Connection screen already reports it */ }
+}
+
+function initIntake() {
+  $('#inDate').value = new Date().toISOString().slice(0, 10);
+  $('#btnInAdd').onclick = () => { IN.lines.push(inBlank()); IN.checked = null; inRender(); };
+  $('#btnInClear').onclick = () => { IN.lines = []; IN.checked = null; inRender(); };
+  $('#btnInCheck').onclick = inCheck;
+  $('#btnInConfirm').onclick = inConfirm;
+  $('#btnInXlsx').onclick = inXlsx;
+  $('#btnInAlr').onclick = inToAlr;
+  inRender();
 }
