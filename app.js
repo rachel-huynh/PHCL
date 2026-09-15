@@ -238,6 +238,69 @@ function cellInput(col, row, onChange) {
   return i;
 }
 
+/* Which column points at the parent. am_category points OUT of the table, into
+   am_category_group, so its parents become header rows rather than parent rows;
+   the other two are self-referencing and nest properly. */
+const TREE_PARENT = {
+  am_location: 'parent_code',
+  am_org: 'parent_code',
+  am_category: 'group_code'
+};
+const TREE_KEY = 'asset-intake.tree';
+let TREE_ON = (() => { try { return localStorage.getItem(TREE_KEY) !== '0'; } catch { return true; } })();
+
+/* Order the visible rows as a depth-first walk and give each one a depth.
+   Rows whose parent is not a row of this table are collected under a header
+   for that parent value -- which is what makes the category screen group by
+   accounting group, and what surfaces a broken parent_code instead of hiding it. */
+function treeOrder(rows, spec, parentField, visible) {
+  const pk = spec.pk;
+  const byKey = new Map(rows.map(r => [String(r.cur[pk] ?? ''), r]));
+  const kids = new Map();          // parent key -> rows
+  const heads = new Map();         // synthetic header value -> rows
+  const roots = [];
+  for (const r of rows) {
+    const p = r.cur[parentField];
+    if (p == null || p === '') { roots.push(r); continue; }
+    const key = String(p);
+    if (byKey.has(key)) {
+      if (!kids.has(key)) kids.set(key, []);
+      kids.get(key).push(r);
+    } else {
+      if (!heads.has(key)) heads.set(key, []);
+      heads.get(key).push(r);
+    }
+  }
+
+  // A match deep in the tree is useless without the branch above it, so pull
+  // every ancestor of a visible row back in, flagged as context.
+  const keep = new Set();
+  const mark = r => {
+    let cur = r, guard = 0;
+    while (cur && guard++ < 50) {
+      keep.add(cur);
+      const p = cur.cur[parentField];
+      cur = p == null || p === '' ? null : byKey.get(String(p));
+    }
+  };
+  for (const r of rows) if (visible(r)) mark(r);
+
+  const out = [];
+  const walk = (r, d) => {
+    if (!keep.has(r)) return;
+    out.push({ row: r, depth: d, ctx: !visible(r) });
+    for (const c of (kids.get(String(r.cur[pk] ?? '')) || [])) walk(c, d + 1);
+  };
+  for (const key of [...heads.keys()].sort()) {
+    const list = heads.get(key).filter(r => keep.has(r));
+    if (!list.length) continue;
+    out.push({ head: key, n: list.length, depth: 0 });
+    for (const r of list) walk(r, 1);
+  }
+  for (const r of roots) walk(r, 0);
+  return out;
+}
+
 function renderGrid() {
   if (!CUR) return;
   const spec = TABLES[CUR.table];
@@ -249,12 +312,27 @@ function renderGrid() {
   head.append(hr);
 
   const q = ($('#filter')?.value || '').trim().toLowerCase();
+  const parentField = TREE_ON ? TREE_PARENT[CUR.table] : null;
+  const alive = CUR.rows.filter(r => !r.del);
+  const visible = r => !q || JSON.stringify(r.cur).toLowerCase().includes(q);
+
+  const plan = parentField
+    ? treeOrder(alive, spec, parentField, visible)
+    : alive.filter(visible).map(r => ({ row: r, depth: 0 }));
+
   let shown = 0;
-  for (const row of CUR.rows) {
-    if (row.del) continue;
-    if (q && !JSON.stringify(row.cur).toLowerCase().includes(q)) continue;
-    shown++;
+  for (const item of plan) {
+    if (item.head !== undefined) {
+      body.append(el('tr', { className: 'grp' }, el('td', {
+        colSpan: spec.cols.length + 1,
+        textContent: `${item.head} · ${t('tree.nRows', { n: fmtInt(item.n) })}`
+      })));
+      continue;
+    }
+    const row = item.row;
+    if (visible(row)) shown++;
     const tr = el('tr');
+    if (item.ctx) tr.classList.add('ctx');
     if (row.isNew) tr.classList.add('new');
     else if (row.dirty) tr.classList.add('dirty');
     const del = el('button', { className: 'xbtn', textContent: '✕', title: t('table.deleteRow') });
@@ -265,8 +343,16 @@ function renderGrid() {
       dirtyCheck(); renderGrid();
     };
     tr.append(el('td', {}, del));
+    let first = true;
     for (const c of spec.cols) {
       const td = el('td');
+      // Indent the code cell by depth — the tree lives in the editable grid
+      // rather than beside it, so every row stays editable.
+      if (first && item.depth) {
+        td.style.paddingLeft = (6 + item.depth * 16) + 'px';
+        td.append(el('span', { className: 'twig', textContent: '└' }));
+        first = false;
+      }
       td.append(cellInput(c, row, (field, val) => {
         row.cur[field] = val;
         row.dirty = row.isNew || spec.cols.some(k => row.cur[k.name] !== row.orig?.[k.name]);
@@ -1236,6 +1322,26 @@ function buildTools(view) {
           CAT_TABLE = tbl;
           try { localStorage.setItem(CAT_KEY, tbl); } catch {}
           showView('cat');
+        };
+        seg.append(b);
+      }
+      box.append(seg);
+    }
+    // Only offered where there is actually a hierarchy to show.
+    if (TREE_PARENT[table]) {
+      const seg = el('div', { className: 'seg' });
+      for (const [on, key] of [[true, 'tree.tree'], [false, 'tree.flat']]) {
+        const b = el('button', { textContent: t(key) });
+        b.classList.toggle('on', TREE_ON === on);
+        b.onclick = () => {
+          if (TREE_ON === on) return;
+          TREE_ON = on;
+          try { localStorage.setItem(TREE_KEY, on ? '1' : '0'); } catch {}
+          // buildTools rebuilds the filter box, so carry its text across.
+          const keep = $('#filter')?.value || '';
+          buildTools(VIEW);
+          if ($('#filter')) $('#filter').value = keep;
+          renderGrid();
         };
         seg.append(b);
       }

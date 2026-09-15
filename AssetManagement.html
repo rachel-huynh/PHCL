@@ -144,6 +144,11 @@
   tr.dirty td:first-child{box-shadow:inset 3px 0 0 var(--amber)}
   tr.new td:first-child{box-shadow:inset 3px 0 0 var(--green)}
   .num{text-align:right;font-family:var(--mono)}
+  /* Tree rows inside the editable grid. */
+  tr.grp td{background:var(--head);font-weight:700;font-size:11px;letter-spacing:.3px;
+            color:var(--navy);padding:6px 10px}
+  tr.ctx{opacity:.5}                 /* an ancestor shown only for context */
+  .twig{color:#9aa3b0;margin-right:5px;font-size:11px}
   /* Evidence badge beside a suggested category: how many register rows back it. */
   .sug{display:inline-block;margin-left:6px;padding:1px 5px;border-radius:9px;
        font-family:var(--mono);font-size:10.5px;font-weight:700;cursor:help;
