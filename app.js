@@ -631,15 +631,11 @@ async function doPreview() {
 const ALR_NOTES = {
 en:
 `1. After receiving the asset labels, the receiving department must attach each label directly to its asset as soon as the handover with the carrier is complete, and take two (2) photographs (one close-up of the attached label and one overall view of the asset showing the label).
-
 2. Both photographs must be uploaded to the Asset Management System under the asset record, printed, and attached to the Asset Handover Form.
-
 Note: If the two (2) photographs of the asset label are not attached to the Asset Handover Form, the final payment request will not be approved.`,
 vi:
 `1. Sau khi tiếp nhận tem nhãn tài sản, bộ phận nhận bàn giao có trách nhiệm dán tem nhãn trực tiếp lên tài sản khi hoàn tất quá trình giao nhận với đơn vị vận chuyển, đồng thời chụp hai (2) hình ảnh (gồm một (1) hình ảnh chụp cận tem nhãn đã được dán và một (1) ảnh toàn cảnh tài sản có tem nhãn).
-
 2. Hai (2) hình ảnh đã chụp cần được cập nhật trên Hệ thống Quản lý Tài sản tại mục Thẻ tài sản, đồng thời được in ra và đính kèm vào Biên bản nghiệm thu (Asset Handover Form).
-
 Lưu ý: Nếu hai (2) hình ảnh về tem nhãn tài sản không được đính kèm vào Biên bản nghiệm thu, yêu cầu hoàn tất thanh toán đợt cuối sẽ không được thông qua.`
 };
 
@@ -725,6 +721,19 @@ async function loadAlrAssets() {
   if (ship) q.push('shipment_id=eq.' + ship);
   if (dept) q.push('dept_code=eq.' + dept);
   if (loc)  q.push('location_code=eq.' + loc);
+
+  // The project code lives on the asset as purpose_code -- that is what the
+  // intake screen writes from its "Project" field.
+  const proj = $('#alProjF').value.trim();
+  if (proj) q.push('purpose_code=ilike.*' + proj.replace(/[(),*]/g, ' ').trim() + '*');
+
+  const nm = $('#alName').value.trim().replace(/[(),*]/g, ' ').trim();
+  if (nm) q.push(`or=(name_vi.ilike.*${nm}*,name_en.ilike.*${nm}*)`);
+
+  // One picker for both levels: "g:C2112" is an accounting group, "c:FUR" a category.
+  const cat = $('#alCat').value;
+  if (cat.startsWith('g:')) q.push('group_code=eq.' + cat.slice(2));
+  else if (cat.startsWith('c:')) q.push('category_code=eq.' + cat.slice(2));
   msg(box, 'info', t('table.loading'));
   try {
     const rows = await SB.select('am_asset', q.join('&'));
@@ -748,18 +757,23 @@ function loadAlrDemo() {
 
 const alrPicked = () => ALR.rows.filter(r => r._pick !== false);
 
+/* Company identity ranged left, document identity ranged right — the layout of
+   the original ASSET LABEL RECEIPT.xlsx. The project code is deliberately not
+   printed: the receipt number already carries it (FFE.KIT.05.2025 -> AL.KIT.05.2025). */
 function docHeader() {
-  const h = el('div', { className: 'doc-head' }, [
-    el('div', { className: 'co', textContent: t('alr.doc.company') }),
-    el('div', { className: 'addr', textContent: t('alr.doc.addr') }),
-    el('div', { className: 'ttl', textContent: t('alr.doc.title') })
-  ]);
-  const meta = el('div', { className: 'doc-meta' }, [
-    el('div', {}, [el('b', { textContent: t('alr.doc.no') }), $('#alCode').value || '—']),
-    el('div', {}, [el('b', { textContent: t('alr.doc.date') }), fmtDate($('#alDate').value)]),
-    el('div', {}, [el('b', { textContent: t('alr.doc.project') }), $('#alProject').value || '—'])
-  ]);
-  return [h, meta];
+  return [el('div', { className: 'doc-head' }, [
+    el('div', { className: 'left' }, [
+      el('div', { className: 'co', textContent: t('alr.doc.company') }),
+      el('div', { className: 'addr', textContent: t('alr.doc.addr') })
+    ]),
+    el('div', { className: 'right' }, [
+      el('div', { className: 'ttl', textContent: t('alr.doc.title') }),
+      el('div', { className: 'meta' }, [
+        el('div', {}, [el('b', { textContent: t('alr.doc.no') }), $('#alCode').value || '—']),
+        el('div', {}, [el('b', { textContent: t('alr.doc.date') }), fmtDate($('#alDate').value)])
+      ])
+    ])
+  ])];
 }
 
 function barcodeSvg(code, opts = {}) {
@@ -781,9 +795,9 @@ function buildDoc() {
 
   root.append(...docHeader());
 
-  const COLS = [['alr.doc.h.no', '4%'], ['alr.doc.h.code', '13%'], ['alr.doc.h.name', '15%'],
-                ['alr.doc.h.qty', '6%'], ['alr.doc.h.spec', '24%'], ['alr.doc.h.price', '9%'],
-                ['alr.doc.h.loc', '12%'], ['alr.doc.h.label', '17%']];
+  const COLS = [['alr.doc.h.no', '4%'], ['alr.doc.h.code', '16%'], ['alr.doc.h.name', '18%'],
+                ['alr.doc.h.qty', '7%'], ['alr.doc.h.spec', '27%'], ['alr.doc.h.price', '10%'],
+                ['alr.doc.h.loc', '13%'], ['alr.doc.h.label', '5%']];
   const tb = el('table', { className: 'doc' });
   const cg = el('colgroup');
   for (const [, w] of COLS) cg.append(el('col', { style: 'width:' + w }));
@@ -802,7 +816,10 @@ function buildDoc() {
       el('td', { textContent: specSummary(r) }),
       el('td', { className: 'r', textContent: fmtNum(r.unit_price) }),
       el('td', { textContent: [r.location_code, r.location_name].filter(Boolean).join(' — ') }),
-      el('td', { className: 'lbl' }, barcodeSvg(r.barcode, { height: 26, width: 1.2, fontSize: 10 }))
+      // An empty box the receiver ticks to confirm the label was attached --
+      // as in the original form. The barcode belongs on the label itself,
+      // not in a column of the receipt.
+      el('td', { className: 'lbl' }, el('span', { className: 'tick' }))
     ]));
   });
   tb.append(body);
@@ -815,6 +832,8 @@ function buildDoc() {
   root.append(el('div', { className: 'doc-sign' }, [
     el('div', {}, [el('b', { textContent: t('alr.doc.prepared') }),
                    el('i', {}), document.createTextNode($('#alPrep').value || '')]),
+    el('div', {}, [el('b', { textContent: t('alr.doc.approved') }),
+                   el('i', {}), document.createTextNode($('#alAppr').value || '')]),
     el('div', {}, [el('b', { textContent: t('alr.doc.received') }),
                    el('i', {}), document.createTextNode($('#alRecv').value || '')])
   ]));
@@ -853,11 +872,105 @@ function buildLabels() {
   msg('#alOutMsg', 'ok', t('alr.labelsBuilt', { n: rows.length, c: cols }));
 }
 
-/* The 8-column receipt needs landscape; the label sheet needs portrait. */
+/* ------------------------------------------------- Brother 18 mm labels
+   Rebuilt from the three P-touch templates in Template Beetrack_PHCL
+   (Nhãn Sofitel / Nhãn Central Plaza / Nhãn PHCL). All three are identical in
+   geometry, so one layout covers them:
+
+     tape    51.2pt x 180pt landscape  = 18.0 x 63.5 mm  (Brother PT-P900W)
+     printed 174.4 x 46.8pt            = 61.5 x 16.5 mm
+     layout  [ company 38pt ][ asset code 7.5pt + name 5.8pt, 90pt ][ QR 40pt ]
+
+   The code is a QR, not Code128 -- that is what the existing labels carry and
+   what the hand scanners in the hotel are set up to read. */
+const LBL = { w: 63.5, h: 18, pad: 0.8 };   // mm
+
+function qrSvg(text, mm) {
+  const px = v => v + 'mm';
+  try {
+    const qr = qrcode(0, 'M');          // smallest version that fits, medium ECC
+    qr.addData(text);
+    qr.make();
+    const n = qr.getModuleCount();
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', `0 0 ${n} ${n}`);
+    svg.setAttribute('width', px(mm));
+    svg.setAttribute('height', px(mm));
+    svg.setAttribute('shape-rendering', 'crispEdges');
+    let d = '';
+    for (let r = 0; r < n; r++)
+      for (let c = 0; c < n; c++)
+        if (qr.isDark(r, c)) d += `M${c} ${r}h1v1h-1z`;
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', d);
+    p.setAttribute('fill', '#000');
+    svg.append(p);
+    return svg;
+  } catch {
+    return el('code', { textContent: text, style: 'font-size:5pt' });
+  }
+}
+
+/* P-touch shrinks a text object until it fits its box; CSS has no equivalent,
+   and a 24-character asset code does not fit 31.5 mm at 7.5pt. Measure and step
+   down instead of letting the code silently truncate -- a clipped asset code on
+   a printed label is worse than a small one. */
+function fitText(node, maxPt, minPt) {
+  let pt = maxPt;
+  node.style.fontSize = pt + 'pt';
+  while (pt > minPt && node.scrollWidth > node.clientWidth) {
+    pt = Math.round((pt - 0.25) * 100) / 100;
+    node.style.fontSize = pt + 'pt';
+  }
+  return pt;
+}
+
+function buildTape() {
+  const rows = alrPicked();
+  const root = $('#printRoot');
+  root.innerHTML = '';
+  if (!rows.length) { msg('#alOutMsg', 'err', t('alr.nonePicked')); return; }
+  if (typeof qrcode !== 'function')
+    return msg('#alOutMsg', 'err', t('alr.noQr'));
+
+  const brand = $('#alBrand').value;
+  const strip = el('div', { className: 'tape-wrap' });
+  for (const r of rows) {
+    strip.append(el('div', { className: 'tape' }, [
+      el('div', { className: 'tp-co' }, brand.split('|').map(s =>
+        el('div', { textContent: s }))),
+      el('div', { className: 'tp-mid' }, [
+        el('div', { className: 'tp-code', textContent: r.asset_code }),
+        el('div', { className: 'tp-name',
+                    textContent: [r.name_vi, r.name_en].filter(Boolean).join('/') })
+      ]),
+      el('div', { className: 'tp-qr' }, qrSvg(r.barcode, 14.5))
+    ]));
+  }
+  root.append(strip);
+
+  // Only measurable once attached. Every asset code then gets the size the
+  // longest one needs, so a batch of labels looks like one batch.
+  const codes = [...strip.querySelectorAll('.tp-code')];
+  let smallest = 7.5;
+  for (const n of codes) smallest = Math.min(smallest, fitText(n, 7.5, 4.5));
+  for (const n of codes) n.style.fontSize = smallest + 'pt';
+  for (const n of strip.querySelectorAll('.tp-name')) fitText(n, 5.8, 4);
+
+  ALR.mode = 'tape';
+  $('#btnAlPrint').disabled = false;
+  msg('#alOutMsg', 'ok', t('alr.tapeBuilt', { n: rows.length, pt: smallest }));
+}
+
+/* The receipt needs A4 landscape, the A4 label sheet portrait, and the Brother
+   tape its own page the exact size of one label. @page has to be rewritten
+   before every print because the three cannot coexist. */
 function printNow() {
   document.getElementById('am-page-rule')?.remove();
   const st = el('style', { id: 'am-page-rule' });
-  st.textContent = `@page{size:A4 ${ALR.mode === 'doc' ? 'landscape' : 'portrait'};margin:10mm}`;
+  st.textContent = ALR.mode === 'tape'
+    ? `@page{size:${LBL.w}mm ${LBL.h}mm;margin:0}`
+    : `@page{size:A4 ${ALR.mode === 'doc' ? 'landscape' : 'portrait'};margin:10mm}`;
   document.head.append(st);
   window.print();
 }
@@ -872,6 +985,7 @@ async function saveAlr() {
       issue_date: $('#alDate').value || null,
       project_code: $('#alProject').value.trim() || null,
       prepared_by: $('#alPrep').value.trim() || null,
+      approved_by: $('#alAppr').value.trim() || null,
       received_by: $('#alRecv').value.trim() || null,
       notes_text: $('#alNotes').value,
       shipment_id: $('#alShip').value || null,
@@ -881,7 +995,76 @@ async function saveAlr() {
     await SB.insert('am_alr_line',
       rows.map((r, i) => ({ alr_id: alr.id, line_no: i + 1, asset_id: r.id })));
     msg('#alOutMsg', 'ok', t('alr.saved', { code: alr.code, id: alr.id, n: rows.length }));
+    alrHistory();
   } catch (e) { msg('#alOutMsg', 'err', t('alr.saveFail', { err: e.message })); }
+}
+
+/* ------------------------------------------------------- saved receipts
+   A receipt that has been printed and handed over is a record, so it has to be
+   reopenable: the lines are stored by asset_id, and the assets are re-read at
+   open time rather than copied, so a later correction to an asset shows up. */
+async function alrHistory() {
+  const box = $('#alHist');
+  box.innerHTML = '';
+  if (!SB.ready()) return;
+  let list;
+  try {
+    list = await SB.select('am_alr',
+      'select=id,code,issue_date,project_code,prepared_by,received_by,' +
+      'am_alr_line(count)&order=id.desc&limit=50');
+  } catch (e) { return msg('#alHistMsg', 'warn', e.message); }
+  if (!list.length) return msg('#alHistMsg', '', t('alr.histEmpty'));
+  msg('#alHistMsg', '', '');
+
+  const tb = el('table');
+  tb.append(el('tr', {}, ['alr.h.code', 'alr.h.date', 'alr.h.project', 'alr.h.lines', '']
+    .map(k => el('th', { textContent: k ? t(k) : '' }))));
+  for (const a of list) {
+    const open = el('button', { className: 'btn', textContent: t('alr.histOpen') });
+    open.onclick = () => alrOpen(a.id);
+    tb.append(el('tr', {}, [
+      el('td', {}, el('code', { textContent: a.code || '#' + a.id })),
+      el('td', { textContent: fmtDate(a.issue_date) }),
+      el('td', { textContent: a.project_code || '' }),
+      el('td', { className: 'num', textContent: fmtInt(a.am_alr_line?.[0]?.count ?? 0) }),
+      el('td', {}, open)
+    ]));
+  }
+  box.append(el('div', { className: 'wrap', style: 'max-height:30vh' }, tb));
+}
+
+async function alrOpen(id) {
+  const out = $('#alHistMsg');
+  msg(out, 'info', t('alr.histLoading'));
+  try {
+    const [a] = await SB.select('am_alr', `select=*&id=eq.${id}`);
+    if (!a) return msg(out, 'err', t('alr.histGone'));
+    const lines = await SB.select('am_alr_line',
+      `select=line_no,am_asset(*)&alr_id=eq.${id}&order=line_no`);
+
+    $('#alCode').value = a.code || '';
+    $('#alDate').value = a.issue_date || '';
+    $('#alProject').value = a.project_code || '';
+    $('#alPrep').value = a.prepared_by || '';
+    $('#alAppr').value = a.approved_by || '';
+    $('#alRecv').value = a.received_by || '';
+    if (a.notes_text) $('#alNotes').value = a.notes_text;
+
+    const locs = await lookup('am_location').catch(() => []);
+    const lmap = new Map(locs.map(l => [l.v, l.t]));
+    // A line whose asset was deleted comes back with am_asset null: drop it and
+    // say so, rather than printing a blank row.
+    const got = lines.filter(l => l.am_asset);
+    ALR.rows = got.map(l => ({ ...l.am_asset, _pick: true,
+      location_name: (lmap.get(l.am_asset.location_code) || '').split(' — ')[1] || '' }));
+    ALR.demo = false;
+    renderAlrList();
+    const lost = lines.length - got.length;
+    msg(out, lost ? 'warn' : 'ok',
+        t(lost ? 'alr.histOpenedGaps' : 'alr.histOpened',
+          { code: a.code || '#' + id, n: got.length, lost }));
+    buildDoc();
+  } catch (e) { msg(out, 'err', e.message); }
 }
 
 async function fillAlrPickers() {
@@ -904,6 +1087,24 @@ async function fillAlrPickers() {
     for (const o of sh)
       s.append(el('option', { value: o.id, textContent:
         [o.code || '#' + o.id, o.purpose_code, o.delivery_date].filter(Boolean).join(' · ') }));
+
+    // One list, two levels: accounting groups first, then the categories under
+    // them. The prefix tells loadAlrAssets() which column to filter on.
+    const [grps, cats] = await Promise.all([
+      SB.select('am_category_group', 'select=code,name_vi,name_en&order=sort_order'),
+      SB.select('am_category', 'select=code,group_code,name_vi,name_en&order=group_code,code')
+    ]);
+    const c = $('#alCat');
+    while (c.options.length > 1) c.remove(1);
+    const nm = o => (LANG === 'vi' ? o.name_vi : o.name_en) || o.name_vi || '';
+    const og = el('optgroup', { label: t('alr.catGroup') });
+    for (const o of grps)
+      og.append(el('option', { value: 'g:' + o.code, textContent: `${o.code} — ${nm(o)}` }));
+    const oc = el('optgroup', { label: t('alr.catCat') });
+    for (const o of cats)
+      oc.append(el('option', { value: 'c:' + o.code,
+                               textContent: `${o.code} (${o.group_code}) — ${nm(o)}` }));
+    c.append(og, oc);
   } catch { /* the Connection screen already reports it */ }
 }
 
@@ -920,10 +1121,18 @@ function initAlr() {
   };
   $('#btnAlLoad').onclick = loadAlrAssets;
   $('#btnAlDemo').onclick = loadAlrDemo;
+  $('#btnAlReset').onclick = () => {
+    $('#alShip').value = ''; $('#alDept').value = ''; $('#alLoc').value = '';
+    $('#alProjF').value = ''; $('#alName').value = ''; $('#alCat').value = '';
+  };
+  $('#alName').onkeydown = ev => { if (ev.key === 'Enter') loadAlrAssets(); };
+  $('#alProjF').onkeydown = ev => { if (ev.key === 'Enter') loadAlrAssets(); };
   $('#btnAlDoc').onclick = buildDoc;
   $('#btnAlLabels').onclick = buildLabels;
+  $('#btnAlTape').onclick = buildTape;
   $('#btnAlPrint').onclick = printNow;
   $('#btnAlSave').onclick = saveAlr;
+  $('#btnAlHist').onclick = alrHistory;
   renderAlrList();
 }
 
@@ -1094,7 +1303,7 @@ function showView(view) {
   } else {
     if (view === 'counter' && SB.ready()) loadCounters();
     if (view === 'rules' && SB.ready()) fillPickers();
-    if (view === 'alr' && SB.ready()) fillAlrPickers();
+    if (view === 'alr' && SB.ready()) { fillAlrPickers(); alrHistory(); }
     if (view === 'backup' && SB.ready()) bkCount();
     if (view === 'sources' && SB.ready()) srcLoad();
     if (view === 'register' && SB.ready()) { regFillPickers(); regLoad(true); }
@@ -1948,14 +2157,19 @@ async function regPrint() {
     const root = $('#printRoot');
     root.innerHTML = '';
     root.append(el('div', { className: 'doc-head' }, [
-      el('div', { className: 'co', textContent: t('alr.doc.company') }),
-      el('div', { className: 'ttl', textContent: t('page.register') })
-    ]));
-    root.append(el('div', { className: 'doc-meta' }, [
-      el('div', {}, [el('b', { textContent: t('alr.doc.date') }),
-                     new Date().toISOString().slice(0, 10)]),
-      el('div', {}, [el('b', { textContent: '' }),
-                     t('reg.count', { shown: fmtInt(rows.length), total: fmtInt(REG.total) })])
+      el('div', { className: 'left' }, [
+        el('div', { className: 'co', textContent: t('alr.doc.company') }),
+        el('div', { className: 'addr', textContent: t('alr.doc.addr') })
+      ]),
+      el('div', { className: 'right' }, [
+        el('div', { className: 'ttl', textContent: t('page.register') }),
+        el('div', { className: 'meta' }, [
+          el('div', {}, [el('b', { textContent: t('alr.doc.date') }),
+                         fmtDate(new Date().toISOString().slice(0, 10))]),
+          el('div', {}, t('reg.count', { shown: fmtInt(rows.length),
+                                         total: fmtInt(REG.total) }))
+        ])
+      ])
     ]));
     const tb = el('table', { className: 'doc' });
     tb.append(el('thead', {}, el('tr', {}, REG.cols.map(c =>

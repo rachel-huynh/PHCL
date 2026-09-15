@@ -185,12 +185,20 @@
   #printRoot{background:#fff;border:1px solid var(--line);border-radius:6px;
              padding:12mm 10mm;margin-top:14px;color:#000}
   #printRoot:empty{display:none}
-  .doc-head{text-align:center;margin-bottom:10px}
+  /* Company identity left, document identity right — as the source form. */
+  .doc-head{display:flex;justify-content:space-between;align-items:flex-start;
+            gap:20px;margin-bottom:12px}
+  .doc-head .left{text-align:left}
+  .doc-head .right{text-align:right}
   .doc-head .co{font-weight:700;font-size:13px;text-transform:uppercase}
   .doc-head .addr{font-size:11.5px;color:#333;margin-top:1px}
-  .doc-head .ttl{font-weight:700;font-size:14.5px;margin-top:11px;text-transform:uppercase}
+  .doc-head .ttl{font-weight:700;font-size:14.5px;text-transform:uppercase}
+  .doc-head .meta{font-size:12px;margin-top:6px}
+  .doc-head .meta b{font-weight:600;margin-right:4px}
   .doc-meta{display:flex;gap:34px;font-size:12px;margin:9px 0 12px}
   .doc-meta b{font-weight:600}
+  /* Empty box the receiver ticks once the label is attached. */
+  table.doc .tick{display:inline-block;width:11px;height:11px;border:1px solid #000}
   table.doc{border-collapse:collapse;width:100%;font-size:11px;table-layout:fixed}
   table.doc th,table.doc td{border:1px solid #000;padding:3px 5px;vertical-align:top;
                             white-space:normal;word-wrap:break-word}
@@ -203,7 +211,7 @@
   .doc-notes{margin-top:12px;font-size:10.5px;line-height:1.45;white-space:pre-wrap}
   .doc-sign{display:flex;justify-content:space-between;margin-top:26px;font-size:11.5px;
             text-align:center}
-  .doc-sign div{width:44%}
+  .doc-sign div{flex:1}
   .doc-sign b{display:block;font-weight:600}
   .doc-sign i{display:block;height:58px}
 
@@ -215,6 +223,25 @@
            overflow:hidden;max-height:2.6em}
   .lab .cd{font-size:8.5px;color:#333;font-family:var(--mono)}
 
+  /* ---- Brother PT-P900W, 18 mm tape ----------------------------------
+     Geometry copied from the P-touch templates: 63.5 x 18 mm per label,
+     61.5 x 16.5 mm printable. One label per printed page, so @page is set
+     to exactly one label and the printer's auto-cut lands between them.
+     On screen they are stacked with a dashed edge to preview the run.    */
+  .tape-wrap{display:flex;flex-direction:column;gap:3mm;align-items:flex-start}
+  .tape{width:63.5mm;height:18mm;box-sizing:border-box;padding:0.75mm 1mm;
+        display:flex;align-items:center;gap:1mm;overflow:hidden;
+        background:#fff;color:#000;border:1px dashed #b9c0cb;break-inside:avoid}
+  .tape .tp-co{width:13mm;flex:none;font-size:6.2pt;font-weight:700;line-height:1.15;
+               letter-spacing:.2px;text-align:center}
+  .tape .tp-mid{flex:1;min-width:0}
+  .tape .tp-code{font-family:var(--mono);font-size:7.5pt;font-weight:700;
+                 line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tape .tp-name{font-size:5.8pt;line-height:1.2;margin-top:.5mm;
+                 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tape .tp-qr{width:15mm;height:15mm;flex:none;display:flex;align-items:center}
+  .tape .tp-qr svg{display:block}
+
   @media print{
     aside,.top,.lead,.card,.foots,section:not(.on){display:none!important}
     body{background:#fff}
@@ -222,6 +249,11 @@
     .shell{display:block}
     #printRoot{border:none;border-radius:0;padding:0;margin:0}
     .lab{border-style:solid;border-color:#ccc}
+    /* One tape label per page, no gap and no preview edge — the printer's own
+       cut separates them, a border would waste tape and shift the content. */
+    .tape-wrap{display:block;gap:0}
+    .tape{border:none;page-break-after:always;break-after:page}
+    .tape:last-child{page-break-after:auto;break-after:auto}
   }
 
   @media (max-width:860px){
@@ -381,7 +413,16 @@
           <select id="alDept"><option value="" data-i18n="alr.all"></option></select></div>
         <div class="fld" style="max-width:170px"><label data-i18n="alr.loc"></label>
           <select id="alLoc"><option value="" data-i18n="alr.all"></option></select></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div class="fld" style="max-width:180px"><label data-i18n="alr.projectF"></label>
+          <input id="alProjF" spellcheck="false" data-i18n-ph="alr.projectFPh"></div>
+        <div class="fld" style="max-width:200px"><label data-i18n="alr.name"></label>
+          <input id="alName" spellcheck="false" data-i18n-ph="alr.namePh"></div>
+        <div class="fld" style="max-width:260px"><label data-i18n="alr.cat"></label>
+          <select id="alCat"><option value="" data-i18n="alr.all"></option></select></div>
         <button class="btn pri" id="btnAlLoad" data-i18n="alr.load"></button>
+        <button class="btn" id="btnAlReset" data-i18n="alr.reset"></button>
         <button class="btn" id="btnAlDemo" data-i18n="alr.demo"></button>
       </div>
       <div id="alListMsg"></div>
@@ -401,6 +442,8 @@
           <input id="alDate" type="date"></div>
         <div class="fld" style="max-width:190px"><label data-i18n="alr.prep"></label>
           <input id="alPrep" value="Huỳnh Thị Trúc Dịu"></div>
+        <div class="fld" style="max-width:190px"><label data-i18n="alr.appr"></label>
+          <input id="alAppr" data-i18n-ph="alr.apprPh"></div>
         <div class="fld" style="max-width:190px"><label data-i18n="alr.recv"></label>
           <input id="alRecv" data-i18n-ph="alr.recvPh"></div>
       </div>
@@ -421,7 +464,25 @@
         <button class="btn" id="btnAlPrint" disabled data-i18n="alr.print"></button>
         <button class="btn" id="btnAlSave" disabled data-i18n="alr.saveDb"></button>
       </div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" id="btnAlTape" data-i18n="alr.buildTape"></button>
+        <div class="fld" style="max-width:300px"><label data-i18n="alr.brand"></label>
+          <select id="alBrand">
+            <option value="SOFITEL|SAIGON PLAZA">Sofitel Saigon Plaza</option>
+            <option value="CENTRAL|PLAZA">Central Plaza</option>
+            <option value="CTY TNHH|LDKS PLAZA">PHCL</option>
+          </select></div>
+      </div>
+      <div class="hint" data-i18n-html="alr.tapeHint_html"></div>
       <div id="alOutMsg"></div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="alr.h.hist"></h2>
+      <p class="hint" data-i18n="alr.histHint"></p>
+      <div class="row"><button class="btn" id="btnAlHist" data-i18n="alr.histReload"></button></div>
+      <div id="alHistMsg"></div>
+      <div id="alHist" style="margin-top:8px"></div>
     </div>
 
     <div id="printRoot"></div>
@@ -616,6 +677,9 @@
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<!-- Brother label = QR, not Code128. The existing hotel labels and the hand
+     scanners are set up for QR, so the tape print has to match. -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 <script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>

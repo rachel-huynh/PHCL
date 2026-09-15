@@ -23,9 +23,11 @@ with chk(ord, nhom, muc, thuc_te, mong_doi, dat) as (
   union all select 2, 'Cấu trúc', 'Số hàm am_*',
          (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public' and p.proname like 'am\_%')::text,
-         '15',
+         -- Đếm >= chứ không = : thêm hàm mới là chuyện bình thường, còn
+         -- MẤT hàm mới là lỗi. 17 = 15 gốc + am_suggest_lines/_detail.
+         '>= 17',
          (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-           where n.nspname = 'public' and p.proname like 'am\_%') = 15
+           where n.nspname = 'public' and p.proname like 'am\_%') >= 17
 
   union all select 3, 'Cấu trúc', 'View am_alr_print (file 05)',
          (select count(*) from information_schema.views

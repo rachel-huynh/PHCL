@@ -11,6 +11,8 @@
 
 alter table am_alr add column if not exists project_code   text;
 alter table am_alr add column if not exists prepared_by    text;
+-- Người duyệt ký GIỮA người lập và người nhận trên biên bản in.
+alter table am_alr add column if not exists approved_by    text;
 alter table am_alr add column if not exists received_by    text;
 alter table am_alr add column if not exists received_dept  text references am_org(code);
 alter table am_alr add column if not exists notes_text     text;

@@ -2023,14 +2023,31 @@ returns table (scope text, counter_next bigint, table_max bigint, gap bigint)
 language sql
 stable
 as $$
-  select  s.dept_code || '|' || s.letters,
-          s.next_seq::bigint,
+  -- Duyệt HỢP của hai phía, không phải chỉ từ bảng bộ đếm ra.
+  --
+  -- Nếu chỉ duyệt từ am_asset_seq thì khoá nào có tài sản nhưng CHƯA có dòng
+  -- bộ đếm sẽ vô hình — mà đó mới là trường hợp nguy hiểm nhất: cấp mã cho
+  -- khoá đó bắt đầu từ 1 và đụng ngay mã đã có. Khoá thiếu bộ đếm coi như
+  -- next_seq = 0 nên gap ra âm và bị bắt lỗi.
+  --
+  -- seq = 0 là dòng lịch sử có mã không phân tích được, không được phép kéo
+  -- bộ đếm lên nên loại ra.
+  with k as (
+    select dept_code, letters from am_asset_seq
+    union
+    select dept_code, letters from am_asset where seq > 0
+  ),
+  mx as (
+    select dept_code, letters, max(seq) mx
+    from am_asset where seq > 0 group by 1, 2
+  )
+  select  k.dept_code || '|' || k.letters,
+          coalesce(s.next_seq, 0)::bigint,
           coalesce(a.mx, 0)::bigint,
-          s.next_seq::bigint - coalesce(a.mx, 0)::bigint - 1
-  from    am_asset_seq s
-  left join (
-    select dept_code, letters, max(seq) mx from am_asset group by 1, 2
-  ) a on a.dept_code = s.dept_code and a.letters = s.letters
+          coalesce(s.next_seq, 0)::bigint - coalesce(a.mx, 0)::bigint - 1
+  from    k
+  left join am_asset_seq s using (dept_code, letters)
+  left join mx a           using (dept_code, letters)
   order by 1
 $$;
 
@@ -2314,6 +2331,8 @@ alter function am_seed_from_codes(text[])                        owner to postgr
 
 alter table am_alr add column if not exists project_code   text;
 alter table am_alr add column if not exists prepared_by    text;
+-- Người duyệt ký GIỮA người lập và người nhận trên biên bản in.
+alter table am_alr add column if not exists approved_by    text;
 alter table am_alr add column if not exists received_by    text;
 alter table am_alr add column if not exists received_dept  text references am_org(code);
 alter table am_alr add column if not exists notes_text     text;
