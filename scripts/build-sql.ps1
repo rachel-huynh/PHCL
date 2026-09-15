@@ -7,7 +7,8 @@
 $SqlDir = (Resolve-Path $SqlDir).Path
 # 06_seed_product.sql must come after 03_functions.sql: it calls am_norm().
 $order = @('01_schema.sql', '02_seed_settings.sql',
-           '02a_seed_org.sql', '02b_seed_category.sql', '02c_seed_unit.sql',
+           '02a_seed_org.sql', '02b_seed_category.sql', '02b2_seed_category_opex.sql',
+           '02c_seed_unit.sql',
            '02d_seed_origin.sql', '02e_seed_location.sql',
            '03_functions.sql', '04_rls.sql', '05_alr.sql',
            '06_seed_product.sql', '07_data_source.sql', '08_seed_counters.sql')

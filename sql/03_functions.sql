@@ -387,7 +387,8 @@ begin
   suggested_category := null;
   warnings           := array[]::text[];
 
-  select g.code, g.is_tools, g.is_intangible
+  select g.code, g.is_tools, g.is_intangible,
+         coalesce(g.expense_class, 'CAPEX') as expense_class
     into v_grp
     from am_category c join am_category_group g on g.code = c.group_code
    where c.code = upper(trim(p_category_code));
@@ -414,6 +415,15 @@ begin
           to_char(v_capex_threshold, 'FM999,999,999,999'),
           p_category_code);
       end if;
+    elsif v_grp.expense_class = 'OPEX' then
+      -- O4000 is operating supplies and carries no accounting code, so it is
+      -- never blocked. But an item this expensive is very unlikely to belong
+      -- there, so say so and let the buyer decide.
+      warnings := warnings || format(
+        'Đơn giá %s > %s nhưng mã %s thuộc nhóm OPEX %s (đồ dùng vận hành, không có mã kế toán) — kiểm tra lại xem có phải TSCĐ không.',
+        to_char(p_unit_price, 'FM999,999,999,999'),
+        to_char(v_capex_threshold, 'FM999,999,999,999'),
+        p_category_code, v_grp.code);
     elsif v_grp.is_tools then
       -- STU / STG chưa nằm trong danh sách cấm được nêu rõ, nhưng vẫn là CCDC
       warnings := warnings || format(

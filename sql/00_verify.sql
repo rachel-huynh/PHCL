@@ -59,10 +59,10 @@ with chk(ord, nhom, muc, thuc_te, mong_doi, dat) as (
   union all select 12, 'Master data', 'am_org_alias',
          (select count(*) from am_org_alias)::text, '5', (select count(*) from am_org_alias) = 5
   union all select 13, 'Master data', 'am_category_group (mã cha)',
-         (select count(*) from am_category_group)::text, '15',
-         (select count(*) from am_category_group) = 15
+         (select count(*) from am_category_group)::text, '16',
+         (select count(*) from am_category_group) = 16
   union all select 14, 'Master data', 'am_category (mã loại)',
-         (select count(*) from am_category)::text, '28', (select count(*) from am_category) = 28
+         (select count(*) from am_category)::text, '36', (select count(*) from am_category) = 36
   union all select 15, 'Master data', 'am_unit',
          (select count(*) from am_unit)::text, '16', (select count(*) from am_unit) = 16
   union all select 16, 'Master data', 'am_origin (ISO 3166-1)',
@@ -88,6 +88,10 @@ with chk(ord, nhom, muc, thuc_te, mong_doi, dat) as (
   union all select 24, 'Master data', 'OEM thuộc C2114 (mã riêng, KHÔNG phải OME)',
          coalesce((select group_code from am_category where code = 'OEM'), '(thiếu)'), 'C2114',
          (select group_code from am_category where code = 'OEM') = 'C2114'
+  union all select 28, 'Master data', 'Nhóm OPEX O4000 + 8 mã con',
+         (select count(*) from am_category where group_code = 'O4000')::text, '8',
+         (select count(*) from am_category where group_code = 'O4000') = 8
+         and (select expense_class from am_category_group where code = 'O4000') = 'OPEX'
   union all select 25, 'Master data', 'Cây vị trí: toà nhà CP và SOF',
          (select count(*) from am_location where kind = 'building')::text, '2',
          (select count(*) from am_location where kind = 'building') = 2

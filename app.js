@@ -129,6 +129,7 @@ const TABLES = {
   am_category_group: {
     pk: 'code', order: 'sort_order',
     cols: [T('code', { w: 80 }), T('name_vi', { w: 340 }), T('name_en', { w: 300 }),
+           T('expense_class', { type: 'select', opts: ['CAPEX', 'OPEX'], w: 100 }),
            T('is_intangible', { type: 'bool' }), T('is_tools', { type: 'bool' }),
            T('sort_order', { type: 'int', w: 80 })]
   },

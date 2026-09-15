@@ -56,8 +56,12 @@ create table if not exists am_category_group (
   name_en         text,
   is_intangible   boolean not null default false,
   is_tools        boolean not null default false,
+  expense_class   text not null default 'CAPEX'
+                  check (expense_class in ('CAPEX', 'OPEX')),
   sort_order      int not null default 0
 );
+comment on column am_category_group.expense_class is
+  'CAPEX = các nhóm tài khoản C2xxx. OPEX = đồ dùng vận hành (O4000), không gắn mã kế toán.';
 comment on column am_category_group.is_intangible is 'C213x = tài sản vô hình';
 comment on column am_category_group.is_tools is 'C242x = CCDC, không đủ điều kiện ghi nhận TSCĐ';
 
