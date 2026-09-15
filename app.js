@@ -1765,8 +1765,23 @@ const REG_COLS = [
 const REG_DEFAULT = ['asset_code', 'barcode', 'name_vi', 'category_code',
                      'dept_code', 'location_code', 'qty', 'unit_code',
                      'unit_price', 'purchase_year', 'status_code'];
-const REG_NUM = new Set(['seq', 'qty', 'unit_price', 'purchase_year',
-                         'depreciate_months', 'spec_mfg_year']);
+/* How each column is rendered. Only money and quantities are right-aligned —
+   header included — everything else reads better ranged left.
+   Years and sequence numbers are numeric but are NOT quantities: a thousands
+   separator turns 2026 into "2,026", so they print as plain digits. */
+const REG_RIGHT = new Set(['qty', 'unit_price', 'depreciate_months']);
+const REG_PLAIN = new Set(['seq', 'purchase_year', 'spec_mfg_year']);
+const REG_DATE  = new Set(['purchase_date', 'in_use_date', 'created_at']);
+
+function regCell(col, v) {
+  if (v == null || v === '') return '';
+  if (REG_RIGHT.has(col)) return fmtNum(v);
+  if (REG_PLAIN.has(col)) return String(v);
+  // created_at is a timestamptz; the date half is all the register shows.
+  if (REG_DATE.has(col)) return fmtDate(String(v).slice(0, 10));
+  if (typeof v === 'boolean') return v ? '✔' : '';
+  return String(v);
+}
 
 const REG_KEY = 'asset-intake.regCols';
 const REG_SIZE = 100;
@@ -1826,7 +1841,9 @@ function regRender() {
   head.innerHTML = ''; body.innerHTML = '';
   const hr = el('tr');
   for (const c of REG.cols) {
-    const th = el('th', { className: 'sortable' });
+    // The header carries the same alignment as its cells, so a money column
+    // reads as one right-ranged block instead of a left title over right digits.
+    const th = el('th', { className: 'sortable' + (REG_RIGHT.has(c) ? ' num' : '') });
     th.append(document.createTextNode(c));
     if (REG.sort === c) th.append(el('span', { className: 'dir',
                                                textContent: REG.dir === 'asc' ? '▲' : '▼' }));
@@ -1842,13 +1859,9 @@ function regRender() {
   for (const r of REG.rows) {
     const tr = el('tr');
     for (const c of REG.cols) {
-      const v = r[c];
       tr.append(el('td', {
-        className: REG_NUM.has(c) ? 'num' : '',
-        textContent: v == null ? ''
-          : REG_NUM.has(c) ? fmtNum(v)
-          : typeof v === 'boolean' ? (v ? '✔' : '')
-          : String(v)
+        className: REG_RIGHT.has(c) ? 'num' : '',
+        textContent: regCell(c, r[c])
       }));
     }
     body.append(tr);
@@ -1945,12 +1958,13 @@ async function regPrint() {
                      t('reg.count', { shown: fmtInt(rows.length), total: fmtInt(REG.total) })])
     ]));
     const tb = el('table', { className: 'doc' });
-    tb.append(el('thead', {}, el('tr', {}, REG.cols.map(c => el('th', { textContent: c })))));
+    tb.append(el('thead', {}, el('tr', {}, REG.cols.map(c =>
+      el('th', { className: REG_RIGHT.has(c) ? 'r' : '', textContent: c })))));
     const tbody = el('tbody');
     for (const r of rows)
       tbody.append(el('tr', {}, REG.cols.map(c => el('td', {
-        className: REG_NUM.has(c) ? 'r' : '',
-        textContent: r[c] == null ? '' : REG_NUM.has(c) ? fmtNum(r[c]) : String(r[c])
+        className: REG_RIGHT.has(c) ? 'r' : '',
+        textContent: regCell(c, r[c])
       }))));
     tb.append(tbody);
     root.append(tb);
@@ -2453,6 +2467,9 @@ async function legRead() {
     if (!master.comp.has(comp)) errs.push(t('leg.eNoCompany', { v: comp }));
     if (code && seenCode.has(code)) errs.push(t('leg.eDupCode'));
     if (bar && seenBar.has(bar)) errs.push(t('leg.eDupBarcode'));
+    // The barcode is what both "add new" and "update" match on, so a row
+    // without one has no identity to match: skip it rather than invent one.
+    if (!bar) errs.push(t('leg.eNoBarcode'));
 
     const parsed = /^([A-Z]{2,5})\.([A-Z0-9]{5})\.([A-Z]{3})\.(\d{4})\.(\d{5})$/.exec(code);
     if (!parsed) warns.push(t('leg.wOddCode'));
@@ -2475,7 +2492,7 @@ async function legRead() {
     LEG.rows.push({
       is_legacy: true,
       asset_code: code || `LEGACY-${line}`,
-      barcode: bar || `LEGACY-${line}`,
+      barcode: bar,
       // "Cung Barcode" means one barcode for the whole batch -> low-value.
       asset_kind: /cùng/i.test(legTxt(r[G.kind])) ? 'low' : 'unique',
       category_code: catCode,
@@ -2543,7 +2560,15 @@ async function legImport() {
     for (let i = 0; i < LEG.rows.length; i += LEG_CHUNK) {
       msg(out, 'info', t('leg.importing', { done: fmtInt(done),
                                             total: fmtInt(LEG.rows.length) }));
-      await SB.call('am_asset', {
+      // The barcode is the identity: both "add new" and "update" match on it.
+      // It is the only field present and unique on every row of the register --
+      // 860 asset codes do not even parse -- so it is what decides whether a
+      // row already exists.
+      // on_conflict also makes the import repeatable. Without it PostgREST
+      // resolves conflicts on the primary key, and since id is a bigserial we
+      // never send, a second run would insert duplicates and die on the unique
+      // index -- halfway through 17,000 rows.
+      await SB.call('am_asset?on_conflict=barcode', {
         method: 'POST',
         headers: SB.hdr({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
         body: JSON.stringify(LEG.rows.slice(i, i + LEG_CHUNK))
