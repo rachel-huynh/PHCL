@@ -1,4 +1,4 @@
-param([string]$SqlDir = "$PSScriptRoot\..\sql")
+﻿param([string]$SqlDir = "$PSScriptRoot\..\sql")
 
 # Gộp các file SQL theo đúng thứ tự chạy thành sql/ALL_IN_ONE.sql
 # để dán một lần vào Supabase SQL Editor.

@@ -1,4 +1,4 @@
-# asset-intake
+# PHCL — Asset Intake
 
 Công cụ nội bộ quản lý nhập tài sản từ các đợt giao hàng nhà cung cấp:
 chuẩn hóa theo quy tắc kế toán/danh mục của công ty, sinh Mã Tài Sản + Mã Vạch
@@ -44,19 +44,20 @@ Server tĩnh tự phục vụ file này khi gọi `/`.
 
 ### Đường dẫn trên GitHub Pages
 
-URL **phân biệt hoa/thường**, và có kèm tên repo hay không là tuỳ repo:
+Repo phải đặt tên **`PHCL`** thì URL mới ra đúng như đã chốt:
 
-| Repo chứa file | URL |
-|---|---|
-| `asset-intake` (repo dự án) | `https://<tài-khoản>.github.io/asset-intake/AssetManagement.html` |
-| `<tài-khoản>.github.io` (repo trang cá nhân) | `https://<tài-khoản>.github.io/AssetManagement.html` |
+```
+https://<tài-khoản>.github.io/PHCL/AssetManagement.html
+```
 
-Muốn URL **không có đoạn `/asset-intake/`** thì file phải nằm trong repo tên
-đúng bằng `<tài-khoản>.github.io`. Đó là quy định của GitHub Pages, không đổi
-được bằng cấu hình.
+Đoạn `/PHCL/` chính là **tên repo** — GitHub Pages luôn chèn tên repo vào
+đường dẫn, không tắt được bằng cấu hình. Đổi tên repo là đổi URL.
 
-Trỏ Pages vào nhánh `main`, thư mục gốc. Vì không có `index.html`, mở URL trống
-sẽ ra trang 404 của GitHub — bình thường, cứ dùng link đầy đủ ở trên.
+URL **phân biệt hoa/thường**: `AssetManagement.html` khác `assetmanagement.html`.
+
+Trỏ Pages vào nhánh `main`, thư mục gốc. Vì không có `index.html`, mở
+`https://<tài-khoản>.github.io/PHCL/` sẽ ra trang 404 của GitHub — bình thường,
+cứ dùng link đầy đủ ở trên.
 
 ## Ngôn ngữ
 

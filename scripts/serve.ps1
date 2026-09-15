@@ -1,11 +1,18 @@
-param([int]$Port = 8323, [string]$Root = "$PSScriptRoot\..",
+param([int]$Port = 8325, [string]$Root = "$PSScriptRoot\..",
       [string]$Default = 'AssetManagement.html')
+
+# Static file server for local testing. No Node/Python needed.
+#
+# KEEP THIS FILE PURE ASCII. Windows PowerShell 5.1 reads a .ps1 without a BOM
+# as ANSI, and a UTF-8 em-dash then decodes to a curly quote, which PowerShell
+# treats as a string delimiter -- that silently breaks the whole script. Editors
+# tend to drop the BOM when rewriting, so ASCII is the safe choice here.
 
 $Root = (Resolve-Path $Root).Path
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://localhost:$Port/")
 $listener.Start()
-Write-Host "asset-intake serving $Root on http://localhost:$Port/"
+Write-Host "PHCL - Asset Intake serving $Root on http://localhost:$Port/"
 
 $mime = @{
   '.html' = 'text/html; charset=utf-8'; '.js' = 'text/javascript; charset=utf-8'
@@ -20,39 +27,50 @@ try {
     $path = '/'
     try {
       $path = [uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath)
-      # Repo cố ý KHÔNG có index.html — trang chính là assetmanagement.html.
+      # The repo deliberately has no index.html; the entry page is AssetManagement.html.
       if ($path -eq '/') { $path = '/' + $Default }
       $file = Join-Path $Root ($path.TrimStart('/') -replace '/', '\')
       $full = [System.IO.Path]::GetFullPath($file)
 
-      if (-not $full.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase) -or
-          -not (Test-Path -LiteralPath $full -PathType Leaf)) {
+      # Browsers still request /favicon.ico even though the page declares an
+      # icon via a data URI. Answer 204 so the console stays clean.
+      if ($path -eq '/favicon.ico' -and -not (Test-Path -LiteralPath $full -PathType Leaf)) {
+        $ctx.Response.StatusCode = 204
+        $body = New-Object byte[] 0
+      }
+      elseif (-not $full.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase) -or
+              -not (Test-Path -LiteralPath $full -PathType Leaf)) {
         $ctx.Response.StatusCode = 404
         $ctx.Response.ContentType = 'text/plain; charset=utf-8'
         $body = [Text.Encoding]::UTF8.GetBytes("404 $path")
-      } else {
+      }
+      else {
         $ext = [System.IO.Path]::GetExtension($full).ToLower()
         $ctx.Response.StatusCode = 200
         $ctx.Response.ContentType = $(if ($mime.ContainsKey($ext)) { $mime[$ext] } else { 'application/octet-stream' })
         $ctx.Response.AddHeader('Cache-Control', 'no-store')
         $body = [System.IO.File]::ReadAllBytes($full)
       }
+
       if ($ctx.Request.HttpMethod -eq 'HEAD') {
-        # HEAD (harness dùng để thăm dò cổng): khai báo độ dài nhưng KHÔNG được
-        # ghi body, nếu ghi sẽ ném ProtocolViolationException.
+        # HEAD (the preview harness probes the port with it): declare the length
+        # but write NO body, otherwise .NET throws ProtocolViolationException.
         $ctx.Response.ContentLength64 = $body.Length
         $ctx.Response.Close()
         Write-Host ("{0} HEAD {1}" -f $ctx.Response.StatusCode, $path)
-      } else {
-        # Close(byte[], bool) tự đặt Content-Length rồi đóng stream — tránh lệch
-        # giữa ContentLength64 và số byte thực ghi.
+      }
+      else {
+        # Close(byte[], bool) sets Content-Length itself and closes the stream,
+        # so it cannot disagree with the number of bytes actually written.
         $ctx.Response.Close($body, $true)
         Write-Host ("{0} {1} ({2} bytes)" -f $ctx.Response.StatusCode, $path, $body.Length)
       }
-    } catch {
-      # Một request hỏng không được phép giết server.
+    }
+    catch {
+      # One bad request must never kill the server.
       Write-Host ("ERR {0}: {1}" -f $path, $_.Exception.Message)
       try { $ctx.Response.Abort() } catch {}
     }
   }
-} finally { $listener.Stop(); $listener.Close() }
+}
+finally { $listener.Stop(); $listener.Close() }

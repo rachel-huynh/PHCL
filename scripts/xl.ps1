@@ -1,4 +1,4 @@
-Add-Type -AssemblyName System.IO.Compression
+﻿Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Get-Sst($zip){
