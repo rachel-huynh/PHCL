@@ -17,18 +17,17 @@ từ bộ đếm bền vững, xuất Excel đăng ký tài sản và PDF tem nh
 
 | Giai đoạn | Trạng thái |
 |---|---|
-| 1. Schema master data + bộ đếm | ✅ viết xong, **chưa chạy thử trên Postgres** |
+| 1. Schema master data + bộ đếm | ✅ đã chạy trên Supabase; hàm sinh mã cho kết quả đúng |
 | 2. Nạp bộ đếm từ register hiện có | ✅ màn hình quét + nạp đã chạy, chờ file export đầy đủ |
 | 3. Màn hình quản lý master data | ✅ lưới sửa trực tiếp cho 11 bảng |
 | 4. Upload PDF + trích xuất bằng Claude vision | ⏳ |
 | 5. Xuất Excel (2 sheet Unique / Low-value) | ⏳ |
 | 6. PDF tem nhãn Code128 + biên bản ALR | ✅ biên bản 8 cột + trang tem, in được |
 
-Máy đang dùng không có Python / Node / Docker / psql, nên **SQL chưa được thực
-thi lần nào**. Cách kiểm chứng: dán lần lượt các file trong `sql/` vào
-Supabase SQL Editor — lỗi (nếu có) sẽ hiện ngay ở bước đó. Sau đó mở app, vào
-tab **Kết nối → Kiểm tra schema**: nó đếm số dòng từng bảng và gọi thử hàm để
-báo bảng/hàm nào còn thiếu.
+Máy đang dùng không có Python / Node / Docker / psql, nên SQL không chạy thử
+được tại chỗ — phải chạy thẳng trên Supabase SQL Editor (xem mục **Cài đặt**).
+Sau đó mở app, vào **Kết nối → Kiểm tra schema**: nó đếm số dòng từng bảng và
+gọi thử hàm để báo bảng/hàm nào còn thiếu.
 
 ## Chạy thử tại chỗ
 
@@ -68,18 +67,21 @@ Sửa file gốc thì phải dựng lại bản gộp:
 .\scripts\build-sql.ps1
 ```
 
-Rồi chạy `sql/00_verify.sql` để biết chắc thứ gì đã được tạo.
+Rồi chạy `sql/00_verify.sql` — **một câu truy vấn duy nhất** trả về ~35 dòng
+kiểm tra, cột cuối là `✔` hoặc `✘ HỎNG`.
+
+> ⚠️ Supabase SQL Editor **chỉ hiện kết quả của câu lệnh CUỐI CÙNG**. Vì vậy
+> `00_verify.sql` gộp mọi phép kiểm vào một `select` — dán cả file, Run một
+> lần là thấy hết.
 
 > `sql/99_reset.sql` xoá sạch mọi bảng/view/hàm `am_*` để làm lại từ đầu.
 > **Không cần dùng trong trường hợp bình thường** — và mất bộ đếm là mất dấu
 > những số đã cấp. Nội dung để trong khối chú thích, phải cố ý bỏ chú thích
 > mới chạy được.
 
-> Supabase SQL Editor **không hiện gì** khi chạy lệnh DDL (`CREATE TABLE` không
-> trả về dòng nào), và đôi khi panel Results báo *“Failed to get project's
-> logs”*. Đó là lỗi của giao diện dashboard, **không phải lỗi SQL** —
-> `00_verify.sql` sẽ cho biết thật sự có bao nhiêu bảng, hàm, policy và dòng
-> master data, kèm mấy phép thử quy tắc không ghi gì vào database.
+> Chạy `ALL_IN_ONE.sql` xong thì Results **trống** — bình thường, vì `CREATE
+> TABLE` không trả về dòng nào. Nếu panel Results báo *“Failed to get project's
+> logs”* thì đó cũng là lỗi giao diện dashboard, **không phải lỗi SQL**.
 
 `02c_seed_location.sql` do `scripts/genloc.ps1` sinh ra từ các biên bản kiểm
 kê — sửa script rồi chạy lại, đừng sửa file SQL bằng tay:
