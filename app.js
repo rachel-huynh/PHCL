@@ -927,11 +927,14 @@ function initAlr() {
 }
 
 /* --------------------------------------------------------- navigation */
+/* Each entry is [viewId, labelKey, children?]. Children render one level
+   deeper, so an item that belongs to another one sits under it rather than
+   beside it. */
 const NAV = [
   ['nav.catalog', [
-    ['tbl:am_org', null], ['tbl:am_org_alias', null], ['tbl:am_category_group', null],
-    ['tbl:am_category', null], ['tbl:am_unit', null], ['tbl:am_location', null],
-    ['tbl:am_product', null]
+    ['tbl:am_org', null, [['tbl:am_org_alias', null]]],
+    ['cat', 'nav.cat'],
+    ['tbl:am_unit', null], ['tbl:am_location', null], ['tbl:am_product', null]
   ]],
   ['nav.originGrp', [
     ['tbl:am_origin', null], ['tbl:am_origin_alias', null], ['tbl:am_origin_rejected', null]
@@ -945,7 +948,17 @@ const NAV = [
 
 let VIEW = 'setup';
 
-const viewTitle = v => v.startsWith('tbl:') ? tblLabel(v.slice(4)) : t('page.' + v);
+/* Asset groups and category codes are one screen with a switch, because the
+   28 category codes are meaningless without the 15 parent codes next to them.
+   CAT_TABLE remembers which of the two the switch is on. */
+const CAT_KEY = 'asset-intake.catTable';
+let CAT_TABLE = 'am_category';
+try { const v = localStorage.getItem(CAT_KEY);
+      if (v === 'am_category_group' || v === 'am_category') CAT_TABLE = v; } catch {}
+
+const viewTable = v => v.startsWith('tbl:') ? v.slice(4) : (v === 'cat' ? CAT_TABLE : null);
+const viewTitle = v => v === 'cat' ? t('page.cat')
+                     : v.startsWith('tbl:') ? tblLabel(v.slice(4)) : t('page.' + v);
 
 /* Which nav groups are collapsed, remembered per browser. */
 const NAV_SHUT_KEY = 'asset-intake.navShut';
@@ -961,14 +974,15 @@ function buildNav() {
   for (const [grpKey, items] of NAV) {
     // A group holding the current view is always expanded, so the active item
     // can never be hidden inside a collapsed branch.
-    const holdsCurrent = items.some(([id]) => id === VIEW);
+    const flat = items.flatMap(([id, , ch]) => [id, ...(ch || []).map(c => c[0])]);
+    const holdsCurrent = flat.includes(VIEW);
     const shut = NAV_SHUT.has(grpKey) && !holdsCurrent;
 
     const kids = el('div', { className: 'kids' + (shut ? ' shut' : '') });
     const head = el('button', { className: 'grp' + (shut ? ' shut' : '') }, [
       el('span', { className: 'car', textContent: '▶' }),
       el('span', { textContent: t(grpKey) }),
-      el('span', { className: 'n', textContent: String(items.length) })
+      el('span', { className: 'n', textContent: String(flat.length) })
     ]);
     head.onclick = () => {
       const nowShut = !kids.classList.contains('shut');
@@ -978,13 +992,18 @@ function buildNav() {
       navSaveShut();
     };
 
-    for (const [id, labelKey] of items) {
+    const addItem = (id, labelKey, depth) => {
       const a = el('a', { href: '#',
         textContent: labelKey ? t(labelKey) : tblLabel(id.slice(4)) });
       a.dataset.view = id;
       a.classList.toggle('on', id === VIEW);
+      if (depth) a.classList.add('sub');
       a.onclick = ev => { ev.preventDefault(); showView(id); };
       kids.append(a);
+    };
+    for (const [id, labelKey, children] of items) {
+      addItem(id, labelKey, 0);
+      for (const [cid, ckey] of children || []) addItem(cid, ckey, 1);
     }
     nav.append(head, kids);
   }
@@ -994,12 +1013,29 @@ function buildNav() {
 function buildTools(view) {
   const box = $('#tools');
   box.innerHTML = '';
-  if (view.startsWith('tbl:')) {
+  const table = viewTable(view);
+  if (table) {
+    // The merged category screen gets a switch between the two tables.
+    if (view === 'cat') {
+      const seg = el('div', { className: 'seg' });
+      for (const [tbl, key] of [['am_category', 'cat.codes'], ['am_category_group', 'cat.groups']]) {
+        const b = el('button', { textContent: t(key) });
+        b.classList.toggle('on', CAT_TABLE === tbl);
+        b.onclick = () => {
+          if (CAT_TABLE === tbl) return;
+          CAT_TABLE = tbl;
+          try { localStorage.setItem(CAT_KEY, tbl); } catch {}
+          showView('cat');
+        };
+        seg.append(b);
+      }
+      box.append(seg);
+    }
     const f = el('input', { id: 'filter', style: 'width:190px' });
     f.placeholder = t('tool.filter');
     f.oninput = () => renderGrid();
     const reload = el('button', { className: 'btn', textContent: t('tool.reload') });
-    reload.onclick = () => loadTable(view.slice(4));
+    reload.onclick = () => loadTable(table);
     const add = el('button', { className: 'btn', textContent: t('tool.add') });
     add.onclick = addRow;
     const save = el('button', { className: 'btn pri', id: 'btnCommit',
@@ -1038,22 +1074,22 @@ function addRow() {
 }
 
 function showView(view) {
-  if (VIEW.startsWith('tbl:') && view !== VIEW && CUR) {
+  if (viewTable(VIEW) && view !== VIEW && CUR) {
     const n = CUR.rows.filter(r => r.isNew || r.dirty || r.del).length;
     if (n && !confirm(t('table.confirmLeave', { n }))) return;
   }
   VIEW = view;
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.view === view));
-  const sect = view.startsWith('tbl:') ? 'v-table' : 'v-' + view;
+  const table = viewTable(view);
+  const sect = table ? 'v-table' : 'v-' + view;
   $$('section').forEach(s => s.classList.toggle('on', s.id === sect));
   buildTools(view);
   $('#pageTitle').textContent = viewTitle(view);
 
-  if (view.startsWith('tbl:')) {
-    const name = view.slice(4);
-    $('#tableLead').textContent = tblSub(name);
+  if (table) {
+    $('#tableLead').textContent = tblSub(table);
     CUR = null;
-    loadTable(name);
+    loadTable(table);
   } else {
     if (view === 'counter' && SB.ready()) loadCounters();
     if (view === 'rules' && SB.ready()) fillPickers();
@@ -1301,6 +1337,17 @@ async function bkXlsx() {
   } catch (e) { msg(out, 'err', t('bk.err', { table, err: e.message })); }
 }
 
+/* Postgres refuses an upsert whose batch contains the same key twice
+   ("ON CONFLICT DO UPDATE command cannot affect row a second time"), so any
+   duplicate has to be collapsed before the request goes out. The last
+   occurrence wins, matching how a sequence of single upserts would end up. */
+function dedupeBy(rows, pk) {
+  if (!pk) return rows;
+  const seen = new Map();
+  for (const r of rows) seen.set(String(r[pk]), r);
+  return [...seen.values()];
+}
+
 /* Order self-referencing rows so a parent is always written before its child. */
 function bkSortByDepth(rows, pkField, parentField) {
   const have = new Set(rows.map(r => r[pkField]));
@@ -1342,6 +1389,7 @@ async function bkPush() {
     for (table of BK_PUSH) {
       let data = snap.tables[table];
       if (!Array.isArray(data) || !data.length) continue;
+      data = dedupeBy(data, BK_PK[table]);
       if (BK_SELF_REF[table]) data = bkSortByDepth(data, BK_PK[table], BK_SELF_REF[table]);
       for (let i = 0; i < data.length; i += BK_CHUNK) {
         msg(out, 'info', t('bk.pushing', { table, done: i, total: data.length }));
@@ -1423,12 +1471,15 @@ function srcParse(wb, fileName) {
   for (const s of wb.SheetNames) if (SRC_SHEET[s]) { kind = SRC_SHEET[s]; break; }
 
   if (!kind) {
-    // unit and origin workbooks have generic sheet names; detect by header.
-    const first = grid(wb.SheetNames[0]);
-    const h = first[0] || {};
+    // The unit and origin workbooks have generic sheet names, so they are
+    // detected by header. Match the WHOLE cell, never a substring: the asset
+    // register has a column called "Mã Đơn Vị Tính", and a substring test
+    // mistook that whole 17k-row export for the unit list.
+    const h = grid(wb.SheetNames[0])[0] || {};
     const cells = Object.values(h).map(v => srcTxt(v).toLowerCase());
-    if (cells.some(c => c.includes('mã đơn vị'))) kind = 'unit';
-    else if (cells.some(c => c.includes('mã xuất xứ'))) kind = 'origin';
+    const has = s => cells.includes(s);
+    if (has('mã đơn vị') && has('tên') && cells.length <= 4) kind = 'unit';
+    else if (has('mã xuất xứ') && has('tên') && cells.length <= 4) kind = 'origin';
   }
   if (!kind) return null;
 
@@ -1593,8 +1644,9 @@ async function srcImport() {
     for (table of SRC_ORDER) {
       let rows = merged[table];
       if (!rows?.length) continue;
-      if (table === 'am_org' || table === 'am_location')
-        rows = bkSortByDepth(rows, table === 'am_org' ? 'code' : 'code', 'parent_code');
+      rows = dedupeBy(rows, BK_PK[table]);
+      if (table === "am_org" || table === "am_location")
+        rows = bkSortByDepth(rows, "code", "parent_code");
       for (let i = 0; i < rows.length; i += BK_CHUNK) {
         msg(out, 'info', t('src.importing', { table, done: i, total: rows.length }));
         await SB.call(table, {
