@@ -1,0 +1,145 @@
+# asset-intake
+
+Công cụ nội bộ quản lý nhập tài sản từ các đợt giao hàng nhà cung cấp:
+chuẩn hóa theo quy tắc kế toán/danh mục của công ty, sinh Mã Tài Sản + Mã Vạch
+từ bộ đếm bền vững, xuất Excel đăng ký tài sản và PDF tem nhãn / biên bản ALR.
+
+- **Dữ liệu:** Supabase (PostgreSQL)
+- **Giao diện:** web tĩnh, chạy trên GitHub Pages — không cần cài gì
+- **Phạm vi:** 1 khách sạn, ít người dùng
+
+> ⚠️ Repo này **PUBLIC**. Tuyệt đối không commit Supabase URL/key vào file.
+> Cấu hình phát cho người dùng bằng link dạng `#sbcfg=<base64>` (fragment không
+> gửi lên server, app tự xóa khỏi thanh địa chỉ) — cùng cách đã dùng cho
+> SSP Budget Tracker.
+
+## Trạng thái
+
+| Giai đoạn | Trạng thái |
+|---|---|
+| 1. Schema master data + bộ đếm | ✅ viết xong, **chưa chạy thử trên Postgres** |
+| 2. Nạp bộ đếm từ register hiện có | ⏳ hàm đã sẵn, chờ file export đầy đủ |
+| 3. Màn hình quản lý master data | ⏳ |
+| 4. Upload PDF + trích xuất bằng Claude vision | ⏳ |
+| 5. Xuất Excel (2 sheet Unique / Low-value) | ⏳ |
+| 6. PDF tem nhãn Code128 + biên bản ALR | ⏳ |
+
+Máy đang dùng không có Python / Node / Docker / psql, nên **SQL chưa được thực
+thi lần nào**. Cách kiểm chứng: dán lần lượt các file trong `sql/` vào
+Supabase SQL Editor — lỗi (nếu có) sẽ hiện ngay ở bước đó.
+
+## Cài đặt
+
+Chạy theo đúng thứ tự trong Supabase SQL Editor:
+
+```
+sql/01_schema.sql        -- bảng
+sql/02_seed_master.sql   -- org, nhóm, mã loại, đơn vị tính, khởi tạo bộ đếm
+sql/02b_seed_origin.sql  -- ISO 3166-1 alpha-2 đầy đủ + bí danh
+sql/03_functions.sql     -- chuẩn hóa, cấp phát bộ đếm, quy tắc phân loại
+sql/04_rls.sql           -- RLS & quyền
+```
+
+Sau đó nạp bộ đếm từ sổ tài sản cũ (xem mục dưới).
+
+## Các quyết định cốt lõi
+
+### Mã Tài Sản
+
+```
+[Mã Phòng Ban].[Nhóm cha].[CHỮ].[Năm mua].[5 chữ số]
+FBD.C2422.LTU.2025.00309
+```
+
+Phần **CHỮ** đã **bỏ hậu tố `-QR`**: `LTG-QR` → `LTG`, `STG-QR` → `STG`.
+
+Vì thế bộ đếm khóa theo **`(mã phòng ban, CHỮ)`** — không gồm nhóm cha, không
+gồm năm:
+
+- `LTG` và `LTG-QR` cùng hiển thị `LTG` ⇒ bắt buộc dùng chung dãy số, nếu tách
+  sẽ sinh trùng mã.
+- Dữ liệu thật có `ADM.C2112.KME` và `ADM.C2422.KME` dùng chung dãy số ⇒ khóa
+  thêm nhóm cha cũng sinh trùng. Xem `docs/data-issues.md` §5.
+- Số thứ tự **không** reset theo năm.
+
+### Mã Vạch
+
+Bộ đếm **tách hoàn toàn** với Mã Tài Sản, và hai dải tách nhau:
+
+| Loại | Định dạng | Dải số |
+|---|---|---|
+| Unique asset | `JVC.` + 9 chữ số | 1 … 899 999 999 |
+| Low-value asset | `JVC.9` + 8 chữ số | 1 … 99 999 999 (in ra `JVC.9xxxxxxxx`) |
+
+Ràng buộc `CHECK` trên `am_asset` ép đúng định dạng theo `asset_kind`, nên
+không thể ghi nhầm mã vạch unique cho tài sản low-value.
+
+### Phân loại theo đơn giá
+
+| Ngưỡng | Hệ quả |
+|---|---|
+| `>= 5.000.000` | **Unique asset** — mỗi đơn vị 1 dòng, `qty = 1` (có `CHECK` ép) |
+| `< 5.000.000` | **Low-value** — gộp theo số lượng, hoặc 1 dòng/serial nếu có serial |
+| `> 30.000.000` | **Không được** gán mã CCDC. Hữu hình → mã thuộc C2112 đúng bản chất; vô hình → `CTP` (C2135), **không** ép vào C2112 |
+
+`am_classify()` trả về kết luận + mảng cảnh báo, **không tự sửa dữ liệu** —
+người dùng phải xác nhận.
+
+### Xuất xứ
+
+Chỉ gán mã ISO khi khớp **đúng một** quốc gia có thật. Chuỗi nhiều quốc gia
+(`USA/Mexico/China/Singapore`) hoặc không phải quốc gia (`Asia`, `EU`) ⇒ **để
+trống cả mã lẫn tên**, không giữ text gốc, không chọn đại diện.
+`am_resolve_origin()` trả kèm lý do (`multi_country` / `not_a_country` /
+`ambiguous`) để UI giải thích.
+
+## Bộ đếm
+
+Bảng bộ đếm **không** cấp quyền ghi cho `anon`. Mọi thay đổi đi qua hàm
+`SECURITY DEFINER`, nên không thể reset từ trình duyệt kể cả khi lộ anon key.
+
+```sql
+-- Cấp 12 số liên tiếp cho phòng ban ADM, chữ LTU
+select am_alloc_asset_seq('ADM', 'LTU', 12, :shipment_id, :actor);
+
+-- Cấp 12 mã vạch dải unique
+select am_alloc_barcode('unique', 12, :shipment_id, :actor);
+select am_format_barcode('unique', 6871);   -- JVC.000006871
+select am_format_barcode('low',    1);      -- JVC.900000001
+```
+
+Số đã cấp **không tái sử dụng**, kể cả khi đợt nhập bị hủy. Mọi lần cấp đều
+ghi vào `am_counter_log` để kế toán truy vết.
+
+### Nạp bộ đếm lần đầu
+
+```sql
+-- Đưa vào mảng chuỗi lấy từ file register cũ; nhận cả Mã Tài Sản lẫn Mã Vạch,
+-- tự bỏ qua chuỗi sai định dạng, CHỈ nâng chứ không bao giờ hạ bộ đếm.
+select * from am_seed_from_codes(array[
+  'FBD.C2422.LTU.2025.00309', 'JVC.000006870',
+  'KIT.C2112.KME.2025.00183', 'JVC.000006873'
+]);
+```
+
+Kiểm tra lại bất cứ lúc nào:
+
+```sql
+select * from am_audit_counters();   -- gap < 0 nghĩa là bộ đếm ĐANG TỤT SAU sổ
+```
+
+> ⚠️ Phải nạp từ bản export **đầy đủ** trước khi cấp mã cho đợt hàng đầu tiên.
+> Nạp thiếu sẽ cấp trùng mã với tài sản cũ. Xem `docs/data-issues.md` §6.
+
+## Định dạng Excel
+
+Khi tạo file từ template có sẵn dòng ví dụ mẫu, phải **ghi đè toàn bộ** thuộc
+tính định dạng của các dòng đó — bao gồm `number_format`, không chỉ màu
+nền/font/viền. Nếu bỏ sót, các dòng đầu giữ định dạng Text (`@`) và số/ngày
+hiển thị sai dù dữ liệu đúng. Cột `am_xls_column.number_format` giữ định dạng
+đích cho từng cột.
+
+## Còn phải chốt
+
+Xem `docs/data-issues.md` — 9 điểm dữ liệu gốc mâu thuẫn với đề bài, trong đó
+4 điểm cần chị xác nhận trước khi đi tiếp.
