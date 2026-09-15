@@ -26,12 +26,14 @@ Sheet `3. Asset Code` liệt kê `OME` ở cả hai chỗ:
 Đề bài của chị lại liệt kê **cả `OME` lẫn `OEM`** — tức trong đầu chị là hai mã
 khác nhau.
 
-**Đang xử lý:** `OME` → C2112 (vì **mọi** Mã Tài Sản thật quét được đều là
-`ADM.C2112.OME`, `FIN.C2112.OME`, `SMD.C2112.OME`, không có cái nào C2114);
-tạo thêm `OEM` → C2114 theo danh sách của chị.
+**✅ Đã chốt (2026-09-15):** giữ đúng mã `OME` của file gốc và gán **một** mã cha
+là **C2112**, khớp với mọi Mã Tài Sản thật quét được (`ADM.C2112.OME`,
+`FIN.C2112.OME`, `SMD.C2112.OME` — không có cái nào C2114). Không tạo mã `OEM`.
 
-**Cần xác nhận:** mã đúng cho nhóm C2114 là `OEM` hay `OME`? Nếu là `OME` thì
-buộc phải chọn một mã cha duy nhất, vì mã con là khóa chính.
+**Hệ quả cần biết:** nhóm **C2114** (*Thiết bị, công cụ quản lý*) giờ chỉ còn
+đúng một mã loại là `ITM`. Tài sản mang bản chất "thiết bị/vật dụng khác dùng
+cho mục đích quản lý" sẽ phải xếp vào `OME` (C2112). Nếu kế toán muốn C2114 có
+mã riêng cho nhóm này thì phải đặt cho nó một mã **khác** `OME`.
 
 ---
 
@@ -70,11 +72,9 @@ thuộc phòng ban nào? Tôi **không** đoán, nên chưa tạo alias cho hai 
 theo mã) và `STG` (C2421, theo số lượng) — cũng là "không đủ điều kiện ghi
 nhận TSCĐ".
 
-**Đang xử lý:** `am_classify()` chặn cứng đúng 4 mã chị nêu (`violates_capex =
-true`), và chỉ **cảnh báo** với `STU`/`STG` để kế toán quyết định — không tự ý
-mở rộng lệnh cấm.
-
-**Cần xác nhận:** có cấm luôn `STU`/`STG` khi > 30 triệu không?
+**✅ Đã chốt (2026-09-15):** giữ nguyên cách đang làm — `am_classify()` chặn cứng
+đúng 4 mã chị nêu (`violates_capex = true`), còn `STU`/`STG` chỉ **cảnh báo**
+để kế toán quyết định từng trường hợp.
 
 ---
 
@@ -138,9 +138,11 @@ phòng ban, mọi năm) để nạp lần đầu. Nạp thiếu ⇒ cấp trùng
 `am_xls_column` mô tả từng template dưới dạng dữ liệu (số cột → trường trong
 `am_asset` → number_format), nên thêm/đổi layout không phải sửa code.
 
-**Cần xác nhận:** file Excel xuất ra dùng layout nào làm chuẩn? Tôi đề xuất
-`Asset Track.xlsx` (69 cột) vì đó là bản đang dùng thật, có đủ cả Mã Tài Sản,
-Mã Vạch và toàn bộ cột đặc tính.
+**⏳ Chờ (2026-09-15):** chị sẽ gửi file mẫu đúng. Nhận được thì tôi dựng bản đồ
+cột từ chính file đó và nạp vào `am_xls_template` / `am_xls_column`.
+
+Lưu ý khi chọn: `Asset Track.xlsx` tuy đầy đủ nhất nhưng **chỉ có sheet
+"Unique asset"** — vẫn cần thêm mẫu sheet "Low-value asset" tương ứng.
 
 ---
 
@@ -152,11 +154,34 @@ Mã Vạch và toàn bộ cột đặc tính.
 Hệ thứ hai dài hơn và có hậu tố phân loại (`B0` = back office, `G0` = guest
 room, `E0` = phòng kỹ thuật, `P0/P1` = public...).
 
-**Đang xử lý:** `am_location` chưa seed dữ liệu — chỉ dựng cấu trúc cây
-(`parent_code`) + cờ `is_dept_office`.
+**✅ Đã chốt (2026-09-15): dùng hệ dài.** Đã sinh `sql/02c_seed_location.sql` —
+**82 vị trí** trích từ dòng "Bộ phận:" của các biên bản kiểm kê 07.2025, cây
+suy ra từ chính mã (`S` → `S<tầng>00` / `SB<hầm>00` → phòng). Sinh tự động bằng
+`scripts/genloc.ps1`; sửa script rồi chạy lại, đừng sửa file SQL bằng tay.
 
-**Cần xác nhận:** hệ mã nào là hệ đang dùng? Sau khi chốt tôi sẽ sinh file seed
-vị trí từ đúng nguồn đó.
+Đã gán `is_dept_office` cho **9 phòng ban** — chỉ nhận khi chính tên vị trí nói
+rõ phòng ban:
+
+| Vị trí | Phòng ban | | Vị trí | Phòng ban |
+|---|---|---|---|---|
+| `S0103B0` It office | ITD | | `SB120B0` Finance office | FIN |
+| `S0111B0` Kitchen office | KIT | | `SB121` HR office | ADM |
+| `S0302B0` Sale office | SMD | | `SB124B0` Security office | SEC |
+| `SB117B0` Housekeeping office | HKD | | `SB141B0` Engineering workshop | ENG |
+| `SB142B0` F&B office | FBD | | | |
+
+**Còn tồn, cần chị xác nhận:**
+
+- **`FOD` chưa có office mặc định** — danh sách không có vị trí nào tên "Front
+  office". `SB109B0 Reservation office` có phải không? Tôi không đoán.
+- **`S203`** "Le 17 Bistro restaurant" không theo quy luật (3 chữ số). Nhiều
+  khả năng là `S0203`, cùng tầng với `S0203P0` "Mezz restaurant". Đang tạm xếp
+  `kind = 'area'`, cha là toà nhà `S`.
+- **`SB121`** "HR office" và **`SB121B0`** "Receiving office" cùng số phòng 21
+  nhưng khác tên hoàn toàn.
+- Danh sách này chỉ gồm phạm vi kiểm kê của FIN/ADM/SMD nên **chưa đủ toàn bộ
+  khách sạn** (thiếu phần lớn phòng khách các tầng 4–17). Cần bản export vị trí
+  đầy đủ từ Beetrack.
 
 ---
 

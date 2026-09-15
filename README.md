@@ -33,11 +33,19 @@ Supabase SQL Editor — lỗi (nếu có) sẽ hiện ngay ở bước đó.
 Chạy theo đúng thứ tự trong Supabase SQL Editor:
 
 ```
-sql/01_schema.sql        -- bảng
-sql/02_seed_master.sql   -- org, nhóm, mã loại, đơn vị tính, khởi tạo bộ đếm
-sql/02b_seed_origin.sql  -- ISO 3166-1 alpha-2 đầy đủ + bí danh
-sql/03_functions.sql     -- chuẩn hóa, cấp phát bộ đếm, quy tắc phân loại
-sql/04_rls.sql           -- RLS & quyền
+sql/01_schema.sql         -- bảng
+sql/02_seed_master.sql    -- org, nhóm, mã loại, đơn vị tính, khởi tạo bộ đếm
+sql/02b_seed_origin.sql   -- ISO 3166-1 alpha-2 đầy đủ + bí danh
+sql/02c_seed_location.sql -- 82 vị trí hệ mã dài + cây tầng/phòng (sinh tự động)
+sql/03_functions.sql      -- chuẩn hóa, cấp phát bộ đếm, quy tắc phân loại
+sql/04_rls.sql            -- RLS & quyền
+```
+
+`02c_seed_location.sql` do `scripts/genloc.ps1` sinh ra từ các biên bản kiểm
+kê — sửa script rồi chạy lại, đừng sửa file SQL bằng tay:
+
+```powershell
+.\scripts\genloc.ps1 -s <thư-mục-chứa-file-kiểm-kê> -out .\sql\02c_seed_location.sql
 ```
 
 Sau đó nạp bộ đếm từ sổ tài sản cũ (xem mục dưới).

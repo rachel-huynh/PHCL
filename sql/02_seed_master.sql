@@ -89,12 +89,14 @@ insert into am_category (code, group_code, name_vi, name_en, label_letters, mana
   ('KME',    'C2112', 'Thiết bị, vật dụng bếp',         'Kitchen Machinery & Equipment',     'KME', 'code', null),
   ('FUR',    'C2112', 'Thiết bị, vật dụng nội thất',    'Furniture, artworks',               'FUR', 'code', null),
   ('SME',    'C2112', 'Máy móc, thiết bị vệ sinh',      'Sanitary Machinery & Equipment',    'SME', 'code', null),
+  -- File gốc liệt kê OME ở CẢ C2112 lẫn C2114. Mã con là khóa chính nên chỉ
+  -- được một mã cha; user chốt 2026-09-15 giữ đúng mã OME của file gốc và
+  -- chọn C2112, khớp với TOÀN BỘ Mã Tài Sản thật quét được
+  -- (ADM.C2112.OME, FIN.C2112.OME, SMD.C2112.OME — không có cái nào C2114).
   ('OME',    'C2112', 'Máy móc, thiết bị khác',         'Other Machinery & Equipment',       'OME', 'code',
-             'File gốc liệt kê OME ở CẢ C2112 và C2114. Dữ liệu tài sản thật (ADM/FIN/SMD.OME) đều là C2112 -> chốt C2112.'),
+             'File gốc liệt kê OME ở cả C2112 và C2114; đã chốt C2112 theo dữ liệu thật. Nhóm C2114 vì vậy chỉ còn ITM.'),
   ('TTV',    'C2113', 'Trang thiết bị và phương tiện vận tải', 'Transportation and transmission vehicles', 'TTV', 'code', null),
   ('ITM',    'C2114', 'Thiết bị CNTT dùng cho quản trị', 'IT Equipment for management',       'ITM', 'code', null),
-  ('OEM',    'C2114', 'Thiết bị, vật dụng, công cụ khác dùng cho quản lý', 'Other furniture, equipment, measurement tools for management', 'OEM', 'code',
-             'CẦN XÁC NHẬN: file gốc ghi mã này là OME (trùng C2112). Đề bài liệt kê OEM nên tạm dùng OEM.'),
   ('PWP',    'C2115', 'Cây lâu năm, súc vật làm việc và cho sản phẩm', 'Perennial trees, working and producing animals', 'PWP', 'code', null),
   ('OTA',    'C2118', 'Tài sản cố định hữu hình khác',  'Other tangible asset',              'OTA', 'code', null),
   ('LUR',    'C2131', 'Quyền sử dụng đất',              'Land use rights',                   'LUR', 'code', null),
