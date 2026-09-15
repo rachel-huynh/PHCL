@@ -937,6 +937,7 @@ const NAV = [
     ['tbl:am_origin', null], ['tbl:am_origin_alias', null], ['tbl:am_origin_rejected', null]
   ]],
   ['nav.counters', [['counter', 'nav.counter'], ['rules', 'nav.rules']]],
+  ['nav.registerGrp', [['register', 'nav.register']]],
   ['nav.docs',      [['alr', 'nav.alr']]],
   ['nav.backupGrp', [['backup', 'nav.backup']]],
   ['nav.system',    [['sources', 'nav.sources'], ['tbl:am_setting', null], ['setup', 'nav.setup']]]
@@ -946,19 +947,46 @@ let VIEW = 'setup';
 
 const viewTitle = v => v.startsWith('tbl:') ? tblLabel(v.slice(4)) : t('page.' + v);
 
+/* Which nav groups are collapsed, remembered per browser. */
+const NAV_SHUT_KEY = 'asset-intake.navShut';
+let NAV_SHUT = new Set();
+try { NAV_SHUT = new Set(JSON.parse(localStorage.getItem(NAV_SHUT_KEY) || '[]')); } catch {}
+const navSaveShut = () => {
+  try { localStorage.setItem(NAV_SHUT_KEY, JSON.stringify([...NAV_SHUT])); } catch {}
+};
+
 function buildNav() {
   const nav = $('#nav');
   nav.innerHTML = '';
   for (const [grpKey, items] of NAV) {
-    nav.append(el('div', { className: 'grp', textContent: t(grpKey) }));
+    // A group holding the current view is always expanded, so the active item
+    // can never be hidden inside a collapsed branch.
+    const holdsCurrent = items.some(([id]) => id === VIEW);
+    const shut = NAV_SHUT.has(grpKey) && !holdsCurrent;
+
+    const kids = el('div', { className: 'kids' + (shut ? ' shut' : '') });
+    const head = el('button', { className: 'grp' + (shut ? ' shut' : '') }, [
+      el('span', { className: 'car', textContent: '▶' }),
+      el('span', { textContent: t(grpKey) }),
+      el('span', { className: 'n', textContent: String(items.length) })
+    ]);
+    head.onclick = () => {
+      const nowShut = !kids.classList.contains('shut');
+      kids.classList.toggle('shut', nowShut);
+      head.classList.toggle('shut', nowShut);
+      if (nowShut) NAV_SHUT.add(grpKey); else NAV_SHUT.delete(grpKey);
+      navSaveShut();
+    };
+
     for (const [id, labelKey] of items) {
       const a = el('a', { href: '#',
         textContent: labelKey ? t(labelKey) : tblLabel(id.slice(4)) });
       a.dataset.view = id;
       a.classList.toggle('on', id === VIEW);
       a.onclick = ev => { ev.preventDefault(); showView(id); };
-      nav.append(a);
+      kids.append(a);
     }
+    nav.append(head, kids);
   }
 }
 
@@ -988,6 +1016,16 @@ function buildTools(view) {
     const c = el('button', { className: 'btn', textContent: t('bk.count') });
     c.onclick = bkCount;
     box.append(c);
+  } else if (view === 'register') {
+    const cols = el('button', { className: 'btn', textContent: t('reg.cols') });
+    cols.onclick = () => { const d = $('#regColsBox'); d.open = !d.open; };
+    const rel = el('button', { className: 'btn', textContent: t('tool.reload') });
+    rel.onclick = () => regLoad();
+    const x = el('button', { className: 'btn', textContent: t('reg.xlsx') });
+    x.onclick = regXlsx;
+    const p = el('button', { className: 'btn pri', textContent: t('reg.print') });
+    p.onclick = regPrint;
+    box.append(cols, rel, x, p);
   }
 }
 
@@ -1022,6 +1060,7 @@ function showView(view) {
     if (view === 'alr' && SB.ready()) fillAlrPickers();
     if (view === 'backup' && SB.ready()) bkCount();
     if (view === 'sources' && SB.ready()) srcLoad();
+    if (view === 'register' && SB.ready()) { regFillPickers(); regLoad(true); }
   }
 }
 
@@ -1134,6 +1173,7 @@ function init() {
   initAlr();
   initBackup();
   initSources();
+  initRegister();
   loadCfg();
   showView('setup');
   testConn(true).then(ok => { if (ok) { showView('tbl:am_org'); fillPickers(); } });
@@ -1628,4 +1668,253 @@ async function srcLoad() {
 function initSources() {
   $('#btnSrcRead').onclick = srcRead;
   $('#btnSrcImport').onclick = srcImport;
+}
+
+/* ========================================================= ASSET REGISTER
+   Every asset that already carries a code. 17k rows is far too many to put in
+   the DOM, so filtering, sorting and paging all happen on the server; only one
+   page is ever rendered. Export walks the same filter page by page. */
+
+const REG_COLS = [
+  'asset_code', 'barcode', 'asset_kind', 'name_vi', 'name_en',
+  'category_code', 'group_code', 'letters', 'seq', 'purchase_year',
+  'company_code', 'dept_code', 'location_code',
+  'qty', 'unit_code', 'unit_price', 'currency', 'serial',
+  'origin_iso2', 'supplier', 'manufacturer', 'invoice_no', 'purpose_code',
+  'purchase_date', 'in_use_date', 'depreciate', 'depreciate_months',
+  'spec_brand', 'spec_model', 'spec_function', 'spec_capacity',
+  'spec_length', 'spec_width', 'spec_height', 'spec_weight',
+  'spec_material', 'spec_color', 'spec_shape', 'spec_radius', 'spec_fuel',
+  'spec_area', 'spec_perimeter', 'spec_mfg_year', 'spec_accessory',
+  'description', 'status_code', 'label_printed', 'note', 'created_at'
+];
+const REG_DEFAULT = ['asset_code', 'barcode', 'name_vi', 'category_code',
+                     'dept_code', 'location_code', 'qty', 'unit_code',
+                     'unit_price', 'purchase_year', 'status_code'];
+const REG_NUM = new Set(['seq', 'qty', 'unit_price', 'purchase_year',
+                         'depreciate_months', 'spec_mfg_year']);
+
+const REG_KEY = 'asset-intake.regCols';
+const REG_SIZE = 100;
+let REG = { cols: null, sort: 'asset_code', dir: 'asc', page: 0, total: 0, rows: [] };
+
+function regLoadCols() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(REG_KEY) || 'null');
+    // Drop anything that is no longer a real column, so an old saved layout
+    // cannot ask PostgREST for a field that does not exist.
+    if (Array.isArray(saved) && saved.length) {
+      REG.cols = saved.filter(c => REG_COLS.includes(c));
+      if (REG.cols.length) return;
+    }
+  } catch {}
+  REG.cols = [...REG_DEFAULT];
+}
+const regSaveCols = () => {
+  try { localStorage.setItem(REG_KEY, JSON.stringify(REG.cols)); } catch {}
+};
+
+function regFilters() {
+  const f = [];
+  const q = $('#regQ').value.trim();
+  if (q) {
+    const safe = q.replace(/[(),*]/g, ' ').trim();
+    if (safe) f.push(`or=(asset_code.ilike.*${safe}*,name_vi.ilike.*${safe}*,` +
+                     `name_en.ilike.*${safe}*,barcode.ilike.*${safe}*)`);
+  }
+  if ($('#regDept').value) f.push('dept_code=eq.' + $('#regDept').value);
+  if ($('#regCat').value)  f.push('category_code=eq.' + $('#regCat').value);
+  if ($('#regKind').value) f.push('asset_kind=eq.' + $('#regKind').value);
+  const y = $('#regYear').value.trim();
+  if (y) f.push('purchase_year=eq.' + Number(y));
+  return f;
+}
+
+async function regLoad(resetPage) {
+  if (resetPage) REG.page = 0;
+  const out = $('#regMsg');
+  msg(out, 'info', t('reg.loading'));
+  try {
+    const sel = ['id', ...REG.cols].join(',');
+    const q = ['select=' + sel, `order=${REG.sort}.${REG.dir}`,
+               `limit=${REG_SIZE}`, `offset=${REG.page * REG_SIZE}`, ...regFilters()];
+    const { body, range } = await SB.call('am_asset?' + q.join('&'),
+      { headers: SB.hdr({ Prefer: 'count=exact' }) });
+    REG.rows = body || [];
+    REG.total = Number(String(range || '').split('/')[1]) || REG.rows.length;
+    msg(out, '', '');
+    regRender();
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+function regRender() {
+  const head = $('#regGrid thead'), body = $('#regGrid tbody');
+  head.innerHTML = ''; body.innerHTML = '';
+  const hr = el('tr');
+  for (const c of REG.cols) {
+    const th = el('th', { className: 'sortable' });
+    th.append(document.createTextNode(c));
+    if (REG.sort === c) th.append(el('span', { className: 'dir',
+                                               textContent: REG.dir === 'asc' ? '▲' : '▼' }));
+    th.onclick = () => {
+      if (REG.sort === c) REG.dir = REG.dir === 'asc' ? 'desc' : 'asc';
+      else { REG.sort = c; REG.dir = 'asc'; }
+      regLoad(true);
+    };
+    hr.append(th);
+  }
+  head.append(hr);
+
+  for (const r of REG.rows) {
+    const tr = el('tr');
+    for (const c of REG.cols) {
+      const v = r[c];
+      tr.append(el('td', {
+        className: REG_NUM.has(c) ? 'num' : '',
+        textContent: v == null ? ''
+          : REG_NUM.has(c) ? fmtNum(v)
+          : typeof v === 'boolean' ? (v ? '✔' : '')
+          : String(v)
+      }));
+    }
+    body.append(tr);
+  }
+  if (!REG.rows.length)
+    body.append(el('tr', {}, el('td', { colSpan: REG.cols.length || 1,
+      style: 'color:var(--dim);padding:14px', textContent: t('reg.empty') })));
+
+  const pages = Math.max(1, Math.ceil(REG.total / REG_SIZE));
+  $('#regPage').textContent =
+    t('reg.count', { shown: fmtInt(REG.rows.length), total: fmtInt(REG.total) }) +
+    ' · ' + t('reg.page', { p: REG.page + 1, n: pages });
+  $('#btnRegPrev').disabled = REG.page <= 0;
+  $('#btnRegNext').disabled = REG.page + 1 >= pages;
+}
+
+function regRenderCols() {
+  const box = $('#regCols');
+  box.innerHTML = '';
+  // Chosen columns first, in their display order, then everything else.
+  const rest = REG_COLS.filter(c => !REG.cols.includes(c));
+  const list = [...REG.cols, ...rest];
+  for (const c of list) {
+    const on = REG.cols.includes(c);
+    const row = el('div', { className: 'ci' + (on ? ' on' : '') });
+    const cb = el('input', { type: 'checkbox', checked: on });
+    cb.onchange = () => {
+      if (cb.checked) REG.cols.push(c);
+      else REG.cols = REG.cols.filter(x => x !== c);
+      if (!REG.cols.length) REG.cols = [c];
+      regSaveCols(); regRenderCols(); regLoad(true);
+    };
+    row.append(cb, el('span', { textContent: c }));
+    if (on) {
+      const i = REG.cols.indexOf(c);
+      const up = el('button', { textContent: '◀', title: t('reg.up'), disabled: i === 0 });
+      const dn = el('button', { textContent: '▶', title: t('reg.down'),
+                                disabled: i === REG.cols.length - 1 });
+      up.onclick = () => { REG.cols.splice(i - 1, 0, REG.cols.splice(i, 1)[0]);
+                           regSaveCols(); regRenderCols(); regRender(); };
+      dn.onclick = () => { REG.cols.splice(i + 1, 0, REG.cols.splice(i, 1)[0]);
+                           regSaveCols(); regRenderCols(); regRender(); };
+      row.append(up, dn);
+    }
+    box.append(row);
+  }
+}
+
+/* Walk the current filter page by page — used by both export paths. */
+async function regFetchAll(onProgress) {
+  const sel = REG.cols.join(',');
+  const all = [];
+  for (let off = 0; ; off += 1000) {
+    const q = ['select=' + sel, `order=${REG.sort}.${REG.dir}`,
+               `limit=1000`, `offset=${off}`, ...regFilters()];
+    const page = await SB.select('am_asset', q.join('&'));
+    all.push(...page);
+    onProgress?.(all.length);
+    if (page.length < 1000) break;
+  }
+  return all;
+}
+
+async function regXlsx() {
+  const out = $('#regMsg');
+  try {
+    msg(out, 'info', t('reg.exporting'));
+    const rows = await regFetchAll(n => msg(out, 'info', t('reg.exporting') + ' ' + fmtInt(n)));
+    // Reorder each object so the sheet columns follow the chosen order.
+    const shaped = rows.map(r => Object.fromEntries(REG.cols.map(c => [c, r[c]])));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(shaped), 'Assets');
+    const file = `phcl-asset-register-${bkStamp()}.xlsx`;
+    XLSX.writeFile(wb, file);
+    msg(out, 'ok', t('reg.exported', { n: fmtInt(rows.length), file }));
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+async function regPrint() {
+  const out = $('#regMsg');
+  try {
+    msg(out, 'info', t('reg.exporting'));
+    const rows = await regFetchAll();
+    const root = $('#printRoot');
+    root.innerHTML = '';
+    root.append(el('div', { className: 'doc-head' }, [
+      el('div', { className: 'co', textContent: t('alr.doc.company') }),
+      el('div', { className: 'ttl', textContent: t('page.register') })
+    ]));
+    root.append(el('div', { className: 'doc-meta' }, [
+      el('div', {}, [el('b', { textContent: t('alr.doc.date') }),
+                     new Date().toISOString().slice(0, 10)]),
+      el('div', {}, [el('b', { textContent: '' }),
+                     t('reg.count', { shown: fmtInt(rows.length), total: fmtInt(REG.total) })])
+    ]));
+    const tb = el('table', { className: 'doc' });
+    tb.append(el('thead', {}, el('tr', {}, REG.cols.map(c => el('th', { textContent: c })))));
+    const tbody = el('tbody');
+    for (const r of rows)
+      tbody.append(el('tr', {}, REG.cols.map(c => el('td', {
+        className: REG_NUM.has(c) ? 'r' : '',
+        textContent: r[c] == null ? '' : REG_NUM.has(c) ? fmtNum(r[c]) : String(r[c])
+      }))));
+    tb.append(tbody);
+    root.append(tb);
+    msg(out, '', '');
+    ALR.mode = 'doc';          // the register is wide: print it landscape
+    printNow();
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+async function regFillPickers() {
+  try {
+    const [deps, cats] = await Promise.all([
+      SB.select('am_org', 'select=code&is_department=is.true&order=code'),
+      SB.select('am_category', 'select=code&order=code')
+    ]);
+    const fill = (sel, rows) => {
+      const s = $(sel), keep = s.value;
+      while (s.options.length > 1) s.remove(1);
+      for (const r of rows) s.append(el('option', { value: r.code, textContent: r.code }));
+      s.value = keep;
+    };
+    fill('#regDept', deps); fill('#regCat', cats);
+  } catch { /* the Connection screen already reports it */ }
+}
+
+function initRegister() {
+  regLoadCols();
+  regRenderCols();
+  $('#btnRegApply').onclick = () => regLoad(true);
+  $('#btnRegReset').onclick = () => {
+    $('#regQ').value = ''; $('#regDept').value = ''; $('#regCat').value = '';
+    $('#regKind').value = ''; $('#regYear').value = '';
+    regLoad(true);
+  };
+  $('#regQ').onkeydown = ev => { if (ev.key === 'Enter') regLoad(true); };
+  $('#btnRegColsReset').onclick = () => {
+    REG.cols = [...REG_DEFAULT]; regSaveCols(); regRenderCols(); regLoad(true);
+  };
+  $('#btnRegPrev').onclick = () => { if (REG.page > 0) { REG.page--; regLoad(); } };
+  $('#btnRegNext').onclick = () => { REG.page++; regLoad(); };
 }
