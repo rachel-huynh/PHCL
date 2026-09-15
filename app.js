@@ -1213,6 +1213,7 @@ function init() {
   initSources();
   initRegister();
   initIntake();
+  initLegacy();
   loadCfg();
   showView('setup');
   testConn(true).then(ok => { if (ok) { showView('tbl:am_org'); fillPickers(); } });
@@ -1481,7 +1482,11 @@ function srcParse(wb, fileName) {
     const has = s => cells.includes(s);
     if (has('mã đơn vị') && has('tên') && cells.length <= 4) kind = 'unit';
     else if (has('mã xuất xứ') && has('tên') && cells.length <= 4) kind = 'origin';
+    // The Beetrack asset-register export is the file people reach for first.
+    // Name it explicitly instead of letting it fall through to "not recognised".
+    else if (has('mã tài sản') && has('mã vạch')) kind = 'register';
   }
+  if (kind === 'register') return { kind, file: fileName, tables: {} };
   if (!kind) return null;
 
   const out = { kind, file: fileName, tables: {} };
@@ -1609,8 +1614,20 @@ async function srcRead() {
     } catch (e) { skipped.push(`${f.name} (${e.message})`); }
   }
   out.innerHTML = '';
-  if (!found.length) { $('#btnSrcImport').disabled = true; return msg(out, 'warn', t('src.nothing')); }
 
+  // The asset register is recognised but NOT imported here: this screen only
+  // refreshes master data. Say so plainly rather than "not recognised".
+  const regs = found.filter(p => p.kind === 'register');
+  const master = found.filter(p => p.kind !== 'register');
+  for (const r of regs)
+    out.append(el('div', { className: 'msg warn', textContent: t('src.isRegister', { file: r.file }) }));
+
+  if (!master.length) {
+    $('#btnSrcImport').disabled = true;
+    if (!regs.length) msg(out, 'warn', t('src.nothing'));
+    return;
+  }
+  found.length = 0; found.push(...master);
   SRC_PENDING = found;
   out.append(el('div', { className: 'msg info', textContent: t('src.recognised', { n: found.length }) }));
   const tb = el('table');
@@ -2341,4 +2358,213 @@ function initIntake() {
   $('#btnInXlsx').onclick = inXlsx;
   $('#btnInAlr').onclick = inToAlr;
   inRender();
+}
+
+/* ================================================== LEGACY REGISTER IMPORT
+   Loads "Danh sách tài sản (… - Beetrack).xlsx" into am_asset with
+   is_legacy = true.
+
+   group_code / letters come from the CATEGORY, never from parsing the asset
+   code: 860 of the 17,036 codes do not parse (an unknown O4000-era group, six
+   digit sequences, one code with a note appended, one cell holding a number),
+   and those columns are NOT NULL. The category is present and valid on every
+   row, so it is the reliable source.
+
+   Columns of the Beetrack export, by spreadsheet letter. */
+const LEG_COL = {
+  kind: 'B', category: 'C', name: 'E', desc: 'G', code: 'J', barcode: 'M',
+  location: 'N', dept: 'R', company: 'V', origin: 'AD', brand: 'AF',
+  serial: 'AG', model: 'AH', invoice: 'AX', unit: 'BA', qty: 'BD',
+  price: 'BI', bought: 'BT', status: 'CD', purpose: 'CH'
+};
+const LEG_CHUNK = 300;
+let LEG = { rows: [], bad: [], warn: [] };
+
+const legTxt = v => (v == null ? '' : String(v).trim());
+
+/* The export writes dates as dd/mm/yyyy text. */
+function legDate(v) {
+  const s = legTxt(v);
+  let m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  return m ? m[0] : null;
+}
+const legNum = v => {
+  // Strip the empty case first: Number('') is 0, which would turn a blank
+  // quantity cell into qty 0 and a blank price into 0 VND.
+  const s = String(v ?? '').replace(/[^\d.-]/g, '');
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+};
+
+async function legRead() {
+  const out = $('#legMsg');
+  const f = $('#legFile').files?.[0];
+  if (!f) return msg(out, 'err', t('bk.noFile'));
+  msg(out, 'info', t('leg.reading'));
+  LEG = { rows: [], bad: [], warn: [] };
+
+  let master;
+  try {
+    const [cats, orgs, locs, units, origins] = await Promise.all([
+      SB.select('am_category', 'select=code,group_code,label_letters'),
+      SB.select('am_org', 'select=code,is_company,is_department'),
+      SB.select('am_location', 'select=code'),
+      SB.select('am_unit', 'select=code'),
+      SB.select('am_origin', 'select=iso2')
+    ]);
+    master = {
+      cat: new Map(cats.map(c => [c.code, c])),
+      dept: new Set(orgs.filter(o => o.is_department).map(o => o.code)),
+      comp: new Set(orgs.filter(o => o.is_company).map(o => o.code)),
+      loc: new Set(locs.map(l => l.code)),
+      unit: new Set(units.map(u => u.code)),
+      origin: new Set(origins.map(o => o.iso2))
+    };
+  } catch (e) { return msg(out, 'err', e.message); }
+
+  let grid;
+  try {
+    const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+    grid = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 'A', defval: '' });
+  } catch (e) { return msg(out, 'err', e.message); }
+  if (grid.length < 2) return msg(out, 'warn', t('leg.noRows'));
+
+  const seenCode = new Set(), seenBar = new Set();
+  const G = LEG_COL;
+
+  for (let i = 1; i < grid.length; i++) {
+    const r = grid[i], line = i + 1;
+    const code = legTxt(r[G.code]), bar = legTxt(r[G.barcode]);
+    if (!code && !bar && !legTxt(r[G.name])) continue;   // blank row
+
+    const errs = [], warns = [];
+    const catCode = legTxt(r[G.category]);
+    const cat = master.cat.get(catCode);
+    const dept = legTxt(r[G.dept]);
+    const comp = legTxt(r[G.company]) || 'SOF';
+    const name = legTxt(r[G.name]);
+
+    if (!name) errs.push(t('leg.eNoName'));
+    if (!cat) errs.push(t('leg.eNoCat', { v: catCode || '—' }));
+    if (!master.dept.has(dept)) errs.push(t('leg.eNoDept', { v: dept || '—' }));
+    if (!master.comp.has(comp)) errs.push(t('leg.eNoCompany', { v: comp }));
+    if (code && seenCode.has(code)) errs.push(t('leg.eDupCode'));
+    if (bar && seenBar.has(bar)) errs.push(t('leg.eDupBarcode'));
+
+    const parsed = /^([A-Z]{2,5})\.([A-Z0-9]{5})\.([A-Z]{3})\.(\d{4})\.(\d{5})$/.exec(code);
+    if (!parsed) warns.push(t('leg.wOddCode'));
+    if (!/^JVC\.\d{9}$/.test(bar)) warns.push(t('leg.wOddBarcode'));
+
+    let loc = legTxt(r[G.location]) || null;
+    if (loc && !master.loc.has(loc)) { warns.push(t('leg.wNoLoc', { v: loc })); loc = null; }
+    let unit = legTxt(r[G.unit]) || null;
+    if (unit && !master.unit.has(unit)) { warns.push(t('leg.wNoUnit', { v: unit })); unit = null; }
+    let iso = legTxt(r[G.origin]).toUpperCase() || null;
+    if (iso && !master.origin.has(iso)) { warns.push(t('leg.wNoOrigin', { v: iso })); iso = null; }
+
+    if (errs.length) { LEG.bad.push({ line, code, why: errs.join(' · ') }); continue; }
+    if (code) seenCode.add(code);
+    if (bar) seenBar.add(bar);
+    if (warns.length) LEG.warn.push({ line, code, why: warns.join(' · ') });
+
+    const bought = legDate(r[G.bought]);
+    const nameParts = name.split('/');
+    LEG.rows.push({
+      is_legacy: true,
+      asset_code: code || `LEGACY-${line}`,
+      barcode: bar || `LEGACY-${line}`,
+      // "Cung Barcode" means one barcode for the whole batch -> low-value.
+      asset_kind: /cùng/i.test(legTxt(r[G.kind])) ? 'low' : 'unique',
+      category_code: catCode,
+      group_code: cat.group_code,
+      letters: cat.label_letters,
+      seq: parsed ? Number(parsed[5]) : 0,
+      purchase_year: parsed ? Number(parsed[4])
+                     : (bought ? Number(bought.slice(0, 4)) : new Date().getFullYear()),
+      company_code: comp,
+      dept_code: dept,
+      location_code: loc,
+      name_vi: nameParts[0].trim() || name,
+      name_en: nameParts.length > 1 ? nameParts.slice(1).join('/').trim() : null,
+      description: legTxt(r[G.desc]) || null,
+      unit_code: unit,
+      qty: legNum(r[G.qty]) ?? 1,
+      serial: legTxt(r[G.serial]) || null,
+      unit_price: legNum(r[G.price]),
+      currency: 'VND',
+      origin_iso2: iso,
+      invoice_no: legTxt(r[G.invoice]) || null,
+      purpose_code: legTxt(r[G.purpose]) || null,
+      purchase_date: bought,
+      status_code: legTxt(r[G.status]) || null,
+      spec_brand: legTxt(r[G.brand]) || null,
+      spec_model: legTxt(r[G.model]) || null,
+      needs_review: warns.length ? warns.map(w => ({ field: 'import', reason: w })) : []
+    });
+  }
+
+  out.innerHTML = '';
+  out.append(el('div', { className: LEG.bad.length ? 'msg warn' : 'msg ok', textContent:
+    t('leg.readDone', { n: fmtInt(LEG.rows.length + LEG.bad.length),
+                        ok: fmtInt(LEG.rows.length), bad: fmtInt(LEG.bad.length) }) }));
+
+  const table = (title, list, cls) => {
+    if (!list.length) return;
+    out.append(el('div', { className: 'msg ' + cls, textContent: title }));
+    const tb = el('table');
+    tb.append(el('tr', {}, ['leg.col.row', 'leg.col.code', 'leg.col.why']
+      .map(k => el('th', { textContent: t(k) }))));
+    for (const r of list.slice(0, 200))
+      tb.append(el('tr', {}, [
+        el('td', { className: 'num', textContent: r.line }),
+        el('td', {}, el('code', { textContent: r.code || '—' })),
+        el('td', { textContent: r.why })
+      ]));
+    out.append(el('div', { className: 'wrap', style: 'max-height:32vh' }, tb));
+  };
+  table(t('leg.errHead', { n: fmtInt(LEG.bad.length) }), LEG.bad, 'err');
+  table(t('leg.warnHead', { n: fmtInt(LEG.warn.length) }), LEG.warn, 'warn');
+
+  $('#btnLegImport').disabled = !LEG.rows.length;
+}
+
+async function legImport() {
+  if (!LEG.rows.length) return;
+  const out = $('#legMsg');
+  const host = CFG.url ? new URL(CFG.url).hostname : '?';
+  if (!confirm(t('leg.confirm', { n: fmtInt(LEG.rows.length), host,
+                                  bad: fmtInt(LEG.bad.length),
+                                  warn: fmtInt(LEG.warn.length) }))) return;
+  let done = 0;
+  try {
+    for (let i = 0; i < LEG.rows.length; i += LEG_CHUNK) {
+      msg(out, 'info', t('leg.importing', { done: fmtInt(done),
+                                            total: fmtInt(LEG.rows.length) }));
+      await SB.call('am_asset', {
+        method: 'POST',
+        headers: SB.hdr({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+        body: JSON.stringify(LEG.rows.slice(i, i + LEG_CHUNK))
+      });
+      done += Math.min(LEG_CHUNK, LEG.rows.length - i);
+    }
+  } catch (e) {
+    return msg(out, 'err', t('leg.fail', { done: fmtInt(done), err: e.message }));
+  }
+  msg(out, 'ok', t('leg.done', { n: fmtInt(done), skip: fmtInt(LEG.bad.length) }));
+  $('#btnLegImport').disabled = true;
+  try {
+    await SB.insert('am_data_source', [{
+      table_name: 'am_asset', source_file: $('#legFile').files[0].name,
+      source_kind: 'register-scan', rows_loaded: done, loaded_by: 'legacy import'
+    }]);
+  } catch { /* the provenance log is optional, never block on it */ }
+  regLoad(true);
+}
+
+function initLegacy() {
+  $('#btnLegRead').onclick = legRead;
+  $('#btnLegImport').onclick = legImport;
 }
