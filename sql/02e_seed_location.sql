@@ -4,6 +4,12 @@
 -- Source workbook: 6. location-template-file.xlsx
 -- Do not hand-edit; change the workbook or the script and re-run.
 -- =====================================================================
+-- The template is the authority on which room is each department's office, so
+-- clear every flag first. Without this, a room promoted to "office" by an older
+-- seed keeps the flag, and the partial unique index am_location_one_office_per_dept
+-- then blocks the template's own office row for that same department.
+-- Only the flag is cleared; dept_code set by hand on other rooms survives.
+update am_location set is_dept_office = false where is_dept_office;
 insert into am_location (code, name, kind, parent_code, dept_code, is_dept_office) values
   ('CP', 'Central Plaza Building', 'building', null, null, false),
   ('SOF', 'Sofitel Saigon Plaza Building', 'building', null, null, false),
@@ -681,4 +687,10 @@ insert into am_location (code, name, kind, parent_code, dept_code, is_dept_offic
   ('S0201E1', 'AHU room', 'room', 'S0200', null, false),
   ('SRT00E3', 'Booster pump room', 'room', 'SRT00', null, false)
 on conflict (code) do update
-  set name = excluded.name, kind = excluded.kind, parent_code = excluded.parent_code;
+  set name           = excluded.name,
+      kind           = excluded.kind,
+      parent_code    = excluded.parent_code,
+      -- coalesce, not a plain assignment: a dept_code set by hand on a room the
+      -- template says nothing about must not be wiped on every re-seed.
+      dept_code      = coalesce(excluded.dept_code, am_location.dept_code),
+      is_dept_office = excluded.is_dept_office;

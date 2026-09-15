@@ -1,22 +1,24 @@
 -- =====================================================================
--- PHCL Asset Intake -- find and remove leftover locations
+-- PHCL Asset Intake -- find and remove leftover master data
 --
--- am_location used to be seeded from the stock-count minutes (82 rows, with a
--- single building "S"). It is now generated from the Beetrack location
--- template (675 rows, buildings "CP" and "SOF"). Every seed uses
--- "on conflict do update", so rows that existed ONLY in the old seed were
--- never removed -- which is why 00_verify reports 3 buildings instead of 2.
+-- Every seed uses "on conflict do update": it overwrites and inserts but it
+-- NEVER deletes, so rows that existed only in an OLDER seed stay for ever.
+--   am_location  was 82 rows from the stock-count minutes (building "S");
+--                the template gives 675 rows, buildings "CP" and "SOF".
+--   am_origin    was a hand-written ISO list; the template gives 240 rows.
 --
--- No temporary table on purpose: whether the SQL editor wraps the file in one
--- transaction is not something to bet on, so the template list is inlined as
--- a CTE in each statement.
+-- ⚠️ STEP 1 IS ONE SINGLE SELECT ON PURPOSE.
+-- The Supabase SQL editor only shows the result of the LAST statement in the
+-- file, so splitting the diagnosis into several selects would hide all but the
+-- last one. Keep it as one query.
 --
--- STEP 1 lists the leftovers. Read it first.
--- STEP 2 deletes them; it is commented out on purpose.
+-- No temporary table either: whether the editor wraps the file in a single
+-- transaction is not something to bet on, so each statement carries its lists
+-- as CTEs.
 -- =====================================================================
 
--- ---------------- STEP 1: what is NOT in the Beetrack template -------------
-with tpl(code) as (values
+-- ---------------- STEP 1: everything that is NOT in the templates ----------
+with tpl_loc(code) as (values
 ('C0100'), ('C0100P0'), ('C0101G0'), ('C0102G0'), ('C0200'), ('C0200B0'), ('C0200P0'),
     ('C0300'), ('C0300E0'), ('C0300G0'), ('C0300G1'), ('C0300K0'), ('C0301G0'), ('C0400'),
     ('C0400K0'), ('C0401B1'), ('C0401B2'), ('C0401B3'), ('C0401B4'), ('C0401B5'),
@@ -124,18 +126,50 @@ with tpl(code) as (values
     ('SB140B2'), ('SB141B0'), ('SB142B0'), ('SB143B0'), ('SB144B0'), ('SB1O8B0'), ('SB200'),
     ('SB200S1'), ('SB201E0'), ('SB202E0'), ('SB203E0'), ('SOF'), ('SRT00'), ('SRT00E1'),
     ('SRT00E2'), ('SRT00E3'), ('SRT00L1'), ('SRT00L2'), ('SRT00L3'), ('SRT00L4')
+), tpl_org(iso2) as (values
+('AD'), ('AE'), ('AF'), ('AG'), ('AI'), ('AL'), ('AM'), ('AN'), ('AO'), ('AQ'), ('AR'),
+    ('AS'), ('AT'), ('AU'), ('AW'), ('AX'), ('AZ'), ('BA'), ('BB'), ('BD'), ('BE'), ('BF'),
+    ('BG'), ('BH'), ('BI'), ('BJ'), ('BM'), ('BN'), ('BO'), ('BR'), ('BS'), ('BT'), ('BV'),
+    ('BW'), ('BY'), ('BZ'), ('CA'), ('CC'), ('CD'), ('CF'), ('CG'), ('CH'), ('CI'), ('CK'),
+    ('CL'), ('CM'), ('CN'), ('CO'), ('CR'), ('CS'), ('CU'), ('CV'), ('CX'), ('CY'), ('CZ'),
+    ('DE'), ('DJ'), ('DK'), ('DM'), ('DO'), ('DZ'), ('EC'), ('EE'), ('EG'), ('EH'), ('ER'),
+    ('ES'), ('ET'), ('FI'), ('FJ'), ('FK'), ('FM'), ('FO'), ('FR'), ('GA'), ('GB'), ('GD'),
+    ('GE'), ('GF'), ('GH'), ('GI'), ('GL'), ('GM'), ('GN'), ('GP'), ('GQ'), ('GR'), ('GS'),
+    ('GT'), ('GU'), ('GW'), ('GY'), ('HK'), ('HM'), ('HN'), ('HR'), ('HT'), ('HU'), ('ID'),
+    ('IE'), ('IL'), ('IN'), ('IO'), ('IQ'), ('IR'), ('IS'), ('IT'), ('JM'), ('JO'), ('JP'),
+    ('KE'), ('KG'), ('KH'), ('KI'), ('KM'), ('KN'), ('KP'), ('KR'), ('KW'), ('KY'), ('KZ'),
+    ('LA'), ('LB'), ('LC'), ('LI'), ('LK'), ('LR'), ('LS'), ('LT'), ('LU'), ('LV'), ('LY'),
+    ('MA'), ('MC'), ('MD'), ('MG'), ('MH'), ('MK'), ('ML'), ('MM'), ('MN'), ('MO'), ('MP'),
+    ('MQ'), ('MR'), ('MS'), ('MT'), ('MU'), ('MV'), ('MW'), ('MX'), ('MY'), ('MZ'), ('NA'),
+    ('NC'), ('NE'), ('NF'), ('NG'), ('NI'), ('NL'), ('NO'), ('NP'), ('NR'), ('NU'), ('NZ'),
+    ('OM'), ('PA'), ('PE'), ('PF'), ('PG'), ('PH'), ('PK'), ('PL'), ('PM'), ('PN'), ('PR'),
+    ('PS'), ('PT'), ('PW'), ('PY'), ('QA'), ('RE'), ('RO'), ('RU'), ('RW'), ('SA'), ('SB'),
+    ('SC'), ('SD'), ('SE'), ('SG'), ('SH'), ('SI'), ('SJ'), ('SK'), ('SL'), ('SM'), ('SN'),
+    ('SO'), ('SR'), ('ST'), ('SV'), ('SY'), ('SZ'), ('TC'), ('TD'), ('TF'), ('TG'), ('TH'),
+    ('TJ'), ('TK'), ('TL'), ('TM'), ('TN'), ('TO'), ('TR'), ('TT'), ('TV'), ('TW'), ('TZ'),
+    ('UA'), ('UG'), ('UM'), ('US'), ('UY'), ('UZ'), ('VA'), ('VC'), ('VE'), ('VG'), ('VI'),
+    ('VN'), ('VU'), ('WF'), ('WS'), ('YE'), ('YT'), ('ZA'), ('ZM'), ('ZW')
 )
-select l.code, l.name, l.kind, l.parent_code,
-       (select count(*) from am_location c where c.parent_code = l.code) as so_con,
+select 'Vị trí' as loai, l.code as ma, l.name as ten,
+       'kind=' || l.kind || ', cha=' || coalesce(l.parent_code, '—') as chi_tiet,
+       (select count(*) from am_location c where c.parent_code = l.code) as so_lien_quan,
        (select count(*) from am_asset a where a.location_code = l.code)  as so_tai_san
 from   am_location l
-where  not exists (select 1 from tpl t where t.code = l.code)
-order  by l.kind, l.code;
+where  not exists (select 1 from tpl_loc t where t.code = l.code)
+union all
+select 'Quốc gia', o.iso2, o.name_en,
+       'chỉ có trong danh sách ISO cũ',
+       (select count(*) from am_origin_alias a where a.iso2 = o.iso2),
+       (select count(*) from am_asset s where s.origin_iso2 = o.iso2)
+from   am_origin o
+where  not exists (select 1 from tpl_org t where t.iso2 = o.iso2)
+order  by 1, 2;
 
 -- ---------------- STEP 2: remove them --------------------------------------
 -- Bo chu thich va chay LAI chi khi buoc 1 cho thay so_tai_san = 0 o MOI dong.
--- Vi tri con tai san gan vao thi KHONG duoc xoa.
--- Con cua chung duoc go parent_code truoc de khong con dong mo coi.
+-- Dong nao con tai san gan vao thi KHONG duoc xoa -- khoa ngoai cung se chan.
+-- Con / bi danh duoc go truoc de khong con dong mo coi.
+-- Cau cuoi cung tra ve so kiem chung: 675 vi tri / 2 toa nha / 240 quoc gia.
 /*
 with tpl(code) as (values
 ('C0100'), ('C0100P0'), ('C0101G0'), ('C0102G0'), ('C0200'), ('C0200B0'), ('C0200P0'),
@@ -362,9 +396,63 @@ with tpl(code) as (values
 delete from am_location l
  where not exists (select 1 from tpl t where t.code = l.code)
    and not exists (select 1 from am_asset a where a.location_code = l.code);
-*/
 
--- Sau khi xoa: phai con dung 2 toa nha va 675 vi tri.
-select count(*) filter (where kind = 'building') as so_toa_nha,
-       count(*)                                  as tong_vi_tri
-from   am_location;
+with tpl(iso2) as (values
+('AD'), ('AE'), ('AF'), ('AG'), ('AI'), ('AL'), ('AM'), ('AN'), ('AO'), ('AQ'), ('AR'),
+    ('AS'), ('AT'), ('AU'), ('AW'), ('AX'), ('AZ'), ('BA'), ('BB'), ('BD'), ('BE'), ('BF'),
+    ('BG'), ('BH'), ('BI'), ('BJ'), ('BM'), ('BN'), ('BO'), ('BR'), ('BS'), ('BT'), ('BV'),
+    ('BW'), ('BY'), ('BZ'), ('CA'), ('CC'), ('CD'), ('CF'), ('CG'), ('CH'), ('CI'), ('CK'),
+    ('CL'), ('CM'), ('CN'), ('CO'), ('CR'), ('CS'), ('CU'), ('CV'), ('CX'), ('CY'), ('CZ'),
+    ('DE'), ('DJ'), ('DK'), ('DM'), ('DO'), ('DZ'), ('EC'), ('EE'), ('EG'), ('EH'), ('ER'),
+    ('ES'), ('ET'), ('FI'), ('FJ'), ('FK'), ('FM'), ('FO'), ('FR'), ('GA'), ('GB'), ('GD'),
+    ('GE'), ('GF'), ('GH'), ('GI'), ('GL'), ('GM'), ('GN'), ('GP'), ('GQ'), ('GR'), ('GS'),
+    ('GT'), ('GU'), ('GW'), ('GY'), ('HK'), ('HM'), ('HN'), ('HR'), ('HT'), ('HU'), ('ID'),
+    ('IE'), ('IL'), ('IN'), ('IO'), ('IQ'), ('IR'), ('IS'), ('IT'), ('JM'), ('JO'), ('JP'),
+    ('KE'), ('KG'), ('KH'), ('KI'), ('KM'), ('KN'), ('KP'), ('KR'), ('KW'), ('KY'), ('KZ'),
+    ('LA'), ('LB'), ('LC'), ('LI'), ('LK'), ('LR'), ('LS'), ('LT'), ('LU'), ('LV'), ('LY'),
+    ('MA'), ('MC'), ('MD'), ('MG'), ('MH'), ('MK'), ('ML'), ('MM'), ('MN'), ('MO'), ('MP'),
+    ('MQ'), ('MR'), ('MS'), ('MT'), ('MU'), ('MV'), ('MW'), ('MX'), ('MY'), ('MZ'), ('NA'),
+    ('NC'), ('NE'), ('NF'), ('NG'), ('NI'), ('NL'), ('NO'), ('NP'), ('NR'), ('NU'), ('NZ'),
+    ('OM'), ('PA'), ('PE'), ('PF'), ('PG'), ('PH'), ('PK'), ('PL'), ('PM'), ('PN'), ('PR'),
+    ('PS'), ('PT'), ('PW'), ('PY'), ('QA'), ('RE'), ('RO'), ('RU'), ('RW'), ('SA'), ('SB'),
+    ('SC'), ('SD'), ('SE'), ('SG'), ('SH'), ('SI'), ('SJ'), ('SK'), ('SL'), ('SM'), ('SN'),
+    ('SO'), ('SR'), ('ST'), ('SV'), ('SY'), ('SZ'), ('TC'), ('TD'), ('TF'), ('TG'), ('TH'),
+    ('TJ'), ('TK'), ('TL'), ('TM'), ('TN'), ('TO'), ('TR'), ('TT'), ('TV'), ('TW'), ('TZ'),
+    ('UA'), ('UG'), ('UM'), ('US'), ('UY'), ('UZ'), ('VA'), ('VC'), ('VE'), ('VG'), ('VI'),
+    ('VN'), ('VU'), ('WF'), ('WS'), ('YE'), ('YT'), ('ZA'), ('ZM'), ('ZW')
+)
+delete from am_origin_alias a
+ where not exists (select 1 from tpl t where t.iso2 = a.iso2);
+
+with tpl(iso2) as (values
+('AD'), ('AE'), ('AF'), ('AG'), ('AI'), ('AL'), ('AM'), ('AN'), ('AO'), ('AQ'), ('AR'),
+    ('AS'), ('AT'), ('AU'), ('AW'), ('AX'), ('AZ'), ('BA'), ('BB'), ('BD'), ('BE'), ('BF'),
+    ('BG'), ('BH'), ('BI'), ('BJ'), ('BM'), ('BN'), ('BO'), ('BR'), ('BS'), ('BT'), ('BV'),
+    ('BW'), ('BY'), ('BZ'), ('CA'), ('CC'), ('CD'), ('CF'), ('CG'), ('CH'), ('CI'), ('CK'),
+    ('CL'), ('CM'), ('CN'), ('CO'), ('CR'), ('CS'), ('CU'), ('CV'), ('CX'), ('CY'), ('CZ'),
+    ('DE'), ('DJ'), ('DK'), ('DM'), ('DO'), ('DZ'), ('EC'), ('EE'), ('EG'), ('EH'), ('ER'),
+    ('ES'), ('ET'), ('FI'), ('FJ'), ('FK'), ('FM'), ('FO'), ('FR'), ('GA'), ('GB'), ('GD'),
+    ('GE'), ('GF'), ('GH'), ('GI'), ('GL'), ('GM'), ('GN'), ('GP'), ('GQ'), ('GR'), ('GS'),
+    ('GT'), ('GU'), ('GW'), ('GY'), ('HK'), ('HM'), ('HN'), ('HR'), ('HT'), ('HU'), ('ID'),
+    ('IE'), ('IL'), ('IN'), ('IO'), ('IQ'), ('IR'), ('IS'), ('IT'), ('JM'), ('JO'), ('JP'),
+    ('KE'), ('KG'), ('KH'), ('KI'), ('KM'), ('KN'), ('KP'), ('KR'), ('KW'), ('KY'), ('KZ'),
+    ('LA'), ('LB'), ('LC'), ('LI'), ('LK'), ('LR'), ('LS'), ('LT'), ('LU'), ('LV'), ('LY'),
+    ('MA'), ('MC'), ('MD'), ('MG'), ('MH'), ('MK'), ('ML'), ('MM'), ('MN'), ('MO'), ('MP'),
+    ('MQ'), ('MR'), ('MS'), ('MT'), ('MU'), ('MV'), ('MW'), ('MX'), ('MY'), ('MZ'), ('NA'),
+    ('NC'), ('NE'), ('NF'), ('NG'), ('NI'), ('NL'), ('NO'), ('NP'), ('NR'), ('NU'), ('NZ'),
+    ('OM'), ('PA'), ('PE'), ('PF'), ('PG'), ('PH'), ('PK'), ('PL'), ('PM'), ('PN'), ('PR'),
+    ('PS'), ('PT'), ('PW'), ('PY'), ('QA'), ('RE'), ('RO'), ('RU'), ('RW'), ('SA'), ('SB'),
+    ('SC'), ('SD'), ('SE'), ('SG'), ('SH'), ('SI'), ('SJ'), ('SK'), ('SL'), ('SM'), ('SN'),
+    ('SO'), ('SR'), ('ST'), ('SV'), ('SY'), ('SZ'), ('TC'), ('TD'), ('TF'), ('TG'), ('TH'),
+    ('TJ'), ('TK'), ('TL'), ('TM'), ('TN'), ('TO'), ('TR'), ('TT'), ('TV'), ('TW'), ('TZ'),
+    ('UA'), ('UG'), ('UM'), ('US'), ('UY'), ('UZ'), ('VA'), ('VC'), ('VE'), ('VG'), ('VI'),
+    ('VN'), ('VU'), ('WF'), ('WS'), ('YE'), ('YT'), ('ZA'), ('ZM'), ('ZW')
+)
+delete from am_origin o
+ where not exists (select 1 from tpl t where t.iso2 = o.iso2)
+   and not exists (select 1 from am_asset s where s.origin_iso2 = o.iso2);
+
+select (select count(*) from am_location)                        as vi_tri,
+       (select count(*) from am_location where kind = 'building') as toa_nha,
+       (select count(*) from am_origin)                           as quoc_gia;
+*/

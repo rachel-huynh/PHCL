@@ -1703,8 +1703,10 @@ async function srcLoad() {
     hist.innerHTML = '';
     if (!log.length) { msg(hist, 'warn', t('src.noHistory')); return; }
     const h = el('table');
+    // "Rows loaded", not "Rows now": this is the count AT THE TIME of that
+    // import, frozen in the log — it does not follow the table afterwards.
     h.append(el('tr', {}, ['src.col.when', 'src.col.table', 'src.col.file',
-      'src.col.rows', 'src.col.kind', 'src.col.by'].map(k => el('th', { textContent: t(k) }))));
+      'src.col.loaded', 'src.col.kind', 'src.col.by'].map(k => el('th', { textContent: t(k) }))));
     for (const r of log)
       h.append(el('tr', {}, [
         el('td', { textContent: (r.loaded_at || '').slice(0, 19).replace('T', ' ') }),
