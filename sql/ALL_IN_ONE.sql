@@ -3809,10 +3809,20 @@ begin
   select s.next_seq into v_old
   from   am_asset_seq s where s.dept_code = p_dept and s.letters = p_letters;
 
-  insert into am_asset_seq (dept_code, letters, next_seq)
-  values (p_dept, p_letters, p_next)
-  on conflict (dept_code, letters)
-    do update set next_seq = excluded.next_seq, updated_at = now();
+  /* UPDATE rồi INSERT chứ không dùng "on conflict (dept_code, letters)": phần
+     RETURNS TABLE ở trên đã biến dept_code và letters thành BIẾN PL/pgSQL, mà
+     ô suy diễn chỉ mục của ON CONFLICT lại được đọc như một biểu thức — nên
+     Postgres không biết đó là biến hay là cột và báo "column reference is
+     ambiguous". Ở đây mọi tham chiếu đều có tiền tố bảng, còn danh sách cột
+     của INSERT thì không bao giờ bị đọc là biến. */
+  update am_asset_seq s
+     set next_seq = p_next, updated_at = now()
+   where s.dept_code = p_dept and s.letters = p_letters;
+
+  if not found then
+    insert into am_asset_seq (dept_code, letters, next_seq)
+    values (p_dept, p_letters, p_next);
+  end if;
 
   -- Ghi nhật ký kể cả khi kéo xuống: from > to đọc ra ngay là một lần đặt tay.
   if v_old is distinct from p_next then
