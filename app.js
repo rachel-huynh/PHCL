@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260917b';
+const APP_VERSION = '20260917c';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -990,8 +990,8 @@ function renderAlrList() {
        header — two controls doing the same job, sitting at two heights. */
     el('th', { className: 'lblcol' },
       el('div', { className: 'thtick' },
-        [el('span', { textContent: t('alr.col.label') }),
-         ALR.rows.length ? all('_label', false) : null]))
+        [ALR.rows.length ? all('_label', false) : null,
+         el('span', { textContent: t('alr.col.label') })]))
   ]));
   if (!ALR.rows.length) {
     body.append(el('tr', {}, el('td', { colSpan: 9, style: 'color:var(--dim);padding:14px',

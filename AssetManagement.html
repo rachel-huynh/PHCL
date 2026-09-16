@@ -252,6 +252,11 @@
   td.num:has(> input){text-align:right}
   td.num input{text-align:right}
   td input:focus,td select:focus{background:var(--panel);border-color:var(--blue)}
+  /* A checkbox keeps its own size — the general input rule stretches controls to
+     fill the cell. td has had this for a long time; th never did, so every
+     tick-all rendered 25px wide over a 13px column and the whole column of
+     boxes read as crooked. */
+  th input[type=checkbox]{width:auto;margin:0}
   td input[type=checkbox]{width:auto;margin:3px 0 0}
   tr.dirty td:first-child{box-shadow:inset 3px 0 0 var(--amber)}
   tr.new td:first-child{box-shadow:inset 3px 0 0 var(--green)}
@@ -388,7 +393,11 @@
   table.doc th.r, table.doc td.r{text-align:right}
   table.doc .lbl{text-align:center}
   table.doc .tick.on{border:none;font-size:13px;line-height:1}
-  th.lblcol,td.lblcol{width:64px;text-align:center}
+  /* Tick column of the picker grid: box first, then the heading, all ranged
+     left on the same 9px gutter as the other tick column — so every box in the
+     column sits at one x, header included. table.doc .lbl is the PRINTED
+     receipt and keeps its own centring. */
+  th.lblcol,td.lblcol{width:78px;text-align:left;padding-left:9px}
   table.doc tr.sum td{font-weight:700;background:var(--head)}
   label.chk{display:inline-flex;align-items:center;gap:6px;margin:0;font-size:12px;
             font-weight:500;text-transform:none;letter-spacing:0;color:var(--ink);
@@ -399,7 +408,7 @@
      the first column. Cells that are nothing BUT a tick get the same centring —
      th is vertical-align:top by default, which leaves a 13px box riding high
      against 16px of text beside it. */
-  .thtick{display:flex;align-items:center;justify-content:center;gap:5px}
+  .thtick{display:flex;align-items:center;gap:5px}
   .thtick input{width:auto;margin:0}
   th.delcol,th.tickcol,th.lblcol{vertical-align:middle}
   table.doc .lbl svg{display:block;margin:0 auto;max-width:100%}
@@ -980,7 +989,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260917b"></script>
-<script src="app.js?v=20260917b"></script>
+<script src="i18n.js?v=20260917c"></script>
+<script src="app.js?v=20260917c"></script>
 </body>
 </html>
