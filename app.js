@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260916c';
+const APP_VERSION = '20260916d';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -3059,14 +3059,12 @@ function inRender() {
     /* Kind follows the unit price, so with no price there IS no kind. Saying
        "Low-value asset" because an empty box reads as 0 would be a claim the
        paperwork does not support — and on this delivery that was every line. */
-    const priced = ln.unit_price !== '' && ln.unit_price != null && Number(ln.unit_price) > 0;
-    const price = Number(ln.unit_price) || 0;
-    const kind = !priced ? null : price >= (IN.thUnique || 5000000) ? 'unique' : 'low';
-    const rows = !priced ? null
+    const kind = kindOf(ln);
+    const rows = !kind ? null
                : kind === 'unique' ? (Number(ln.qty) || 0)
                : (inSerials(ln).length || 1);
-    tr.append(el('td', { className: priced ? '' : 'unsure',
-      textContent: !priced ? t('in.kindUnknown')
+    tr.append(el('td', { className: kind ? '' : 'unsure',
+      textContent: !kind ? t('in.kindUnknown')
                  : kind === 'unique' ? t('reg.kindUnique') : t('reg.kindLow') }));
     tr.append(el('td', { className: 'num', textContent: rows == null ? '—' : String(rows) }));
 
@@ -3110,13 +3108,27 @@ async function inRemember(ln, btn) {
   }
 }
 
+/* One definition of "which kind is this line", used by the grid, the checker
+   and the expander alike — they disagreed before, which is how every line of a
+   price-less delivery came out labelled "Low-value asset".
+   null means the price is not known yet, so the kind is not either. */
+function kindOf(ln) {
+  const v = ln.unit_price;
+  if (v === '' || v == null) return null;
+  const p = Number(v);
+  if (!Number.isFinite(p) || p <= 0) return null;
+  return p >= (IN.thUnique || 5000000) ? 'unique' : 'low';
+}
+
 const inSerials = ln => String(ln.serials || '')
   .split(/[\n,;]/).map(s => s.trim()).filter(Boolean);
 
 /* Expand one entered line into the asset rows it will become. */
 function inExpand(ln) {
   const price = Number(ln.unit_price) || 0;
-  const kind = price >= (IN.thUnique || 5000000) ? 'unique' : 'low';
+  // inCheck refuses to commit a line with no price, so kindOf() cannot be null
+  // by the time this runs; 'low' is only a shape for the preview.
+  const kind = kindOf(ln) || 'low';
   const cat = (window.__CATS || []).find(c => c.code === ln.category_code);
   const serials = inSerials(ln);
   const base = {
@@ -3193,9 +3205,18 @@ async function inCheck() {
       } catch { ln._iso = null; }
     } else ln._iso = null;
 
+    /* A serial is what ties a register row to a physical object. On a unique
+       asset each unit becomes its own row, so a missing serial leaves a row
+       that can never be matched back to the thing on the shelf. Warn on the
+       absence, not only on a miscount. */
     const ser = inSerials(ln);
-    if (ser.length && ser.length !== Number(ln.qty))
+    const wantSer = Number(ln.qty) || 0;
+    if (ser.length && ser.length !== wantSer)
       warns.push(t('in.warnSerial', { i: n, have: ser.length, qty: ln.qty }));
+    else if (!ser.length && kindOf(ln) === 'unique') {
+      warns.push(t('in.warnNoSerial', { i: n, qty: ln.qty }));
+      ln._review.push({ field: 'serial', reason: 'missing_on_unique' });
+    }
 
     // Doubt raised while reading the delivery note must survive into the
     // register, not stop at this screen.
@@ -3402,7 +3423,23 @@ RULES
 
 6. Dates: ISO "YYYY-MM-DD". Vietnamese notes write dd/mm/yyyy.
 
-7. Serial numbers: one array entry per unit. If none are printed, return [].
+7. SERIAL NUMBERS. One array entry per unit, in the order printed. A serial is
+   what ties a row to a physical object for the rest of that object's life, so:
+
+   - NEVER drop a serial list because it is long. A list of 298 is still the
+     list. Return all of them.
+   - If ONE serial in a list cannot be read, put null in its position and add
+     "serials" to "uncertain". Do not shorten the list — position carries
+     meaning, and a missing entry silently shifts every serial after it onto
+     the wrong unit.
+   - Always return as many entries as the printed list holds, even when that
+     differs from the quantity. The application compares the two and asks; you
+     must not reconcile them by inventing or discarding entries.
+   - Serials are often on their own sheet ("THE INFORMATION OF GOODS" or
+     similar) rather than in the delivery table, and one block there may cover
+     several delivery lines of the same part number. Split them in the printed
+     order, and say in the line "note" that the split was inferred.
+   - If none are printed, return [].
 
 8. Do NOT output an asset category, asset code, barcode, department, location,
    condition code or depreciation. None of those are on a delivery note; the
