@@ -117,7 +117,31 @@
   /* Running number: narrow, quiet, never the thing the eye lands on. */
   th.idx,td.idx{width:52px;color:var(--dim);font-weight:400}
   th.delcol,td.delcol{width:34px;padding-left:9px;padding-right:0}
-  th.overcol{padding-left:4px;padding-right:4px}
+  th.overcol{padding-left:4px;padding-right:4px;text-align:right}
+  /* Multi-select filter: a summary line that opens a searchable checkbox list. */
+  .ms{position:relative}
+  .ms > .ms-sum{list-style:none;cursor:pointer;border:1px solid #cfd4da;border-radius:4px;
+                padding:5px 24px 5px 8px;background:var(--panel);font-size:13.5px;
+                white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ms > .ms-sum::-webkit-details-marker{display:none}
+  .ms > .ms-sum::after{content:'⌄';position:absolute;right:8px;top:4px;color:var(--dim)}
+  .ms[open] > .ms-sum{border-color:var(--blue)}
+  .ms.picked > .ms-sum{border-color:var(--navy);font-weight:600}
+  .ms-body{position:absolute;z-index:20;top:100%;left:0;min-width:270px;margin-top:3px;
+           background:var(--panel);border:1px solid #cfd4da;border-radius:5px;padding:7px;
+           box-shadow:0 6px 18px rgba(20,35,60,.14)}
+  .ms-q{padding:4px 7px;font-size:12.5px}
+  .ms-list{max-height:240px;overflow:auto;margin-top:6px}
+  .ms-i{display:flex;align-items:center;gap:7px;padding:3px 4px;border-radius:3px;
+        cursor:pointer;font-size:12.5px;text-transform:none;letter-spacing:0;
+        font-weight:400;color:var(--ink);margin:0}
+  .ms-i:hover{background:var(--head)}
+  .ms-i input{width:auto;margin:0;flex:none}
+  .ms-i span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ms-none{padding:6px 4px;color:var(--dim);font-size:12px}
+  .ms-acts{display:flex;justify-content:flex-end;margin-top:6px}
+  .pager{font-size:12px;color:var(--dim);white-space:nowrap}
+  .pager b{color:var(--ink);font-weight:600}
   .btn.ico{padding:0;width:26px;height:22px;line-height:1;font-size:14px;color:var(--dim)}
   .btn.ico:hover{color:var(--navy)}
   /* Per-column filter row, docked under the header of the register. */
@@ -526,11 +550,11 @@
       <h2 data-i18n="alr.step1"></h2>
       <div class="row">
         <div class="fld" style="max-width:220px"><label data-i18n="alr.shipment"></label>
-          <select id="alShip"><option value="" data-i18n="alr.all"></option></select></div>
+          <details class="ms" id="alShip"></details></div>
         <div class="fld" style="max-width:150px"><label data-i18n="alr.dept"></label>
-          <select id="alDept"><option value="" data-i18n="alr.all"></option></select></div>
+          <details class="ms" id="alDept"></details></div>
         <div class="fld" style="max-width:170px"><label data-i18n="alr.loc"></label>
-          <select id="alLoc"><option value="" data-i18n="alr.all"></option></select></div>
+          <details class="ms" id="alLoc"></details></div>
       </div>
       <div class="row" style="margin-top:8px">
         <div class="fld" style="max-width:180px"><label data-i18n="alr.projectF"></label>
@@ -538,7 +562,7 @@
         <div class="fld" style="max-width:200px"><label data-i18n="alr.name"></label>
           <input id="alName" spellcheck="false" data-i18n-ph="alr.namePh"></div>
         <div class="fld" style="max-width:260px"><label data-i18n="alr.cat"></label>
-          <select id="alCat"><option value="" data-i18n="alr.all"></option></select></div>
+          <details class="ms" id="alCat"></details></div>
         <button class="btn pri" id="btnAlLoad" data-i18n="alr.load"></button>
         <button class="btn" id="btnAlReset" data-i18n="alr.reset"></button>
         <button class="btn" id="btnAlDemo" data-i18n="alr.demo"></button>
@@ -715,14 +739,13 @@
         <div class="fld grow" style="max-width:260px"><label data-i18n="reg.filter"></label>
           <input id="regQ" spellcheck="false"></div>
         <div class="fld" style="max-width:150px"><label data-i18n="reg.dept"></label>
-          <select id="regDept"><option value="" data-i18n="reg.all"></option></select></div>
+          <details class="ms" id="regDept"></details></div>
         <div class="fld" style="max-width:150px"><label data-i18n="reg.cat"></label>
-          <select id="regCat"><option value="" data-i18n="reg.all"></option></select></div>
+          <details class="ms" id="regCat"></details></div>
+        <div class="fld" style="max-width:170px"><label data-i18n="reg.loc"></label>
+          <details class="ms" id="regLoc"></details></div>
         <div class="fld" style="max-width:160px"><label data-i18n="reg.kind"></label>
-          <select id="regKind">
-            <option value="" data-i18n="reg.all"></option>
-            <option value="unique" data-i18n="reg.kindUnique"></option>
-            <option value="low" data-i18n="reg.kindLow"></option></select></div>
+          <details class="ms" id="regKind"></details></div>
         <div class="fld" style="max-width:110px"><label data-i18n="reg.year"></label>
           <input id="regYear" type="number" placeholder="2025"></div>
         <button class="btn pri" id="btnRegApply" data-i18n="reg.apply"></button>
@@ -744,7 +767,9 @@
     <div class="wrap"><table id="regGrid"><thead></thead><tbody></tbody></table></div>
     <div class="row" style="margin-top:10px;align-items:center">
       <button class="btn" id="btnRegPrev" data-i18n="reg.prev"></button>
-      <span id="regPage" class="hint" style="margin:0"></span>
+      <!-- Not .hint: that class is hidden with the descriptions, and the count
+           of rows on screen is a fact about the data, not an explanation. -->
+      <span id="regPage" class="pager"></span>
       <button class="btn" id="btnRegNext" data-i18n="reg.next"></button>
     </div>
   </section>

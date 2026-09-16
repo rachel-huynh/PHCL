@@ -902,10 +902,15 @@ function renderAlrList() {
 async function loadAlrAssets() {
   const box = $('#alListMsg');
   const q = ['select=*', 'order=asset_code'];
-  const ship = $('#alShip').value, dept = $('#alDept').value, loc = $('#alLoc').value;
-  if (ship) q.push('shipment_id=eq.' + ship);
-  if (dept) q.push('dept_code=eq.' + dept);
-  if (loc)  q.push('location_code=eq.' + loc);
+  const pick = (id, col) => {
+    const v = msValues(id);
+    if (!v.length) return;
+    q.push(v.length === 1 ? `${col}=eq.${v[0]}`
+                          : `${col}=in.(${v.map(x => `"${x}"`).join(',')})`);
+  };
+  pick('alShip', 'shipment_id');
+  pick('alDept', 'dept_code');
+  pick('alLoc', 'location_code');
 
   // The project code lives on the asset as purpose_code -- that is what the
   // intake screen writes from its "Project" field.
@@ -916,9 +921,16 @@ async function loadAlrAssets() {
   if (nm) q.push(`or=(name_vi.ilike.*${nm}*,name_en.ilike.*${nm}*)`);
 
   // One picker for both levels: "g:C2112" is an accounting group, "c:FUR" a category.
-  const cat = $('#alCat').value;
-  if (cat.startsWith('g:')) q.push('group_code=eq.' + cat.slice(2));
-  else if (cat.startsWith('c:')) q.push('category_code=eq.' + cat.slice(2));
+  /* One picker holds both levels. Groups and categories filter different
+     columns, so a mixed selection has to become an OR across the two. */
+  const cats = msValues('alCat');
+  const grp = cats.filter(c => c.startsWith('g:')).map(c => c.slice(2));
+  const cc = cats.filter(c => c.startsWith('c:')).map(c => c.slice(2));
+  const lst = a => a.map(x => `"${x}"`).join(',');
+  if (grp.length && cc.length)
+    q.push(`or=(group_code.in.(${lst(grp)}),category_code.in.(${lst(cc)}))`);
+  else if (grp.length) q.push(`group_code=in.(${lst(grp)})`);
+  else if (cc.length) q.push(`category_code=in.(${lst(cc)})`);
   msg(box, 'info', t('table.loading'));
   try {
     const rows = await SB.select('am_asset', q.join('&'));
@@ -1173,9 +1185,11 @@ async function saveAlr() {
       approved_by: $('#alAppr').value.trim() || null,
       received_by: $('#alRecv').value.trim() || null,
       notes_text: $('#alNotes').value,
-      shipment_id: $('#alShip').value || null,
-      dept_code: $('#alDept').value || null,
-      location_code: $('#alLoc').value || null
+      // These record WHICH filter produced the receipt. With several picked
+      // there is no single answer, so only a lone choice is stored.
+      shipment_id: msValues('alShip').length === 1 ? msValues('alShip')[0] : null,
+      dept_code: msValues('alDept').length === 1 ? msValues('alDept')[0] : null,
+      location_code: msValues('alLoc').length === 1 ? msValues('alLoc')[0] : null
     }]);
     await SB.insert('am_alr_line',
       rows.map((r, i) => ({ alr_id: alr.id, line_no: i + 1, asset_id: r.id })));
@@ -1258,20 +1272,14 @@ async function fillAlrPickers() {
       SB.select('am_org', 'select=code,name_vi,name_en&is_department=is.true&order=code'),
       SB.select('am_location', 'select=code,name&order=code')
     ]);
-    const d = $('#alDept'), l = $('#alLoc');
-    while (d.options.length > 1) d.remove(1);
-    while (l.options.length > 1) l.remove(1);
-    for (const o of deps) d.append(el('option', { value: o.code,
-      textContent: `${o.code} — ${(LANG === 'vi' ? o.name_vi : o.name_en) || o.name_vi}` }));
-    for (const o of locs) l.append(el('option', { value: o.code,
-      textContent: `${o.code} — ${o.name}` }));
+    const nm = o => (LANG === 'vi' ? o.name_vi : o.name_en) || o.name_vi || '';
+    msSetup('alDept', deps.map(o => ({ v: o.code, t: `${o.code} — ${nm(o)}` })));
+    msSetup('alLoc', locs.map(o => ({ v: o.code, t: `${o.code} — ${o.name}` })));
+
     const sh = await SB.select('am_shipment',
       'select=id,code,delivery_date,purpose_code&order=id.desc&limit=100');
-    const s = $('#alShip');
-    while (s.options.length > 1) s.remove(1);
-    for (const o of sh)
-      s.append(el('option', { value: o.id, textContent:
-        [o.code || '#' + o.id, o.purpose_code, o.delivery_date].filter(Boolean).join(' · ') }));
+    msSetup('alShip', sh.map(o => ({ v: String(o.id), t:
+      [o.code || '#' + o.id, o.purpose_code, o.delivery_date].filter(Boolean).join(' · ') })));
 
     // One list, two levels: accounting groups first, then the categories under
     // them. The prefix tells loadAlrAssets() which column to filter on.
@@ -1279,17 +1287,12 @@ async function fillAlrPickers() {
       SB.select('am_category_group', 'select=code,name_vi,name_en&order=sort_order'),
       SB.select('am_category', 'select=code,group_code,name_vi,name_en&order=group_code,code')
     ]);
-    const c = $('#alCat');
-    while (c.options.length > 1) c.remove(1);
-    const nm = o => (LANG === 'vi' ? o.name_vi : o.name_en) || o.name_vi || '';
-    const og = el('optgroup', { label: t('alr.catGroup') });
-    for (const o of grps)
-      og.append(el('option', { value: 'g:' + o.code, textContent: `${o.code} — ${nm(o)}` }));
-    const oc = el('optgroup', { label: t('alr.catCat') });
-    for (const o of cats)
-      oc.append(el('option', { value: 'c:' + o.code,
-                               textContent: `${o.code} (${o.group_code}) — ${nm(o)}` }));
-    c.append(og, oc);
+    msSetup('alCat', [
+      ...grps.map(o => ({ v: 'g:' + o.code,
+                          t: `${t('alr.catGroup')} · ${o.code} — ${nm(o)}` })),
+      ...cats.map(o => ({ v: 'c:' + o.code,
+                          t: `${o.code} (${o.group_code}) — ${nm(o)}` }))
+    ]);
   } catch { /* the Connection screen already reports it */ }
 }
 
@@ -1299,16 +1302,20 @@ function initAlr() {
   const sync = () => { $('#alCode').value = alrCodeFromProject($('#alProject').value); };
   sync();
   $('#alProject').oninput = sync;
-  $('#alShip').onchange = () => {
-    const txt = $('#alShip').selectedOptions[0]?.textContent || '';
+  ['alShip', 'alDept', 'alLoc', 'alCat'].forEach(id => msSetup(id, []));
+  // Picking exactly one delivery batch offers up its project code.
+  MS.alShip.onChange = () => {
+    const v = msValues('alShip');
+    if (v.length !== 1) return;
+    const txt = (MS.alShip.opts.find(o => o.v === v[0]) || {}).t || '';
     const m = /\b((?:FFE|CAPEX)\.[A-Z]+\.\d+\.\d{4})\b/i.exec(txt);
     if (m) { $('#alProject').value = m[1]; sync(); }
   };
   $('#btnAlLoad').onclick = loadAlrAssets;
   $('#btnAlDemo').onclick = loadAlrDemo;
   $('#btnAlReset').onclick = () => {
-    $('#alShip').value = ''; $('#alDept').value = ''; $('#alLoc').value = '';
-    $('#alProjF').value = ''; $('#alName').value = ''; $('#alCat').value = '';
+    ['alShip', 'alDept', 'alLoc', 'alCat'].forEach(msClear);
+    $('#alProjF').value = ''; $('#alName').value = '';
   };
   $('#alName').onkeydown = ev => { if (ev.key === 'Enter') loadAlrAssets(); };
   $('#alProjF').onkeydown = ev => { if (ev.key === 'Enter') loadAlrAssets(); };
@@ -1653,6 +1660,14 @@ function switchLang(l) {
   const notes = $('#alNotes');
   if (notes && Object.values(ALR_NOTES).includes(notes.value.trim()))
     notes.value = ALR_NOTES[LANG] || ALR_NOTES.en;
+
+  // The multi-select summaries and their option labels are built text, not
+  // data-i18n markup, so applyI18n() cannot reach them.
+  for (const id of Object.keys(MS)) {
+    if (id === 'regKind')
+      msSetup(id, [{ v: 'unique', t: t('reg.kindUnique') }, { v: 'low', t: t('reg.kindLow') }]);
+    else msRender(id);
+  }
 
   $('#connTxt').textContent = t(CONN.ok ? 'conn.ok' : 'conn.none');
   applyHelp();
@@ -2450,9 +2465,18 @@ function regFilters() {
   if (q) ors.push(['asset_code', 'name_vi', 'name_en', 'barcode']
                   .map(c => `${c}.ilike.*${q}*`));
 
-  if ($('#regDept').value) f.push('dept_code=eq.' + $('#regDept').value);
-  if ($('#regCat').value)  f.push('category_code=eq.' + $('#regCat').value);
-  if ($('#regKind').value) f.push('asset_kind=eq.' + $('#regKind').value);
+  /* One pick is `eq`, several are `in.(a,b,c)` — PostgREST needs the values
+     quoted there, because a code could contain a comma or a bracket. */
+  const pick = (id, col) => {
+    const v = msValues(id);
+    if (!v.length) return;
+    f.push(v.length === 1 ? `${col}=eq.${v[0]}`
+                          : `${col}=in.(${v.map(x => `"${x}"`).join(',')})`);
+  };
+  pick('regDept', 'dept_code');
+  pick('regCat', 'category_code');
+  pick('regLoc', 'location_code');
+  pick('regKind', 'asset_kind');
   const y = $('#regYear').value.trim();
   if (y) f.push('purchase_year=eq.' + Number(y));
 
@@ -2568,10 +2592,18 @@ function regRender() {
     body.append(el('tr', {}, el('td', { colSpan: (REG.cols.length || 1) + 1,
       style: 'color:var(--dim);padding:14px', textContent: t('reg.empty') })));
 
+  /* Which rows of which total, and where in the run. With a filter on, the
+     total is the FILTERED total — otherwise the number would quietly claim the
+     filter found more than it did. */
   const pages = Math.max(1, Math.ceil(REG.total / REG_SIZE));
-  $('#regPage').textContent =
-    t('reg.count', { shown: fmtInt(REG.rows.length), total: fmtInt(REG.total) }) +
-    ' · ' + t('reg.page', { p: REG.page + 1, n: pages });
+  const firstRow = REG.total ? from + 1 : 0;      // `from` is the page offset
+  const lastRow = from + REG.rows.length;
+  const box = $('#regPage');
+  box.innerHTML = '';
+  box.append(
+    el('b', { textContent: `${fmtInt(firstRow)}–${fmtInt(lastRow)}` }),
+    document.createTextNode(' ' + t('reg.ofRows', { total: fmtInt(REG.total) }) + ' · '),
+    el('b', { textContent: t('reg.page', { p: fmtInt(REG.page + 1), n: fmtInt(pages) }) }));
   $('#btnRegPrev').disabled = REG.page <= 0;
   $('#btnRegNext').disabled = REG.page + 1 >= pages;
 }
@@ -2687,29 +2719,113 @@ async function regPrint() {
   } catch (e) { msg(out, 'err', e.message); }
 }
 
+/* ------------------------------------------------------- multi-select box
+   A <select multiple> cannot show a summary, cannot be searched, and is
+   miserable with 675 locations. This is a <details> holding a checkbox list
+   with its own search box; the summary line says what is chosen.
+   State lives here, keyed by the element id. */
+const MS = {};
+
+function msSetup(id, opts) {
+  const host = $('#' + id);
+  if (!host) return;
+  const st = MS[id] || (MS[id] = { sel: new Set(), opts: [], q: '' });
+  st.opts = opts;
+  // Drop selections that no longer exist, so a stale pick cannot filter to nothing.
+  const have = new Set(opts.map(o => o.v));
+  for (const v of [...st.sel]) if (!have.has(v)) st.sel.delete(v);
+  if (!host.dataset.built) {
+    host.dataset.built = '1';
+    host.append(
+      el('summary', { className: 'ms-sum' }),
+      el('div', { className: 'ms-body' }, [
+        el('input', { className: 'ms-q', spellcheck: false }),
+        el('div', { className: 'ms-list' }),
+        el('div', { className: 'ms-acts' })
+      ]));
+    host.querySelector('.ms-q').oninput = ev => { st.q = ev.target.value; msList(id); };
+  }
+  msRender(id);
+}
+
+function msRender(id) {
+  const host = $('#' + id), st = MS[id];
+  const n = st.sel.size;
+  host.querySelector('.ms-sum').textContent =
+    n === 0 ? t('reg.all')
+    : n === 1 ? [...st.sel][0]
+    : t('ms.nChosen', { n });
+  host.classList.toggle('picked', n > 0);
+  host.querySelector('.ms-q').placeholder = t('ms.search');
+  const acts = host.querySelector('.ms-acts');
+  acts.innerHTML = '';
+  const clr = el('button', { className: 'btn tiny', textContent: t('ms.clear') });
+  clr.onclick = ev => { ev.preventDefault(); st.sel.clear(); msRender(id); st.onChange?.(); };
+  acts.append(clr);
+  msList(id);
+}
+
+function msList(id) {
+  const host = $('#' + id), st = MS[id];
+  const box = host.querySelector('.ms-list');
+  const q = st.q.trim().toLowerCase();
+  box.innerHTML = '';
+  // Chosen entries stay on top so they never scroll out of reach of the search.
+  const hit = st.opts.filter(o => !q || o.t.toLowerCase().includes(q));
+  const shown = [...hit.filter(o => st.sel.has(o.v)), ...hit.filter(o => !st.sel.has(o.v))]
+    .slice(0, 300);
+  for (const o of shown) {
+    const cb = el('input', { type: 'checkbox', checked: st.sel.has(o.v) });
+    cb.onchange = () => {
+      if (cb.checked) st.sel.add(o.v); else st.sel.delete(o.v);
+      msRender(id); st.onChange?.();
+    };
+    box.append(el('label', { className: 'ms-i' }, [cb, el('span', { textContent: o.t })]));
+  }
+  if (!shown.length)
+    box.append(el('div', { className: 'ms-none', textContent: t('ms.none') }));
+  else if (hit.length > shown.length)
+    box.append(el('div', { className: 'ms-none',
+                           textContent: t('ms.more', { n: fmtInt(hit.length - shown.length) }) }));
+}
+
+const msValues = id => [...(MS[id]?.sel || [])];
+const msClear = id => { if (MS[id]) { MS[id].sel.clear(); MS[id].q = ''; msRender(id); } };
+
 async function regFillPickers() {
   try {
-    const [deps, cats] = await Promise.all([
-      SB.select('am_org', 'select=code&is_department=is.true&order=code'),
-      SB.select('am_category', 'select=code&order=code')
+    const [deps, cats, locs] = await Promise.all([
+      SB.select('am_org', 'select=code,name_vi,name_en&is_department=is.true&order=code'),
+      SB.select('am_category', 'select=code,name_vi,name_en&order=code'),
+      SB.select('am_location', 'select=code,name,kind&order=code')
     ]);
-    const fill = (sel, rows) => {
-      const s = $(sel), keep = s.value;
-      while (s.options.length > 1) s.remove(1);
-      for (const r of rows) s.append(el('option', { value: r.code, textContent: r.code }));
-      s.value = keep;
-    };
-    fill('#regDept', deps); fill('#regCat', cats);
+    const nm = o => (LANG === 'vi' ? o.name_vi : o.name_en) || o.name_vi || '';
+    msSetup('regDept', deps.map(o => ({ v: o.code, t: `${o.code} — ${nm(o)}` })));
+    msSetup('regCat', cats.map(o => ({ v: o.code, t: `${o.code} — ${nm(o)}` })));
+    msSetup('regLoc', locs.map(o => ({ v: o.code, t: `${o.code} — ${o.name}` })));
+    msSetup('regKind', [{ v: 'unique', t: t('reg.kindUnique') },
+                        { v: 'low', t: t('reg.kindLow') }]);
+    for (const id of ['regDept', 'regCat', 'regLoc', 'regKind'])
+      MS[id].onChange = () => {};        // filters apply on Apply, not per tick
   } catch { /* the Connection screen already reports it */ }
 }
 
 function initRegister() {
   regLoadCols();
   regRenderCols();
+  /* Build them empty up front. regFillPickers() needs the database, and if it
+     fails the boxes must still look like filters — a bare <details> renders as
+     the browser's own "Details" triangle, which is not a control anyone
+     recognises. The kind list needs no database at all. */
+  ['regDept', 'regCat', 'regLoc'].forEach(id => msSetup(id, []));
+  msSetup('regKind', [{ v: 'unique', t: t('reg.kindUnique') },
+                      { v: 'low', t: t('reg.kindLow') }]);
+
   $('#btnRegApply').onclick = () => regLoad(true);
   $('#btnRegReset').onclick = () => {
-    $('#regQ').value = ''; $('#regDept').value = ''; $('#regCat').value = '';
-    $('#regKind').value = ''; $('#regYear').value = '';
+    $('#regQ').value = ''; $('#regYear').value = '';
+    ['regDept', 'regCat', 'regLoc', 'regKind'].forEach(msClear);
+    REG.colq = {};                       // the per-column boxes are filters too
     regLoad(true);
   };
   $('#regQ').onkeydown = ev => { if (ev.key === 'Enter') regLoad(true); };
@@ -3356,7 +3472,9 @@ const LEG_COL = {
    Evidence: of the 438 distinct location codes in the 17,036-row export, exactly
    two are absent from am_location — "S" (3,680 rows) and "C" (1,476) — and both
    buildings exist under their proper codes. */
-const LEG_BUILDING = { S: 'SOF', C: 'CP' };
+// A Map, not an object: a plain object would also answer to "constructor" and
+// "toString", and a stray cell holding one of those would map to a function.
+const LEG_BUILDING = new Map([['S', 'SOF'], ['C', 'CP']]);
 const LEG_CHUNK = 300;
 let LEG = { rows: [], bad: [], warn: [] };
 
@@ -3466,7 +3584,7 @@ async function legRead() {
        am_location does not hold, and both buildings exist in it under their
        real codes. Mapping them keeps the building; dropping them lost it. */
     let rawLoc = legTxt(r[G.location]);
-    if (LEG_BUILDING[rawLoc]) rawLoc = LEG_BUILDING[rawLoc];
+    if (LEG_BUILDING.has(rawLoc)) rawLoc = LEG_BUILDING.get(rawLoc);
     const loc = check(rawLoc, master.loc, 'location_code', 'leg.wNoLoc');
     const unit = check(r[G.unit], master.unit, 'unit_code', 'leg.wNoUnit');
     const iso = check(legTxt(r[G.origin]).toUpperCase(), master.origin,
