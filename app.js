@@ -3658,37 +3658,73 @@ async function legRead() {
   $('#btnLegImport').disabled = !LEG.rows.length;
 }
 
+/* Every barcode already in the register. One column, paged — the whole set is
+   needed to tell an addition from an update BEFORE writing, which is what makes
+   "add only" and "update only" possible and the counts honest. */
+async function legExisting(onProgress) {
+  const have = new Set();
+  for (let off = 0; ; off += 1000) {
+    const page = await SB.select('am_asset',
+      `select=barcode&order=barcode&limit=1000&offset=${off}`);
+    for (const r of page) have.add(r.barcode);
+    onProgress?.(have.size);
+    if (page.length < 1000) break;
+  }
+  return have;
+}
+
 async function legImport() {
   if (!LEG.rows.length) return;
   const out = $('#legMsg');
   const host = CFG.url ? new URL(CFG.url).hostname : '?';
-  if (!confirm(t('leg.confirm', { n: fmtInt(LEG.rows.length), host,
+  const mode = $('#legMode').value;        // both | add | update
+
+  /* The barcode is the identity — that part is settled. This only decides what
+     to DO with a match: refresh it, leave it alone, or refuse rows that have no
+     match. Re-running to correct a field wants "update only", so a stray new
+     row cannot slip in unnoticed. */
+  msg(out, 'info', t('leg.reading'));
+  let existing;
+  try { existing = await legExisting(); }
+  catch (e) { return msg(out, 'err', e.message); }
+
+  const isNew = r => !existing.has(r.barcode);
+  const rows = mode === 'add' ? LEG.rows.filter(isNew)
+             : mode === 'update' ? LEG.rows.filter(r => !isNew(r))
+             : LEG.rows;
+  const nAdd = rows.filter(isNew).length;
+  const nUpd = rows.length - nAdd;
+  const held = LEG.rows.length - rows.length;
+  if (!rows.length)
+    return msg(out, 'warn', t('leg.modeNothing', { mode: t('leg.mode.' + mode) }));
+
+  if (!confirm(t('leg.confirm', { n: fmtInt(rows.length), host,
                                   bad: fmtInt(LEG.bad.length),
-                                  warn: fmtInt(LEG.warn.length) }))) return;
+                                  warn: fmtInt(LEG.warn.length),
+                                  add: fmtInt(nAdd), upd: fmtInt(nUpd),
+                                  held: fmtInt(held) }))) return;
   let done = 0;
   try {
-    for (let i = 0; i < LEG.rows.length; i += LEG_CHUNK) {
+    for (let i = 0; i < rows.length; i += LEG_CHUNK) {
       msg(out, 'info', t('leg.importing', { done: fmtInt(done),
-                                            total: fmtInt(LEG.rows.length) }));
-      // The barcode is the identity: both "add new" and "update" match on it.
-      // It is the only field present and unique on every row of the register --
-      // 860 asset codes do not even parse -- so it is what decides whether a
-      // row already exists.
-      // on_conflict also makes the import repeatable. Without it PostgREST
-      // resolves conflicts on the primary key, and since id is a bigserial we
-      // never send, a second run would insert duplicates and die on the unique
-      // index -- halfway through 17,000 rows.
+                                            total: fmtInt(rows.length) }));
+      // on_conflict makes the import repeatable. Without it PostgREST resolves
+      // conflicts on the primary key, and since id is a bigserial we never
+      // send, a second run would insert duplicates and die on the unique index
+      // -- halfway through 17,000 rows.
       await SB.call('am_asset?on_conflict=barcode', {
         method: 'POST',
         headers: SB.hdr({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
-        body: JSON.stringify(LEG.rows.slice(i, i + LEG_CHUNK))
+        body: JSON.stringify(rows.slice(i, i + LEG_CHUNK))
       });
-      done += Math.min(LEG_CHUNK, LEG.rows.length - i);
+      done += Math.min(LEG_CHUNK, rows.length - i);
     }
   } catch (e) {
     return msg(out, 'err', t('leg.fail', { done: fmtInt(done), err: e.message }));
   }
-  msg(out, 'ok', t('leg.done', { n: fmtInt(done), skip: fmtInt(LEG.bad.length) }));
+  // Say what actually happened, not just a total: added vs refreshed.
+  msg(out, 'ok', t('leg.done', { n: fmtInt(done), add: fmtInt(nAdd), upd: fmtInt(nUpd),
+                                 held: fmtInt(held), skip: fmtInt(LEG.bad.length) }));
   $('#btnLegImport').disabled = true;
   try {
     await SB.insert('am_data_source', [{
