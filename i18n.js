@@ -9,6 +9,7 @@ const I18N = {
 en: {
   'app.subtitle': 'Asset Management',
   'side.note': 'Data lives on Supabase. The connection settings are stored in this browser only, never in the source code.',
+  'conn.ok': 'connected · in sync',
   'conn.none': 'not connected',
   'conn.error': 'connection error',
 
@@ -28,6 +29,8 @@ en: {
 
   'tool.filter': 'Quick filter…',
   'tool.reload': 'Reload',
+  'tool.helpOn': 'Show the descriptions',
+  'tool.helpOff': 'Hide the descriptions',
   'tool.editOn': 'Edit',
   'tool.editOff': 'Done editing',
   'tool.add': '+ Add row',
@@ -508,6 +511,7 @@ en: {
 vi: {
   'app.subtitle': 'Asset Management',
   'side.note': 'Dữ liệu nằm trên Supabase. Cấu hình kết nối lưu trong trình duyệt này, không nằm trong mã nguồn.',
+  'conn.ok': 'đã kết nối · đang đồng bộ',
   'conn.none': 'chưa kết nối',
   'conn.error': 'lỗi kết nối',
 
@@ -527,6 +531,8 @@ vi: {
 
   'tool.filter': 'Lọc nhanh…',
   'tool.reload': 'Tải lại',
+  'tool.helpOn': 'Hiện phần mô tả',
+  'tool.helpOff': 'Ẩn phần mô tả',
   'tool.editOn': 'Sửa',
   'tool.editOff': 'Xong',
   'tool.add': '+ Thêm dòng',

@@ -44,10 +44,13 @@ function loadCfg() {
 }
 
 let CONN = { ok: false, host: '' };
+/* The sidebar says WHETHER it is connected, never to which project. The repo is
+   public and this corner of the screen is in every screenshot and screen-share;
+   the host name belongs on the Connection screen, behind the Show button. */
 function setConn(ok, hostOrKey) {
   CONN = { ok, host: ok ? hostOrKey : '' };
   $('#dot').classList.toggle('on', !!ok);
-  $('#connTxt').textContent = ok ? hostOrKey : t(hostOrKey);
+  $('#connTxt').textContent = t(ok ? 'conn.ok' : hostOrKey);
 }
 
 /* ------------------------------------------------------------------- SB */
@@ -1323,8 +1326,7 @@ const NAV = [
     ['register', 'nav.register'],
     ['intake', 'nav.intake'],
     ['alr', 'nav.alr'],
-    ['counter', 'nav.counter'],
-    ['rules', 'nav.rules']
+    ['counter', 'nav.counter']
   ]],
   ['nav.catalog', [
     ['tbl:am_org', null, [['tbl:am_org_alias', null]]],
@@ -1404,6 +1406,40 @@ function buildNav() {
       for (const [cid, ckey] of children || []) addItem(cid, ckey, 1);
     }
     nav.append(head, kids);
+  }
+}
+
+/* ------------------------------------------------- page chrome, app-wide
+   Two things the screens have in common, applied once instead of card by card
+   so a new card picks them up for free. */
+
+/* Explanations are worth having but not worth re-reading every day, so they
+   start hidden behind one switch in the top bar. */
+const HELP_KEY = 'asset-intake.help';
+let HELP_ON = (() => { try { return localStorage.getItem(HELP_KEY) === '1'; } catch { return false; } })();
+function applyHelp() {
+  document.body.classList.toggle('nohelp', !HELP_ON);
+  const b = $('#btnHelp');
+  if (b) {
+    b.classList.toggle('on', HELP_ON);
+    b.title = t(HELP_ON ? 'tool.helpOff' : 'tool.helpOn');
+  }
+}
+
+/* Lift a card's action row onto its heading line. Cards are written heading →
+   fields → actions, which reads well in the source but leaves the buttons
+   hunting for an edge on screen. */
+function layoutCards() {
+  for (const card of $$('.card')) {
+    const h2 = card.querySelector(':scope > h2');
+    if (!h2 || h2.parentElement !== card) continue;
+    const acts = [...card.querySelectorAll(':scope > .row')]
+      .find(r => !r.querySelector('.fld') && r.querySelector('button'));
+    if (!acts) continue;
+    const head = el('div', { className: 'chead' });
+    card.insertBefore(head, h2);
+    acts.style.marginTop = '';
+    head.append(h2, acts);
   }
 }
 
@@ -1555,7 +1591,9 @@ function showView(view) {
     loadTable(table);
   } else {
     if (view === 'counter' && SB.ready()) loadCounters();
-    if (view === 'rules' && SB.ready()) fillPickers();
+    // The rule tester lives inside the counters screen now, so its pickers
+    // load with that screen.
+    if (view === 'counter' && SB.ready()) fillPickers();
     if (view === 'alr' && SB.ready()) { fillAlrPickers(); alrHistory(); }
     if (view === 'backup' && SB.ready()) bkCount();
     if (view === 'sources' && SB.ready()) srcLoad();
@@ -1581,7 +1619,8 @@ function switchLang(l) {
   if (notes && Object.values(ALR_NOTES).includes(notes.value.trim()))
     notes.value = ALR_NOTES[LANG] || ALR_NOTES.en;
 
-  if (!CONN.ok) $('#connTxt').textContent = t('conn.none');
+  $('#connTxt').textContent = t(CONN.ok ? 'conn.ok' : 'conn.none');
+  applyHelp();
   renderAlrList();
   if (ALR.mode === 'doc') buildDoc();
   else if (ALR.mode === 'labels') buildLabels();
@@ -1640,6 +1679,13 @@ async function checkSchema() {
 function init() {
   applyI18n();
   markLang();
+  layoutCards();          // once: the cards are static markup
+  $('#btnHelp').onclick = () => {
+    HELP_ON = !HELP_ON;
+    try { localStorage.setItem(HELP_KEY, HELP_ON ? '1' : '0'); } catch {}
+    applyHelp();
+  };
+  applyHelp();
   $$('#langSeg button').forEach(b => { b.onclick = () => switchLang(b.dataset.lang); });
   buildNav();
 
