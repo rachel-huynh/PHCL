@@ -22,7 +22,16 @@ create index if not exists am_asset_name_norm_ix on am_asset (am_norm(name_vi));
 --   n   = số dòng trong sổ đã dùng tổ hợp đó (0 = không có căn cứ)
 --   src = 'product' | 'history' | 'none'
 -- Không tự ý chọn khi không có căn cứ: trả null và để người dùng điền.
+--
+-- ⚠ PHẢI drop trước. 13_suggest_terms.sql thay hàm này bằng bản khớp theo
+-- ranh giới từ với kiểu trả về KHÁC. Trên một cơ sở dữ liệu đã chạy 13, câu
+-- "create or replace" ở đây sẽ định kéo kiểu trả về về lại bản cũ và Postgres
+-- ném ERROR 42P13 — "cannot change return type of existing function". Có drop
+-- thì ALL_IN_ONE.sql chạy lại được bao nhiêu lần cũng xong, theo thứ tự nào
+-- cũng xong, vì 13 chạy sau và luôn là bản thắng.
 -- ---------------------------------------------------------------------
+drop function if exists am_suggest_lines(text[]);
+
 create or replace function am_suggest_lines(p_names text[])
 returns table (
   name              text,

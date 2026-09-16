@@ -3137,7 +3137,16 @@ create index if not exists am_asset_name_norm_ix on am_asset (am_norm(name_vi));
 --   n   = số dòng trong sổ đã dùng tổ hợp đó (0 = không có căn cứ)
 --   src = 'product' | 'history' | 'none'
 -- Không tự ý chọn khi không có căn cứ: trả null và để người dùng điền.
+--
+-- ⚠ PHẢI drop trước. 13_suggest_terms.sql thay hàm này bằng bản khớp theo
+-- ranh giới từ với kiểu trả về KHÁC. Trên một cơ sở dữ liệu đã chạy 13, câu
+-- "create or replace" ở đây sẽ định kéo kiểu trả về về lại bản cũ và Postgres
+-- ném ERROR 42P13 — "cannot change return type of existing function". Có drop
+-- thì ALL_IN_ONE.sql chạy lại được bao nhiêu lần cũng xong, theo thứ tự nào
+-- cũng xong, vì 13 chạy sau và luôn là bản thắng.
 -- ---------------------------------------------------------------------
+drop function if exists am_suggest_lines(text[]);
+
 create or replace function am_suggest_lines(p_names text[])
 returns table (
   name              text,
@@ -3547,4 +3556,346 @@ comment on function am_undo_intake(bigint[]) is
   'Xoá các tài sản vừa ghi bởi một đợt nhập và lùi bộ đếm về nếu an toàn. Giữ lại dòng lịch sử và dòng đã nằm trên biên bản đã lưu. Chỉ lùi bộ đếm khi nó vẫn đứng đúng chỗ đợt này để lại VÀ chưa dòng nào được đánh dấu đã in tem.';
 
 grant execute on function am_undo_intake(bigint[]) to anon, authenticated;
+
+
+-- ####################################################################
+-- ##  15_bulk_edit.sql
+-- ####################################################################
+
+-- =====================================================================
+-- 15_bulk_edit.sql — SỬA / XOÁ HÀNG LOẠT TRONG SỔ TÀI SẢN
+--
+-- Vì sao là HÀM chứ không phải PATCH/DELETE thẳng từ trình duyệt:
+--
+--   * Vai `anon` CỐ Ý không có quyền delete trên am_asset (04_rls.sql).
+--   * Đổi PHÒNG BAN không phải là đổi một ô. Ràng buộc am_asset_code_ck bắt
+--     buộc  asset_code = dept_code.group.letters.year.seq  — nên một lệnh
+--     UPDATE dept_code trần sẽ bị cơ sở dữ liệu ném ra ngay. Mã tài sản MANG
+--     mã phòng ban; đổi phòng ban là phải cấp lại mã.
+--
+-- Do đó hàm này làm đúng việc phải làm, chứ không làm việc dễ:
+--
+--   1. Vị trí / tình trạng: đổi thẳng, không ảnh hưởng mã.
+--   2. Phòng ban: cấp SỐ MỚI từ bộ đếm của (phòng ban mới, CHỮ) và dựng lại
+--      asset_code. MÃ VẠCH GIỮ NGUYÊN — mã vạch mới là danh tính vĩnh viễn của
+--      hiện vật, còn asset_code là chỗ nó đang thuộc về.
+--   3. Mã cũ KHÔNG được trả lại bộ đếm cũ. Số đã cấp coi như đã tiêu; trùng mã
+--      tệ hơn thủng số rất nhiều.
+--   4. Dòng nào đã in tem thì tem đó giờ sai — label_printed bị đặt lại false
+--      để nó quay vào hàng đợi in lại. Hàm trả về số lượng cần in lại.
+--   5. Dòng lịch sử (is_legacy) KHÔNG đổi được phòng ban: mã của chúng không
+--      theo quy tắc của app nên không dựng lại được. Chúng được bỏ qua và báo về.
+--
+-- Chạy lại nhiều lần vô hại.
+-- =====================================================================
+
+drop function if exists am_bulk_update(bigint[], text, text, text);
+
+create or replace function am_bulk_update(
+  p_ids      bigint[],
+  p_location text default null,
+  p_dept     text default null,
+  p_status   text default null
+)
+returns table (updated int, recoded int, skipped_legacy int, relabel int)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_up      int := 0;
+  v_recode  int := 0;
+  v_legacy  int := 0;
+  v_relabel int := 0;
+  r         record;
+  v_first   int;
+begin
+  if p_ids is null or array_length(p_ids, 1) is null then
+    return query select 0, 0, 0, 0; return;
+  end if;
+
+  -- Thà không đổi gì còn hơn ghi một mã treo.
+  if p_location is not null then
+    p_location := upper(trim(p_location));
+    if not exists (select 1 from am_location where code = p_location) then
+      raise exception 'Mã vị trí % không có trong danh mục', p_location;
+    end if;
+  end if;
+  if p_dept is not null then
+    p_dept := upper(trim(p_dept));
+    if not exists (select 1 from am_org where code = p_dept and is_department) then
+      raise exception 'Mã phòng ban % không có trong danh mục', p_dept;
+    end if;
+  end if;
+
+  -- --- 1. Vị trí / tình trạng -----------------------------------------
+  if p_location is not null or p_status is not null then
+    update am_asset a
+       set location_code = coalesce(p_location, a.location_code),
+           status_code   = coalesce(p_status,   a.status_code)
+     where a.id = any(p_ids);
+    get diagnostics v_up = row_count;
+  end if;
+
+  -- --- 2. Phòng ban: cấp lại mã ----------------------------------------
+  if p_dept is not null then
+    select count(*) into v_legacy
+    from   am_asset a
+    where  a.id = any(p_ids) and a.is_legacy and a.dept_code <> p_dept;
+
+    -- Cấp theo từng khối (phòng ban mới, CHỮ) để bộ đếm chỉ nhích một lần mỗi
+    -- khối, rồi rải số liên tiếp theo thứ tự id.
+    create temp table if not exists _bulk_recode (
+      id bigint primary key, letters text, new_seq int
+    ) on commit drop;
+    delete from _bulk_recode;
+
+    /* am_letters() on both sides: the counter is keyed by the stripped form
+       ('MVT', never 'MVT-QR'), and the code has to be built from the same value
+       the number came out of, or am_asset_code_ck will disagree with it. */
+    for r in
+      select am_letters(a.letters) as letters, count(*) as n
+      from   am_asset a
+      where  a.id = any(p_ids) and not a.is_legacy and a.dept_code <> p_dept
+      group by am_letters(a.letters)
+    loop
+      v_first := am_alloc_asset_seq(p_dept, r.letters, r.n::int, null::bigint, 'bulk_update');
+      insert into _bulk_recode (id, letters, new_seq)
+      select a.id, r.letters,
+             v_first + (row_number() over (order by a.id))::int - 1
+      from   am_asset a
+      where  a.id = any(p_ids) and not a.is_legacy
+        and  a.dept_code <> p_dept and am_letters(a.letters) = r.letters;
+    end loop;
+
+    -- Tem đã in mang mã cũ: đếm TRƯỚC khi ghi đè.
+    select count(*) into v_relabel
+    from   am_asset a join _bulk_recode b on b.id = a.id
+    where  a.label_printed;
+
+    update am_asset a
+       set dept_code     = p_dept,
+           letters       = b.letters,
+           seq           = b.new_seq,
+           asset_code    = am_build_asset_code(p_dept, a.group_code, b.letters,
+                                               a.purchase_year, b.new_seq),
+           label_printed = false
+      from _bulk_recode b
+     where b.id = a.id;
+    get diagnostics v_recode = row_count;
+
+    v_up := greatest(v_up, v_recode);
+  end if;
+
+  return query select v_up, v_recode, v_legacy, v_relabel;
+end $$;
+
+comment on function am_bulk_update(bigint[], text, text, text) is
+  'Sửa vị trí / phòng ban / tình trạng cho nhiều tài sản cùng lúc. Bỏ qua tham số null. Đổi phòng ban sẽ CẤP LẠI mã tài sản (giữ nguyên mã vạch) và đặt lại cờ đã in tem; dòng lịch sử được bỏ qua.';
+
+-- ---------------------------------------------------------------------
+-- XOÁ HÀNG LOẠT
+--
+-- Khác am_undo_intake ở hai chỗ, đều có lý do:
+--   * CÓ xoá dòng lịch sử — đây chính là chỗ người dùng dọn các dòng trùng của
+--     sổ Beetrack cũ.
+--   * KHÔNG lùi bộ đếm. Undo chỉ lùi được vì nó biết chắc đợt vừa ghi là phần
+--     đuôi của dãy số; một nhóm dòng chọn tay giữa sổ thì không có gì bảo đảm đó.
+-- Vẫn giữ nguyên một luật: không xoá tài sản đã nằm trên biên bản tem nhãn đã
+-- lưu, vì biên bản là chứng từ đã phát hành.
+-- ---------------------------------------------------------------------
+drop function if exists am_bulk_delete(bigint[]);
+
+create or replace function am_bulk_delete(p_ids bigint[])
+returns table (deleted int, kept_on_receipt int)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_del  int := 0;
+  v_keep int := 0;
+begin
+  if p_ids is null or array_length(p_ids, 1) is null then
+    return query select 0, 0; return;
+  end if;
+
+  select count(distinct l.asset_id) into v_keep
+  from   am_alr_line l where l.asset_id = any(p_ids);
+
+  with gone as (
+    delete from am_asset a
+    where  a.id = any(p_ids)
+      and  not exists (select 1 from am_alr_line l where l.asset_id = a.id)
+    returning 1
+  )
+  select count(*) into v_del from gone;
+
+  return query select v_del, v_keep;
+end $$;
+
+comment on function am_bulk_delete(bigint[]) is
+  'Xoá nhiều tài sản cùng lúc. Giữ lại dòng đã nằm trên biên bản tem nhãn đã lưu. KHÔNG lùi bộ đếm — số đã cấp coi như đã tiêu.';
+
+grant execute on function am_bulk_update(bigint[], text, text, text) to anon, authenticated;
+grant execute on function am_bulk_delete(bigint[]) to anon, authenticated;
+
+
+-- ####################################################################
+-- ##  16_reset_counters.sql
+-- ####################################################################
+
+-- =====================================================================
+-- 16_reset_counters.sql — ĐẶT LẠI BỘ ĐẾM VỀ NGANG SỔ
+--
+-- Bối cảnh: am_seed_asset_seq() dùng greatest(), nên nút "Đối chiếu với sổ"
+-- chỉ ĐẨY LÊN, không bao giờ kéo xuống. Đó là mặc định đúng — nhưng sau khi
+-- xoá hàng loạt, bộ đếm đứng cao hơn sổ và dãy số thủng một khoảng.
+--
+-- Hai hàm ở đây là đường duy nhất để kéo xuống, và cả hai đều bị chặn bởi
+-- MỘT luật không thương lượng:
+--
+--     next_seq KHÔNG BAO GIỜ được đặt thấp hơn max(seq đang có) + 1.
+--
+-- Hạ thấp hơn mức đó là cấp lại một mã đang nằm trong sổ — đúng thứ toàn bộ
+-- ứng dụng này sinh ra để ngăn. Hàm sẽ báo lỗi chứ không im lặng kẹp số.
+--
+-- ⚠ VẪN CÒN MỘT RỦI RO MÀ CƠ SỞ DỮ LIỆU KHÔNG THẤY ĐƯỢC: nếu một mã đã được
+-- IN RA TEM rồi dòng đó bị xoá, sổ không còn dấu vết nào của nó, nên sàn tính
+-- ở trên không biết mà tránh. Kéo bộ đếm xuống lúc đó sẽ cấp lại một số đang
+-- dán trên hiện vật. Vì thế đây là thao tác THỦ CÔNG, do người biết đợt nào
+-- đã in quyết định — không phải việc app tự làm sau mỗi lần xoá.
+--
+-- Chạy lại nhiều lần vô hại.
+-- =====================================================================
+
+drop function if exists am_set_asset_seq(text, text, int);
+
+-- Đặt tay MỘT khoá. Trả về giá trị cũ, giá trị mới và sàn an toàn.
+create or replace function am_set_asset_seq(
+  p_dept text, p_letters text, p_next int
+)
+returns table (dept_code text, letters text, old_next int, new_next int, floor_next int)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_old   int;
+  v_floor int;
+begin
+  p_dept    := upper(trim(p_dept));
+  p_letters := am_letters(p_letters);
+
+  if not exists (select 1 from am_org where code = p_dept and is_department) then
+    raise exception 'Mã phòng ban % không có trong danh mục', p_dept;
+  end if;
+  if p_next is null or p_next < 1 then
+    raise exception 'Số kế tiếp phải >= 1';
+  end if;
+
+  -- Sàn: ngay sau số cao nhất đang thực sự nằm trong sổ ở khoá này.
+  select coalesce(max(a.seq), 0) + 1 into v_floor
+  from   am_asset a
+  where  a.dept_code = p_dept and a.letters = p_letters and a.seq > 0;
+
+  if p_next < v_floor then
+    raise exception
+      'Không hạ được bộ đếm (%, %) xuống % — sổ đang có mã tới số %, đặt thấp hơn % sẽ cấp trùng.',
+      p_dept, p_letters, p_next, v_floor - 1, v_floor;
+  end if;
+
+  -- Đọc giá trị cũ TRƯỚC khi ghi, nếu không thì khoá mới sẽ tự báo là "không đổi".
+  select s.next_seq into v_old
+  from   am_asset_seq s where s.dept_code = p_dept and s.letters = p_letters;
+
+  insert into am_asset_seq (dept_code, letters, next_seq)
+  values (p_dept, p_letters, p_next)
+  on conflict (dept_code, letters)
+    do update set next_seq = excluded.next_seq, updated_at = now();
+
+  -- Ghi nhật ký kể cả khi kéo xuống: from > to đọc ra ngay là một lần đặt tay.
+  if v_old is distinct from p_next then
+    insert into am_counter_log (counter, scope, from_val, to_val, actor)
+    values ('asset_seq', p_dept || '|' || p_letters,
+            coalesce(v_old, 0), p_next, 'set_manual');
+  end if;
+
+  return query select p_dept, p_letters, v_old, p_next, v_floor;
+end $$;
+
+comment on function am_set_asset_seq(text, text, int) is
+  'Đặt tay số kế tiếp của một khoá bộ đếm. Chặn mọi giá trị thấp hơn max(seq trong sổ)+1. Ghi vào am_counter_log.';
+
+-- ---------------------------------------------------------------------
+drop function if exists am_reseed_counters(boolean);
+
+-- Nạp lại TOÀN BỘ khoá từ am_asset.
+--   p_allow_lower = false : chỉ đẩy lên (giống nút Đối chiếu sẵn có)
+--   p_allow_lower = true  : đặt đúng bằng max(seq)+1, kể cả khi phải kéo xuống
+create or replace function am_reseed_counters(p_allow_lower boolean default false)
+returns table (scope text, old_next int, new_next int, moved text)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare r record;
+begin
+  create temp table if not exists _reseed (
+    scope text, old_next int, new_next int, moved text
+  ) on commit drop;
+  delete from _reseed;
+
+  for r in
+    select a.dept_code as d, a.letters as l, max(a.seq) + 1 as want,
+           coalesce(s.next_seq, 0) as have
+    from   am_asset a
+    left join am_asset_seq s
+           on s.dept_code = a.dept_code and s.letters = a.letters
+    where  a.seq > 0
+    group by a.dept_code, a.letters, s.next_seq
+  loop
+    if r.want = r.have then continue; end if;
+    if r.want < r.have and not p_allow_lower then continue; end if;
+
+    insert into am_asset_seq (dept_code, letters, next_seq)
+    values (r.d, r.l, r.want)
+    on conflict (dept_code, letters)
+      do update set next_seq = excluded.next_seq, updated_at = now();
+
+    insert into am_counter_log (counter, scope, from_val, to_val, actor)
+    values ('asset_seq', r.d || '|' || r.l, r.have, r.want, 'reseed');
+
+    insert into _reseed values (r.d || '|' || r.l, r.have, r.want,
+      case when r.want < r.have then 'down' else 'up' end);
+  end loop;
+
+  /* Khoá nào không còn dòng tài sản nào thì max() ở trên không thấy. Nếu bộ đếm
+     của nó đang > 1 thì đó là một khoá đã bị xoá sạch — trả về 1 khi được phép. */
+  if p_allow_lower then
+    for r in
+      select s.dept_code as d, s.letters as l, s.next_seq as have
+      from   am_asset_seq s
+      where  s.next_seq > 1
+        and  not exists (select 1 from am_asset a
+                         where a.dept_code = s.dept_code
+                           and a.letters = s.letters and a.seq > 0)
+    loop
+      update am_asset_seq s set next_seq = 1, updated_at = now()
+       where s.dept_code = r.d and s.letters = r.l;
+      insert into am_counter_log (counter, scope, from_val, to_val, actor)
+      values ('asset_seq', r.d || '|' || r.l, r.have, 1, 'reseed');
+      insert into _reseed values (r.d || '|' || r.l, r.have, 1, 'empty');
+    end loop;
+  end if;
+
+  return query select x.scope, x.old_next, x.new_next, x.moved
+               from _reseed x order by x.moved, x.scope;
+end $$;
+
+comment on function am_reseed_counters(boolean) is
+  'Nạp lại toàn bộ khoá bộ đếm mã tài sản từ am_asset. p_allow_lower=true cho phép KÉO XUỐNG đúng bằng max(seq)+1 sau khi xoá hàng loạt — chỉ dùng khi chắc chắn không có mã nào đã in tem rồi bị xoá.';
+
+grant execute on function am_set_asset_seq(text, text, int) to anon, authenticated;
+grant execute on function am_reseed_counters(boolean) to anon, authenticated;
 

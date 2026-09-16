@@ -129,7 +129,8 @@
      obviously a temporary state of the register and not part of its furniture. */
   .card.bulk{border-left:3px solid var(--gold);margin:10px 0}
   .card.bulk > .row{margin:0}
-  .card.bulk .acts{margin-left:auto;display:flex;gap:7px;flex:none}
+  /* Actions pushed to the right end of a row of fields. */
+  .acts{margin-left:auto;display:flex;gap:7px;flex:none}
   #regSelN{align-self:center;white-space:nowrap}
   th.overcol{padding-left:4px;padding-right:4px;text-align:right}
   /* Multi-select filter: a summary line that opens a searchable checkbox list. */
@@ -555,6 +556,27 @@
       </div>
       <div id="seedOut"></div>
     </div>
+
+    <!-- Kéo bộ đếm xuống sau khi xoá hàng loạt. Tách khỏi nút "Đối chiếu" trên
+         đầu trang vì nút đó chỉ đẩy lên và chạy được vô tư; cái này thì không. -->
+    <div class="card">
+      <h2 data-i18n="cnt.rs.h"></h2>
+      <p data-i18n-html="cnt.rs.p_html"></p>
+      <div class="row" style="align-items:flex-end">
+        <div class="fld" style="max-width:150px"><label data-i18n="cnt.rs.dept"></label>
+          <select id="rsDept"></select></div>
+        <div class="fld" style="max-width:130px"><label data-i18n="cnt.rs.letters"></label>
+          <input id="rsLetters" spellcheck="false" placeholder="LTG"></div>
+        <div class="fld" style="max-width:130px"><label data-i18n="cnt.rs.next"></label>
+          <input id="rsNext" type="number" min="1" placeholder="1"></div>
+        <button class="btn" id="btnRsOne" data-i18n="cnt.rs.setOne"></button>
+        <div class="acts">
+          <button class="btn" id="btnRsPreview" data-i18n="cnt.rs.preview"></button>
+          <button class="btn danger" id="btnRsAll" data-i18n="cnt.rs.runAll"></button>
+        </div>
+      </div>
+      <div id="rsOut"></div>
+    </div>
     <div class="card">
       <h2 data-i18n="rules.classify.h"></h2>
       <div class="row">
@@ -942,7 +964,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260916l"></script>
-<script src="app.js?v=20260916l"></script>
+<script src="i18n.js?v=20260916m"></script>
+<script src="app.js?v=20260916m"></script>
 </body>
 </html>

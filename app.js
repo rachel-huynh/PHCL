@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260916l';
+const APP_VERSION = '20260916m';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -753,9 +753,12 @@ async function fillPickers() {
       for (const c of cats) s.append(el('option', { value: c.code, textContent: catText(c) }));
       s.value = keep || (id === '#rcCat' ? 'LTU' : cats[0]?.code) || '';
     }
-    const d = $('#pvDept'); const keepD = d.value; d.innerHTML = '';
-    for (const o of orgs) d.append(el('option', { value: o.code, textContent: o.code }));
-    d.value = keepD || orgs[0]?.code || '';
+    for (const id of ['#pvDept', '#rsDept']) {
+      const d = $(id); if (!d) continue;
+      const keepD = d.value; d.innerHTML = '';
+      for (const o of orgs) d.append(el('option', { value: o.code, textContent: o.code }));
+      d.value = keepD || orgs[0]?.code || '';
+    }
     window.__CATS = cats;
   } catch { /* the Connection screen already reports it */ }
 }
@@ -775,6 +778,76 @@ async function doClassify() {
       (r.suggested_category ? t('rules.suggested', { code: r.suggested_category }) : '') }));
     for (const w of r.warnings || [])
       out.append(el('div', { className: 'msg warn', textContent: w }));
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+/* ------------------------------------------------- reseed / reset counters
+   The Reconcile button on top of this page only ever pushes counters UP
+   (am_seed_asset_seq uses greatest). These two do the other direction, which
+   is why they are guarded and logged rather than offered as one more button. */
+function rsTable(rows) {
+  const tb = el('table');
+  tb.append(el('tr', {}, ['cnt.rs.col.key', 'cnt.rs.col.from', 'cnt.rs.col.to',
+                          'cnt.rs.col.move'].map(k => el('th', { textContent: t(k) }))));
+  for (const r of rows)
+    tb.append(el('tr', {}, [
+      el('td', {}, el('code', { textContent: r.scope })),
+      el('td', { className: 'num', textContent: fmtInt(r.old_next) }),
+      el('td', { className: 'num', textContent: fmtInt(r.new_next) }),
+      el('td', { className: r.moved === 'down' ? 'neg' : '',
+                 textContent: t('cnt.rs.move.' + r.moved) })
+    ]));
+  return el('div', { className: 'wrap' }, tb);
+}
+
+/* Preview = run with p_allow_lower false and show what a real run WOULD move.
+   It cannot show the downward moves without doing them, so instead it asks the
+   audit what the gaps are -- read-only, and that is the whole point. */
+async function rsPreview() {
+  const out = $('#rsOut');
+  msg(out, 'info', t('cnt.rs.checking'));
+  try {
+    const res = await SB.rpc('am_audit_counters');
+    const ahead = (res || []).filter(r => r.gap > 0);
+    out.innerHTML = '';
+    out.append(el('div', { className: 'msg ' + (ahead.length ? 'warn' : 'ok'),
+      textContent: ahead.length ? t('cnt.rs.ahead', { n: fmtInt(ahead.length) })
+                                : t('cnt.rs.level') }));
+    if (ahead.length)
+      out.append(rsTable(ahead.map(r => ({ scope: r.scope, old_next: r.counter_next,
+                                           new_next: r.table_max + 1, moved: 'down' }))));
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+async function rsRunAll() {
+  const out = $('#rsOut');
+  if (!confirm(t('cnt.rs.confirmAll'))) return;
+  msg(out, 'info', t('cnt.rs.running'));
+  try {
+    const res = await SB.rpc('am_reseed_counters', { p_allow_lower: true });
+    const rows = res || [];
+    out.innerHTML = '';
+    out.append(el('div', { className: 'msg ' + (rows.length ? 'ok' : 'info'),
+      textContent: rows.length ? t('cnt.rs.doneAll', { n: fmtInt(rows.length) })
+                               : t('cnt.rs.level') }));
+    if (rows.length) out.append(rsTable(rows));
+    loadCounters();                       // the table above is now stale
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+async function rsSetOne() {
+  const out = $('#rsOut');
+  const dept = $('#rsDept').value, letters = $('#rsLetters').value.trim();
+  const next = Number($('#rsNext').value);
+  if (!dept || !letters || !(next >= 1)) return msg(out, 'err', t('cnt.rs.needAll'));
+  if (!confirm(t('cnt.rs.confirmOne', { dept, letters, n: fmtInt(next) }))) return;
+  try {
+    const r = (await SB.rpc('am_set_asset_seq',
+      { p_dept: dept, p_letters: letters, p_next: next }))[0] || {};
+    msg(out, 'ok', t('cnt.rs.doneOne', {
+      key: `${r.dept_code}|${r.letters}`, from: fmtInt(r.old_next ?? 0),
+      to: fmtInt(r.new_next), floor: fmtInt(r.floor_next) }));
+    loadCounters();
   } catch (e) { msg(out, 'err', e.message); }
 }
 
@@ -1875,6 +1948,9 @@ function init() {
   $('#btnScan').onclick = scanSeed;
   $('#btnSeed').onclick = runSeed;
   $('#btnClassify').onclick = doClassify;
+  $('#btnRsPreview').onclick = rsPreview;
+  $('#btnRsAll').onclick = rsRunAll;
+  $('#btnRsOne').onclick = rsSetOne;
   $('#btnOrigin').onclick = doOrigin;
   $('#btnPreview').onclick = doPreview;
 

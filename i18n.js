@@ -533,6 +533,45 @@ en: {
   'reg.bk.doneLegacy': '{n} legacy rows skipped — their codes do not follow the app rules.',
   'reg.bk.doneDel': 'Deleted {n} rows.',
   'reg.bk.doneKept': '{n} kept: already on a saved label receipt.',
+  'cnt.rs.h': 'Reset the counters to match the register',
+  'cnt.rs.p_html':
+    'Reconcile only ever pushes a counter <b>up</b>, so after a bulk delete the '
+    + 'counters stand above the register and the numbering has a hole in it. This '
+    + 'is the only way to bring them back <b>down</b>. A counter can never go below '
+    + 'the highest number still in the register — that would reissue a code that '
+    + 'exists. <b>What the database cannot see</b> is a code that was printed on a '
+    + 'tag and then deleted: nothing in the register remembers it, so pulling the '
+    + 'counter down would hand that number out again. Only you know whether a '
+    + 'deleted batch had been printed.',
+  'cnt.rs.dept': 'Department',
+  'cnt.rs.letters': 'Letters',
+  'cnt.rs.next': 'Next number',
+  'cnt.rs.setOne': 'Set this one key',
+  'cnt.rs.preview': 'Show what is ahead',
+  'cnt.rs.runAll': 'Pull every counter down to the register',
+  'cnt.rs.checking': 'Comparing the counters against the register…',
+  'cnt.rs.ahead': '{n} counters stand ahead of the register.',
+  'cnt.rs.level': 'Every counter already sits exactly where the register ends.',
+  'cnt.rs.running': 'Rewriting the counters…',
+  'cnt.rs.doneAll': 'Moved {n} counters.',
+  'cnt.rs.doneOne': '{key}: {from} → {to}. The lowest this key can go is {floor}.',
+  'cnt.rs.needAll': 'Choose a department, letters and a next number.',
+  'cnt.rs.confirmOne': 'Set the counter for {dept} / {letters} to {n}?',
+  'cnt.rs.confirmAll':
+    'Pull every counter down to exactly where the register ends?\n\n'
+    + 'No counter goes below the highest number still in the register, so no code '
+    + 'in the register can be reissued.\n\n'
+    + 'But a code that was PRINTED ON A TAG and then deleted leaves no trace here. '
+    + 'If any deleted batch had its labels printed, this will hand those numbers '
+    + 'out a second time.\n\n'
+    + 'Every move is written to the allocation log.',
+  'cnt.rs.col.key': 'Counter key',
+  'cnt.rs.col.from': 'Was',
+  'cnt.rs.col.to': 'Now',
+  'cnt.rs.col.move': 'Direction',
+  'cnt.rs.move.down': 'down',
+  'cnt.rs.move.up': 'up',
+  'cnt.rs.move.empty': 'back to 1 — no assets left',
 
   'nav.sources': 'Data sources',
   'page.sources': 'Data sources',
@@ -1131,6 +1170,43 @@ vi: {
   'reg.bk.doneLegacy': 'Bỏ qua {n} dòng lịch sử — mã của chúng không theo quy tắc của app.',
   'reg.bk.doneDel': 'Đã xoá {n} dòng.',
   'reg.bk.doneKept': 'Giữ lại {n} dòng: đã nằm trên biên bản tem nhãn đã lưu.',
+  'cnt.rs.h': 'Đặt lại bộ đếm về ngang sổ',
+  'cnt.rs.p_html':
+    'Nút Đối chiếu chỉ <b>đẩy lên</b>, nên sau khi xoá hàng loạt bộ đếm đứng cao '
+    + 'hơn sổ và dãy số thủng một khoảng. Đây là đường duy nhất để <b>kéo xuống</b>. '
+    + 'Bộ đếm không bao giờ xuống thấp hơn số cao nhất còn trong sổ — xuống nữa là '
+    + 'cấp lại một mã đang tồn tại. <b>Thứ cơ sở dữ liệu không thấy được</b> là mã '
+    + 'đã in ra tem rồi dòng bị xoá: sổ không còn dấu vết nào của nó, nên kéo xuống '
+    + 'sẽ cấp lại đúng số đang dán trên hiện vật. Chỉ anh/chị biết đợt đã xoá có in '
+    + 'tem hay chưa.',
+  'cnt.rs.dept': 'Phòng ban',
+  'cnt.rs.letters': 'Chữ',
+  'cnt.rs.next': 'Số kế tiếp',
+  'cnt.rs.setOne': 'Đặt riêng khoá này',
+  'cnt.rs.preview': 'Xem khoá nào đang vượt',
+  'cnt.rs.runAll': 'Kéo toàn bộ bộ đếm về ngang sổ',
+  'cnt.rs.checking': 'Đang đối chiếu bộ đếm với sổ…',
+  'cnt.rs.ahead': '{n} khoá đang đứng cao hơn sổ.',
+  'cnt.rs.level': 'Mọi khoá đã đứng đúng chỗ sổ kết thúc.',
+  'cnt.rs.running': 'Đang ghi lại bộ đếm…',
+  'cnt.rs.doneAll': 'Đã dịch {n} khoá.',
+  'cnt.rs.doneOne': '{key}: {from} → {to}. Khoá này thấp nhất chỉ xuống được {floor}.',
+  'cnt.rs.needAll': 'Chọn phòng ban, chữ và số kế tiếp.',
+  'cnt.rs.confirmOne': 'Đặt bộ đếm của {dept} / {letters} thành {n}?',
+  'cnt.rs.confirmAll':
+    'Kéo toàn bộ bộ đếm về đúng chỗ sổ kết thúc?\n\n'
+    + 'Không khoá nào xuống thấp hơn số cao nhất còn trong sổ, nên không mã nào '
+    + 'đang có trong sổ bị cấp lại.\n\n'
+    + 'Nhưng mã ĐÃ IN RA TEM rồi bị xoá thì không để lại dấu vết nào ở đây. Nếu đợt '
+    + 'đã xoá từng in tem, thao tác này sẽ cấp lại đúng những số đó lần thứ hai.\n\n'
+    + 'Mọi lần dịch đều được ghi vào nhật ký cấp phát.',
+  'cnt.rs.col.key': 'Khoá bộ đếm',
+  'cnt.rs.col.from': 'Trước',
+  'cnt.rs.col.to': 'Sau',
+  'cnt.rs.col.move': 'Hướng',
+  'cnt.rs.move.down': 'xuống',
+  'cnt.rs.move.up': 'lên',
+  'cnt.rs.move.empty': 'về 1 — không còn tài sản nào',
 
   'nav.sources': 'Nguồn dữ liệu',
   'page.sources': 'Nguồn dữ liệu',
