@@ -136,6 +136,9 @@
   /* A row that holds only actions (no input field) ranges its buttons right,
      so every card's controls sit on the same edge and are easy to find. */
   .card .row:not(:has(.fld)){justify-content:flex-end}
+  /* When actions share a row WITH fields, they still finish on the right edge —
+     but on the same line, rather than costing a whole extra row of whitespace. */
+  .card .row:has(.fld) > button:first-of-type{margin-left:auto}
   .fld{min-width:150px}
   .fld.grow{flex:1}
   label{display:block;font-size:11px;font-weight:600;letter-spacing:.05em;
@@ -393,8 +396,9 @@
 <div class="content">
   <div class="top">
     <h1 id="pageTitle"></h1>
-    <div class="tools" id="tools"></div>
+    <!-- Next to the title, because that is where the text it reveals appears. -->
     <button class="btn help" id="btnHelp">?</button>
+    <div class="tools" id="tools"></div>
     <div class="seg" id="langSeg">
       <button data-lang="en">EN</button><button data-lang="vi">VI</button>
     </div>
@@ -528,8 +532,6 @@
           <input id="alName" spellcheck="false" data-i18n-ph="alr.namePh"></div>
         <div class="fld" style="max-width:260px"><label data-i18n="alr.cat"></label>
           <select id="alCat"><option value="" data-i18n="alr.all"></option></select></div>
-      </div>
-      <div class="row" style="margin-top:11px">
         <button class="btn pri" id="btnAlLoad" data-i18n="alr.load"></button>
         <button class="btn" id="btnAlReset" data-i18n="alr.reset"></button>
         <button class="btn" id="btnAlDemo" data-i18n="alr.demo"></button>
@@ -566,21 +568,19 @@
     <div class="card">
       <h2 data-i18n="alr.step3"></h2>
       <div class="row">
-        <button class="btn pri" id="btnAlDoc" data-i18n="alr.buildDoc"></button>
-        <button class="btn" id="btnAlLabels" data-i18n="alr.buildLabels"></button>
         <div class="fld" style="max-width:120px"><label data-i18n="alr.perRow"></label>
           <input id="alCols" type="number" min="1" max="6" value="3"></div>
-        <button class="btn" id="btnAlPrint" disabled data-i18n="alr.print"></button>
-        <button class="btn" id="btnAlSave" disabled data-i18n="alr.saveDb"></button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <button class="btn" id="btnAlTape" data-i18n="alr.buildTape"></button>
-        <div class="fld" style="max-width:300px"><label data-i18n="alr.brand"></label>
+        <div class="fld" style="max-width:220px"><label data-i18n="alr.brand"></label>
           <select id="alBrand">
             <option value="SOFITEL|SAIGON PLAZA">Sofitel Saigon Plaza</option>
             <option value="CENTRAL|PLAZA">Central Plaza</option>
             <option value="CTY TNHH|LDKS PLAZA">PHCL</option>
           </select></div>
+        <button class="btn pri" id="btnAlDoc" data-i18n="alr.buildDoc"></button>
+        <button class="btn" id="btnAlLabels" data-i18n="alr.buildLabels"></button>
+        <button class="btn" id="btnAlTape" data-i18n="alr.buildTape"></button>
+        <button class="btn" id="btnAlPrint" disabled data-i18n="alr.print"></button>
+        <button class="btn" id="btnAlSave" disabled data-i18n="alr.saveDb"></button>
       </div>
       <div class="hint" data-i18n-html="alr.tapeHint_html"></div>
       <div id="alOutMsg"></div>
@@ -718,8 +718,6 @@
             <option value="low" data-i18n="reg.kindLow"></option></select></div>
         <div class="fld" style="max-width:110px"><label data-i18n="reg.year"></label>
           <input id="regYear" type="number" placeholder="2025"></div>
-      </div>
-      <div class="row" style="margin-top:11px">
         <button class="btn pri" id="btnRegApply" data-i18n="reg.apply"></button>
         <button class="btn" id="btnRegReset" data-i18n="reg.reset"></button>
       </div>

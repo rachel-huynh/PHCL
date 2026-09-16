@@ -2391,7 +2391,20 @@ function regLoadCols() {
     // Drop anything that is no longer a real column, so an old saved layout
     // cannot ask PostgREST for a field that does not exist.
     if (Array.isArray(saved) && saved.length) {
-      REG.cols = saved.filter(c => REG_COLS.includes(c));
+      let cols = saved.filter(c => REG_COLS.includes(c));
+      // A layout saved before the two name columns were merged still lists them
+      // separately; fold them into the joined column in place, so the change
+      // reaches people who have used the screen before, not just new browsers.
+      if (cols.includes('name_vi') || cols.includes('name_en')) {
+        const at = Math.min(...['name_vi', 'name_en'].map(c => cols.indexOf(c))
+                                                     .filter(i => i >= 0));
+        cols = cols.filter(c => c !== 'name_vi' && c !== 'name_en');
+        if (!cols.includes('name')) cols.splice(at, 0, 'name');
+        REG.cols = cols;
+        regSaveCols();
+        if (REG.cols.length) return;
+      }
+      REG.cols = cols;
       if (REG.cols.length) return;
     }
   } catch {}
@@ -3313,6 +3326,11 @@ const LEG_COL = {
   serial: 'AG', model: 'AH', invoice: 'AX', unit: 'BA', qty: 'BD',
   price: 'BI', bought: 'BT', status: 'CD', purpose: 'CH'
 };
+/* The register writes a bare building letter when the room was never recorded.
+   Evidence: of the 438 distinct location codes in the 17,036-row export, exactly
+   two are absent from am_location — "S" (3,680 rows) and "C" (1,476) — and both
+   buildings exist under their proper codes. */
+const LEG_BUILDING = { S: 'SOF', C: 'CP' };
 const LEG_CHUNK = 300;
 let LEG = { rows: [], bad: [], warn: [] };
 
@@ -3397,12 +3415,36 @@ async function legRead() {
     if (!parsed) warns.push(t('leg.wOddCode'));
     if (!/^JVC\.\d{9}$/.test(bar)) warns.push(t('leg.wOddBarcode'));
 
-    let loc = legTxt(r[G.location]) || null;
-    if (loc && !master.loc.has(loc)) { warns.push(t('leg.wNoLoc', { v: loc })); loc = null; }
-    let unit = legTxt(r[G.unit]) || null;
-    if (unit && !master.unit.has(unit)) { warns.push(t('leg.wNoUnit', { v: unit })); unit = null; }
-    let iso = legTxt(r[G.origin]).toUpperCase() || null;
-    if (iso && !master.origin.has(iso)) { warns.push(t('leg.wNoOrigin', { v: iso })); iso = null; }
+    /* 5,156 rows record the location as the bare building letter — S for
+       Sofitel, C for Central Plaza — meaning "somewhere in this building, room
+       not recorded". Those are the ONLY two codes in the whole register that
+       am_location does not hold, and both buildings exist in it under their
+       real codes. Mapping them keeps the building; dropping them lost it. */
+    /* A value that does not match master data may NOT simply vanish. The column
+       itself is a foreign key, so an unknown code cannot be stored there — but
+       the raw text goes into needs_review, which travels with the row into the
+       register. Nothing is lost; it is parked, flagged, and fixable later. */
+    const keep = [];
+    const check = (raw, set, field, warnKey) => {
+      const v = legTxt(raw);
+      if (!v) return null;
+      if (set.has(v)) return v;
+      warns.push(t(warnKey, { v }));
+      keep.push({ field, reason: 'not_in_master', raw: v });
+      return null;
+    };
+
+    /* 5,156 rows record the location as the bare building letter — S for
+       Sofitel, C for Central Plaza — meaning "somewhere in this building, room
+       not recorded". Those are the ONLY two codes in the whole register that
+       am_location does not hold, and both buildings exist in it under their
+       real codes. Mapping them keeps the building; dropping them lost it. */
+    let rawLoc = legTxt(r[G.location]);
+    if (LEG_BUILDING[rawLoc]) rawLoc = LEG_BUILDING[rawLoc];
+    const loc = check(rawLoc, master.loc, 'location_code', 'leg.wNoLoc');
+    const unit = check(r[G.unit], master.unit, 'unit_code', 'leg.wNoUnit');
+    const iso = check(legTxt(r[G.origin]).toUpperCase(), master.origin,
+                      'origin_iso2', 'leg.wNoOrigin');
 
     if (errs.length) { LEG.bad.push({ line, code, why: errs.join(' · ') }); continue; }
     if (code) seenCode.add(code);
@@ -3441,7 +3483,9 @@ async function legRead() {
       status_code: legTxt(r[G.status]) || null,
       spec_brand: legTxt(r[G.brand]) || null,
       spec_model: legTxt(r[G.model]) || null,
-      needs_review: warns.length ? warns.map(w => ({ field: 'import', reason: w })) : []
+      // Both halves: the human-readable warnings AND the raw values that could
+      // not be stored in their own column, each with the field it belongs to.
+      needs_review: [...keep, ...warns.map(w => ({ field: 'import', reason: w }))]
     });
   }
 
