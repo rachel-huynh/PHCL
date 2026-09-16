@@ -1400,19 +1400,41 @@ function buildNav() {
       navSaveShut();
     };
 
-    const addItem = (id, labelKey, depth) => {
+    const addItem = (id, labelKey, depth, into) => {
       const a = el('a', { href: '#',
         textContent: labelKey ? t(labelKey) : tblLabel(id.slice(4)) });
       a.dataset.view = id;
       a.classList.toggle('on', id === VIEW);
       if (depth) a.classList.add('sub');
       a.onclick = ev => { ev.preventDefault(); showView(id); };
-      kids.append(a);
+      (into || kids).append(a);
     };
     for (const [id, labelKey, children] of items) {
-      if (id) addItem(id, labelKey, 0);
-      else kids.append(el('div', { className: 'subhead', textContent: t(labelKey) }));
-      for (const [cid, ckey] of children || []) addItem(cid, ckey, 1);
+      if (id) {
+        addItem(id, labelKey, 0);
+        for (const [cid, ckey] of children || []) addItem(cid, ckey, 1);
+        continue;
+      }
+      /* A heading with no screen of its own still folds, like the groups above
+         it — otherwise it is the one thing in the nav that cannot be closed. */
+      const key = 'sub:' + labelKey;
+      const inner = el('div', { className: 'subkids' });
+      const holds = (children || []).some(c => c[0] === VIEW);
+      const shutSub = NAV_SHUT.has(key) && !holds;
+      inner.classList.toggle('shut', shutSub);
+      const head = el('button', { className: 'subhead' + (shutSub ? ' shut' : '') }, [
+        el('span', { className: 'car', textContent: '▶' }),
+        el('span', { textContent: t(labelKey) })
+      ]);
+      head.onclick = () => {
+        const nowShut = !inner.classList.contains('shut');
+        inner.classList.toggle('shut', nowShut);
+        head.classList.toggle('shut', nowShut);
+        if (nowShut) NAV_SHUT.add(key); else NAV_SHUT.delete(key);
+        navSaveShut();
+      };
+      kids.append(head, inner);
+      for (const [cid, ckey] of children || []) addItem(cid, ckey, 1, inner);
     }
     nav.append(head, kids);
   }
