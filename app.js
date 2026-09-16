@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260916m';
+const APP_VERSION = '20260917a';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -645,7 +645,11 @@ async function loadCounters() {
       SB.select('am_barcode_seq', 'select=*&order=kind'),
       SB.select('am_counter_log', 'select=*&order=created_at.desc&limit=25')
     ]);
-    out.innerHTML = '';
+    /* Three hosts, not one: the KPI strip and the allocation log want the full
+       width, while the key table sits in the left half with the reset panel
+       beside it. */
+    const kpiBox = $('#cntKpis'), logBox = $('#cntLog');
+    out.innerHTML = ''; kpiBox.innerHTML = ''; logBox.innerHTML = '';
     const kpis = el('div', { className: 'kpis' });
     for (const b of bars) {
       const next = b.kind === 'low'
@@ -668,12 +672,15 @@ async function loadCounters() {
       el('b', { textContent: fmtInt(seqs.reduce((s, r) => s + r.next_seq - 1, 0)) }),
       el('small', { textContent: t('cnt.kpi.issuedSub') })
     ]));
-    out.append(kpis);
+    kpiBox.append(kpis);
 
     if (seqs.length) {
       const tb = el('table');
-      tb.append(el('tr', {}, ['cnt.col.dept', 'cnt.col.letters', 'cnt.col.next', 'cnt.col.updated']
-        .map(k => el('th', { textContent: t(k) }))));
+      // Header carries the same alignment as its cells — the rule the register
+      // already follows, so a column of numbers reads as one right-ranged block.
+      tb.append(el('tr', {}, [['cnt.col.dept'], ['cnt.col.letters'],
+                              ['cnt.col.next', 1], ['cnt.col.updated']]
+        .map(([k, n]) => el('th', { className: n ? 'num' : '', textContent: t(k) }))));
       for (const s of seqs)
         tb.append(el('tr', {}, [
           el('td', {}, el('code', { textContent: s.dept_code })),
@@ -690,8 +697,9 @@ async function loadCounters() {
       const d = el('details');
       d.append(el('summary', { textContent: t('cnt.log.summary', { n: log.length }) }));
       const tb = el('table');
-      tb.append(el('tr', {}, ['cnt.log.when', 'cnt.log.counter', 'cnt.log.scope', 'cnt.log.from',
-        'cnt.log.to', 'cnt.log.qty', 'cnt.log.actor'].map(k => el('th', { textContent: t(k) }))));
+      tb.append(el('tr', {}, [['cnt.log.when'], ['cnt.log.counter'], ['cnt.log.scope'],
+        ['cnt.log.from', 1], ['cnt.log.to', 1], ['cnt.log.qty', 1], ['cnt.log.actor']]
+        .map(([k, n]) => el('th', { className: n ? 'num' : '', textContent: t(k) }))));
       for (const r of log)
         tb.append(el('tr', {}, [
           el('td', { textContent: (r.created_at || '').slice(0, 19).replace('T', ' ') }),
@@ -703,7 +711,7 @@ async function loadCounters() {
           el('td', { textContent: r.actor || '' })
         ]));
       d.append(el('div', { className: 'wrap' }, tb));
-      out.append(d);
+      logBox.append(d);
     }
   } catch (e) { msg(out, 'err', e.message); }
 }
@@ -722,8 +730,9 @@ async function runAudit() {
     const rows = bad.length ? bad : (res || []);
     if (rows.length) {
       const tb = el('table');
-      tb.append(el('tr', {}, ['cnt.audit.key', 'cnt.audit.next', 'cnt.audit.max', 'cnt.audit.gap']
-        .map(k => el('th', { textContent: t(k) }))));
+      tb.append(el('tr', {}, [['cnt.audit.key'], ['cnt.audit.next', 1],
+                              ['cnt.audit.max', 1], ['cnt.audit.gap', 1]]
+        .map(([k, n]) => el('th', { className: n ? 'num' : '', textContent: t(k) }))));
       for (const r of rows)
         tb.append(el('tr', {}, [
           el('td', {}, el('code', { textContent: r.scope })),
@@ -787,8 +796,9 @@ async function doClassify() {
    is why they are guarded and logged rather than offered as one more button. */
 function rsTable(rows) {
   const tb = el('table');
-  tb.append(el('tr', {}, ['cnt.rs.col.key', 'cnt.rs.col.from', 'cnt.rs.col.to',
-                          'cnt.rs.col.move'].map(k => el('th', { textContent: t(k) }))));
+  tb.append(el('tr', {}, [['cnt.rs.col.key'], ['cnt.rs.col.from', 1], ['cnt.rs.col.to', 1],
+                          ['cnt.rs.col.move']]
+    .map(([k, n]) => el('th', { className: n ? 'num' : '', textContent: t(k) }))));
   for (const r of rows)
     tb.append(el('tr', {}, [
       el('td', {}, el('code', { textContent: r.scope })),
@@ -3259,7 +3269,7 @@ const specFilled = ln => SPEC_FIELDS.filter(f => (ln.spec?.[f] || '').trim()).le
 
 const inBlank = () => ({
   name_vi: '', name_en: '', category_code: '', qty: 1, unit_code: 'pcs',
-  unit_price: '', serials: '', origin_raw: '', location_code: '', description: '',
+  unit_price: '', serials: '', origin_raw: '', origin_iso2: '', location_code: '', description: '',
   spec: {}
 });
 
@@ -3422,7 +3432,31 @@ function inRender() {
     if (nSer) serTd.append(el('div', { className: 'sercount',
       textContent: t('in.nSerials', { n: fmtInt(nSer), qty: fmtInt(Number(ln.qty) || 0) }) }));
     tr.append(serTd);
-    tr.append(txt('origin_raw', 130));
+    /* Origin is stored as an ISO-3166 alpha-2 code, because that is what the
+       column is (am_asset.origin_iso2 references am_origin) and what Beetrack's
+       "Mã Xuất Xứ" expects. So the cell is a droplist of countries, not a text
+       box: "UK", "Vietnam" and "VN" all have to land on one value.
+       The raw text from the delivery note stays underneath as the evidence the
+       code was derived from — the same arrangement as name and description. */
+    const oriTd = el('td');
+    const oriSel = el('select', { style: 'width:150px' });
+    oriSel.append(el('option', { value: '', textContent: '—' }));
+    for (const o of IN.origins || [])
+      oriSel.append(el('option', { value: o.v, textContent: o.t,
+                                   selected: o.v === ln.origin_iso2 }));
+    oriSel.onchange = () => {
+      ln.origin_iso2 = oriSel.value; IN.checked = null; inRender();
+    };
+    oriTd.append(oriSel);
+    if (ln.origin_raw?.trim())
+      oriTd.append(el('div', { className: 'sercount', textContent: ln.origin_raw }));
+    /* Raw text that resolved to nothing. "EU" and "Asia" are the usual cause:
+       they are real answers but they are not countries, so no ISO code exists
+       and the reviewer has to decide. Saying so here beats saying it at Check. */
+    if (ln.origin_raw?.trim() && !ln.origin_iso2)
+      oriTd.append(el('span', { className: 'sug none', textContent: '?',
+                                title: t('in.originNone', { raw: ln.origin_raw }) }));
+    tr.append(oriTd);
     /* Left empty, the line inherits the department's office. Show that as the
        placeholder so the inherited value is visible rather than implied. */
     const locTd = txt('location_code', 110);
@@ -3633,7 +3667,7 @@ function inExpand(ln) {
     purchase_date: $('#inDate').value || null,
     in_use_date: $('#inDate').value || null,
     purchase_year: Number(($('#inDate').value || '').slice(0, 4)) || new Date().getFullYear(),
-    origin_iso2: ln._iso || null,
+    origin_iso2: ln.origin_iso2 || null,
     status_code: null,
     // Each spec lands in its own column, which is what the label receipt and
     // the Beetrack sheet read. A blank one stays null rather than ''.
@@ -3712,16 +3746,20 @@ async function inCheck() {
       } catch (e) { E(n, `${n}: ${e.message}`); }
     }
 
-    if (ln.origin_raw?.trim()) {
+    /* The droplist is the answer now — it was filled by the lookup on import and
+       may since have been corrected by hand, so re-resolving here would throw
+       that correction away. Only a raw string that still has no code is a
+       finding, and "EU" or "Asia" is the usual reason: a real answer that has
+       no ISO code, which the reviewer must settle rather than the app. */
+    if (!ln.origin_iso2 && ln.origin_raw?.trim()) {
       try {
         const o = (await SB.rpc('am_resolve_origin', { p_raw: ln.origin_raw }))[0];
-        ln._iso = o.iso2 || null;
-        if (!o.iso2) {
-          W(n, t('in.warnOrigin', { i: n, why: t('why.' + o.reason) }));
-          ln._review.push({ field: 'origin_iso2', reason: o.reason, raw: ln.origin_raw });
-        }
-      } catch { ln._iso = null; }
-    } else ln._iso = null;
+        W(n, t('in.warnOrigin', { i: n, why: t('why.' + o.reason) }));
+        ln._review.push({ field: 'origin_iso2', reason: o.reason, raw: ln.origin_raw });
+      } catch {
+        W(n, t('in.warnOrigin', { i: n, why: t('why.unknown') }));
+      }
+    }
 
     /* A serial is what ties a register row to a physical object. On a unique
        asset each unit becomes its own row, so a missing serial leaves a row
@@ -3891,7 +3929,7 @@ async function inConfirm() {
     }
     const payload = all.map(r => {
       const o = { ...r };
-      delete o._iso; delete o._review;
+      delete o._review;
       o.needs_review = r.needs_review || [];
       return o;
     });
@@ -3987,9 +4025,35 @@ function inToAlr() {
   msg('#alListMsg', 'ok', t('alr.loaded', { n: ALR.rows.length }));
 }
 
+/* Turn every raw origin string into an ISO2 code up front, so the reviewer sees
+   a filled droplist instead of being told at Check that something was wrong.
+   Resolved per DISTINCT string: one delivery note of 45 lines usually carries
+   four or five different spellings, not 45. Lines the reviewer has already set
+   by hand are left alone — a manual answer outranks a lookup. */
+async function inResolveOrigins() {
+  const todo = [...new Set(IN.lines
+    .filter(ln => (ln.origin_raw || '').trim() && !ln.origin_iso2)
+    .map(ln => ln.origin_raw.trim()))];
+  if (!todo.length) return 0;
+
+  const seen = new Map();
+  for (const raw of todo) {
+    try {
+      const o = (await SB.rpc('am_resolve_origin', { p_raw: raw }))[0];
+      seen.set(raw, o?.iso2 || null);
+    } catch { seen.set(raw, null); }
+  }
+  let n = 0;
+  for (const ln of IN.lines) {
+    const hit = seen.get((ln.origin_raw || '').trim());
+    if (hit && !ln.origin_iso2) { ln.origin_iso2 = hit; n++; }
+  }
+  return n;
+}
+
 async function inFill() {
   try {
-    const [orgs, units, th, prods, offices] = await Promise.all([
+    const [orgs, units, th, prods, offices, origins] = await Promise.all([
       SB.select('am_org', 'select=code,is_company,is_department&order=code'),
       SB.select('am_unit', 'select=code&order=sort_order'),
       SB.select('am_setting', 'select=key,value&key=eq.unique_threshold'),
@@ -3999,8 +4063,14 @@ async function inFill() {
          it with a unique index). An asset with no location of its own belongs
          at its department's office — that is what the office flag is FOR, and
          the intake screen was ignoring it, leaving the column empty. */
-      SB.select('am_location', 'select=code,name,dept_code&is_dept_office=is.true')
+      SB.select('am_location', 'select=code,name,dept_code&is_dept_office=is.true'),
+      SB.select('am_origin', 'select=iso2,name_en,name_vi&order=iso2')
     ]);
+    /* Code first, then the name in the reading language: the code is what gets
+       stored and exported, so it is what the eye should land on. */
+    IN.origins = (origins || []).map(o => ({
+      v: o.iso2, t: `${o.iso2} — ${(LANG === 'vi' ? o.name_vi : o.name_en) || o.name_en}`
+    }));
     IN.deptOffice = new Map((offices || [])
       .filter(o => o.dept_code)
       .map(o => [o.dept_code, { code: o.code, name: o.name }]));
@@ -4272,6 +4342,8 @@ async function dnApply(i) {
   inRender();
   msg(out, 'ok', t(priced ? 'dn.appliedPriced' : 'dn.applied',
                    { n: IN.lines.length, p: priced }));
+  const nOri = await inResolveOrigins();
+  if (nOri) inRender();
   await inSuggest();
 }
 
