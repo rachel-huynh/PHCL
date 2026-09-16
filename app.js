@@ -1417,10 +1417,14 @@ function buildNav() {
       }
       /* A heading with no screen of its own still folds, like the groups above
          it — otherwise it is the one thing in the nav that cannot be closed. */
-      const key = 'sub:' + labelKey;
+      /* Folded by default, unlike the top-level groups: these are lookup tables
+         opened once in a while, and left open they cost four lines in every
+         screen's sidebar. The key records the OPPOSITE — that the user opened
+         it — so "no state" means closed. */
+      const key = 'subopen:' + labelKey;
       const inner = el('div', { className: 'subkids' });
       const holds = (children || []).some(c => c[0] === VIEW);
-      const shutSub = NAV_SHUT.has(key) && !holds;
+      const shutSub = !holds && !NAV_SHUT.has(key);
       inner.classList.toggle('shut', shutSub);
       const head = el('button', { className: 'subhead' + (shutSub ? ' shut' : '') }, [
         el('span', { className: 'car', textContent: '▶' }),
@@ -1430,7 +1434,7 @@ function buildNav() {
         const nowShut = !inner.classList.contains('shut');
         inner.classList.toggle('shut', nowShut);
         head.classList.toggle('shut', nowShut);
-        if (nowShut) NAV_SHUT.add(key); else NAV_SHUT.delete(key);
+        if (nowShut) NAV_SHUT.delete(key); else NAV_SHUT.add(key);
         navSaveShut();
       };
       kids.append(head, inner);
