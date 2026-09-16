@@ -868,26 +868,35 @@ const DEMO_ROWS = [
 function renderAlrList() {
   const head = $('#alGrid thead'), body = $('#alGrid tbody');
   head.innerHTML = ''; body.innerHTML = '';
-  head.append(el('tr', {}, ['', 'alr.col.code', 'alr.col.name', 'alr.col.qty', 'alr.col.price',
-    'alr.col.loc', 'alr.col.barcode'].map(k => el('th', { textContent: k ? t(k) : '' }))));
+  // Same shape as the register: a running number first, money and counts ranged
+  // right with their headings, everything else left. No column filters here —
+  // this list is already narrowed by the pickers above it.
+  head.append(el('tr', {}, [
+    el('th', { className: 'delcol' }),
+    el('th', { className: 'num idx', textContent: '#' }),
+    ...[['alr.col.code'], ['alr.col.name'], ['alr.col.qty', 1], ['alr.col.price', 1],
+        ['alr.col.loc'], ['alr.col.barcode']]
+      .map(([k, r]) => el('th', { className: r ? 'num' : '', textContent: t(k) }))
+  ]));
   if (!ALR.rows.length) {
-    body.append(el('tr', {}, el('td', { colSpan: 7, style: 'color:var(--dim);padding:14px',
+    body.append(el('tr', {}, el('td', { colSpan: 8, style: 'color:var(--dim);padding:14px',
       textContent: t('alr.listEmpty') })));
     return;
   }
-  for (const r of ALR.rows) {
+  ALR.rows.forEach((r, i) => {
     const cb = el('input', { type: 'checkbox', checked: r._pick !== false });
     cb.onchange = () => { r._pick = cb.checked; };
     body.append(el('tr', {}, [
-      el('td', {}, cb),
-      el('td', {}, el('code', { textContent: r.asset_code })),
-      el('td', { textContent: (LANG === 'vi' ? r.name_vi : r.name_en) || r.name_vi || '' }),
+      el('td', { className: 'delcol' }, cb),
+      el('td', { className: 'num idx', textContent: fmtInt(i + 1) }),
+      el('td', { textContent: r.asset_code }),
+      el('td', { textContent: [r.name_vi, r.name_en].filter(Boolean).join(' / ') }),
       el('td', { className: 'num', textContent: fmtNum(r.qty) }),
       el('td', { className: 'num', textContent: fmtNum(r.unit_price) }),
       el('td', { textContent: [r.location_code, r.location_name].filter(Boolean).join(' — ') }),
-      el('td', {}, el('code', { textContent: r.barcode }))
+      el('td', { textContent: r.barcode })
     ]));
-  }
+  });
 }
 
 async function loadAlrAssets() {
@@ -2483,8 +2492,10 @@ function regRender() {
   /* A filter box per column, applied on the server so it searches the whole
      register and not just the page on screen. */
   const fr = el('tr', { className: 'colf' });
-  const over = el('button', { className: 'btn tiny', textContent: t('reg.startOver'),
-                              title: t('reg.colqClear') });
+  // A loop glyph rather than a word: it sits in a table header cell as narrow
+  // as the # column, and needs no translating.
+  const over = el('button', { className: 'btn ico', textContent: '↻',
+                              title: t('reg.startOver') });
   over.onclick = () => { REG.colq = {}; regLoad(true); };
   fr.append(el('th', { className: 'overcol' }, over));
   for (const c of REG.cols) {
@@ -2771,22 +2782,31 @@ const inBlank = () => ({
 function inRender() {
   const head = $('#inGrid thead'), body = $('#inGrid tbody');
   head.innerHTML = ''; body.innerHTML = '';
-  head.append(el('tr', {}, ['', 'in.col.name', 'in.col.cat', 'in.col.qty', 'in.col.unit',
-    'in.col.price', 'in.col.serial', 'in.col.origin', 'in.col.loc', 'in.col.kind', 'in.col.rows']
-    .map(k => el('th', { textContent: k ? t(k) : '' }))));
+  // Same shape as the register and the label-receipt picker.
+  head.append(el('tr', {}, [
+    el('th', { className: 'delcol' }),
+    el('th', { className: 'num idx', textContent: '#' }),
+    ...[['in.col.name'], ['in.col.cat'], ['in.col.qty', 1], ['in.col.unit'],
+        ['in.col.price', 1], ['in.col.serial'], ['in.col.origin'], ['in.col.loc'],
+        ['in.col.kind'], ['in.col.rows', 1]]
+      .map(([k, r]) => el('th', { className: r ? 'num' : '', textContent: t(k) }))
+  ]));
 
   IN.lines.forEach((ln, i) => {
     const tr = el('tr');
     const del = el('button', { className: 'xbtn', textContent: '✕' });
     del.onclick = () => { IN.lines.splice(i, 1); IN.checked = null; inRender(); };
-    tr.append(el('td', {}, del));
+    tr.append(el('td', { className: 'delcol' }, del));
+    tr.append(el('td', { className: 'num idx', textContent: fmtInt(i + 1) }));
 
+    // 'num' on the cell puts the value AND its heading on the right edge, the
+    // same rule the register follows.
     const txt = (field, w, type) => {
       const inp = el('input', { value: ln[field] ?? '', style: `width:${w}px`,
                                 type: type || 'text' });
       inp.onchange = () => { ln[field] = type === 'number' ? inp.value : inp.value;
                              IN.checked = null; inRender(); };
-      return el('td', {}, inp);
+      return el('td', { className: type === 'number' ? 'num' : '' }, inp);
     };
     const pick = (field, list, w) => {
       const s = el('select', { style: `width:${w}px` });
@@ -2835,7 +2855,7 @@ function inRender() {
   });
 
   if (!IN.lines.length)
-    body.append(el('tr', {}, el('td', { colSpan: 11, style: 'color:var(--dim);padding:14px',
+    body.append(el('tr', {}, el('td', { colSpan: 12, style: 'color:var(--dim);padding:14px',
       textContent: t('in.noLines') })));
 }
 

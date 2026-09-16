@@ -111,7 +111,8 @@
   th.idx,td.idx{width:52px;color:var(--dim);font-weight:400}
   th.delcol,td.delcol{width:34px;padding-left:9px;padding-right:0}
   th.overcol{padding-left:4px;padding-right:4px}
-  .btn.tiny{padding:2px 7px;font-size:11px;font-weight:600;white-space:nowrap}
+  .btn.ico{padding:0;width:26px;height:22px;line-height:1;font-size:14px;color:var(--dim)}
+  .btn.ico:hover{color:var(--navy)}
   /* Per-column filter row, docked under the header of the register. */
   /* 4 + 1 border + 4 = the 9px the data cells use, so the filter box sits on
      the same margin as its column. */
@@ -122,9 +123,12 @@
   /* ------------------------------------------------------------ pieces */
   .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;
         padding:15px 16px;margin-bottom:14px}
-  .card > h2{margin:0 0 3px;font-size:13px;font-weight:700;letter-spacing:.02em;
+  /* Also .chead h2: layoutCards() moves the heading inside .chead, and a child
+     combinator would stop matching it — that is what left some headings large
+     and lower-case while others stayed small caps. */
+  .card > h2,.chead > h2{margin:0 0 3px;font-size:13px;font-weight:700;letter-spacing:.02em;
              text-transform:uppercase}
-  .card > h2 em{font-style:normal;font-weight:400;color:var(--dim);text-transform:none;
+  .card > h2 em,.chead > h2 em{font-style:normal;font-weight:400;color:var(--dim);text-transform:none;
                 letter-spacing:0}
   .card > p{margin:0 0 12px;color:var(--dim);font-size:12.5px;max-width:96ch}
   .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}
