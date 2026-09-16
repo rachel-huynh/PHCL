@@ -121,6 +121,16 @@
   /* Running number: narrow, quiet, never the thing the eye lands on. */
   th.idx,td.idx{width:52px;color:var(--dim);font-weight:400}
   th.delcol,td.delcol{width:34px;padding-left:9px;padding-right:0}
+  /* Tick column for bulk edit: as narrow as the box itself. */
+  th.tickcol,td.tickcol{width:30px;padding-left:9px;padding-right:0;text-align:left}
+  th.tickcol input,td.tickcol input{width:auto;margin:0;cursor:pointer}
+  #regGrid tbody tr.sel{background:#fbf3e2}
+  /* The bulk bar is a gold-edged strip rather than a plain card, so it is
+     obviously a temporary state of the register and not part of its furniture. */
+  .card.bulk{border-left:3px solid var(--gold);margin:10px 0}
+  .card.bulk > .row{margin:0}
+  .card.bulk .acts{margin-left:auto;display:flex;gap:7px;flex:none}
+  #regSelN{align-self:center;white-space:nowrap}
   th.overcol{padding-left:4px;padding-right:4px;text-align:right}
   /* Multi-select filter: a summary line that opens a searchable checkbox list. */
   .ms{position:relative}
@@ -193,6 +203,10 @@
   .btn.pri:hover{background:var(--navy-2)}
   .btn:disabled{opacity:.45;cursor:default}
   .btn.pri:disabled:hover{background:var(--navy)}
+  /* Deleting rows out of the register reads as red before it is clicked. */
+  .btn.danger{border-color:var(--red);color:var(--red)}
+  .btn.danger:hover{background:var(--red);color:#fff}
+  .btn.danger:disabled:hover{background:var(--panel);color:var(--red)}
   .xbtn{background:none;border:1px solid var(--line);color:var(--dim);padding:0 6px;
         line-height:18px;font-size:12px;border-radius:3px}
   .xbtn:hover{color:var(--red);border-color:var(--red)}
@@ -281,6 +295,7 @@
   .sug.poor{background:#fbe8d8;color:#9c4a12;font-style:italic;max-width:110px;
             overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
   .sug.none{background:#fbe3e3;color:#95241f}
+  .sug.bad{background:var(--red);color:#fff;font-weight:700}
   /* A value the paperwork does not support yet. */
   td.unsure{color:var(--dim);font-style:italic}
   /* A line can carry dozens of serials; give them room and a count to check
@@ -292,6 +307,18 @@
   .specgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
   .btn.ico.wide{width:auto;min-width:32px;padding:0 6px}
   .btn.ico.has{color:var(--navy);font-weight:700}
+  /* Check panel: one sentence, then the lines it applies to as jump buttons. */
+  .gmsg{margin-bottom:5px}
+  .chips{display:flex;flex-wrap:wrap;gap:4px}
+  .chip{border:1px solid currentColor;background:none;color:inherit;opacity:.85;
+        padding:0 7px;font-size:11.5px;line-height:18px;border-radius:9px;
+        font-variant-numeric:tabular-nums}
+  .chip:hover{opacity:1;background:rgba(0,0,0,.05)}
+  /* Rows the last Check objected to. */
+  #inGrid tbody tr.bad{background:#fdf0ef}
+  #inGrid tbody tr.warn{background:#fdf8ec}
+  #inGrid tbody tr.flash{animation:flash 1.1s ease-out}
+  @keyframes flash{from{background:#cfe3f7}to{background:transparent}}
   .prev{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px;
         margin-top:3px;color:var(--ink)}
   .neg{color:var(--red);font-weight:600} .pos{color:var(--green)}
@@ -359,6 +386,14 @@
   table.doc td.c{text-align:center}
   table.doc th.r, table.doc td.r{text-align:right}
   table.doc .lbl{text-align:center}
+  table.doc .tick.on{border:none;font-size:13px;line-height:1}
+  th.lblcol,td.lblcol{width:64px;text-align:center}
+  table.doc tr.sum td{font-weight:700;background:var(--head)}
+  label.chk{display:inline-flex;align-items:center;gap:6px;margin:0;font-size:12px;
+            font-weight:500;text-transform:none;letter-spacing:0;color:var(--ink);
+            white-space:nowrap;cursor:pointer}
+  label.chk input{width:auto;margin:0}
+  th.lblcol div{margin-bottom:3px}
   table.doc .lbl svg{display:block;margin:0 auto;max-width:100%}
   .doc-notes{margin-top:12px;font-size:10.5px;line-height:1.45;white-space:pre-wrap}
   .doc-sign{display:flex;justify-content:space-between;margin-top:26px;font-size:11.5px;
@@ -402,6 +437,8 @@
     main{padding:0;display:block;overflow:visible;height:auto}
     .shell{display:block;height:auto}
     section#v-table.on,section#v-register.on{display:block}
+    /* A column of empty boxes is not something anyone wants on paper. */
+    th.tickcol,td.tickcol{display:none!important}
     #v-table .wrap,#v-register > .wrap{height:auto;max-height:none;overflow:visible}
     #printRoot{border:none;border-radius:0;padding:0;margin:0}
     .lab{border-style:solid;border-color:#ccc}
@@ -631,6 +668,8 @@
         <button class="btn pri" id="btnAlDoc" data-i18n="alr.buildDoc"></button>
         <button class="btn" id="btnAlLabels" data-i18n="alr.buildLabels"></button>
         <button class="btn" id="btnAlTape" data-i18n="alr.buildTape"></button>
+        <label class="chk"><input type="checkbox" id="alHidePrice">
+          <span data-i18n="alr.hidePrice"></span></label>
         <button class="btn" id="btnAlPrint" disabled data-i18n="alr.print"></button>
         <button class="btn" id="btnAlSave" disabled data-i18n="alr.saveDb"></button>
       </div>
@@ -753,6 +792,7 @@
       <div class="row">
         <button class="btn pri" id="btnInXlsx" disabled data-i18n="in.xlsxBeetrack"></button>
         <button class="btn" id="btnInAlr" data-i18n="in.alr"></button>
+        <button class="btn" id="btnInUndo" disabled data-i18n="in.undo"></button>
       </div>
     </div>
   </section>
@@ -789,6 +829,30 @@
     </details>
 
     <div id="regMsg"></div>
+
+    <!-- Bulk actions. Hidden until at least one row is ticked: a row of
+         destructive buttons standing permanently above the register is a trap.
+         It sits directly on top of the grid so the count and the ticked rows
+         are read in one glance. -->
+    <div class="card bulk" id="regBulk" hidden>
+      <div class="row" style="align-items:flex-end">
+        <b id="regSelN"></b>
+        <button class="btn" id="btnRegSelAll"></button>
+        <button class="btn" id="btnRegSelNone" data-i18n="reg.bk.clear"></button>
+        <div class="fld" style="max-width:210px"><label data-i18n="reg.bk.loc"></label>
+          <select id="regBulkLoc"></select></div>
+        <div class="fld" style="max-width:210px"><label data-i18n="reg.bk.dept"></label>
+          <select id="regBulkDept"></select></div>
+        <!-- The two things that actually write are pushed to the right edge,
+             together, away from the fields that only describe what to write. -->
+        <div class="acts">
+          <button class="btn pri" id="btnRegBulkSave" data-i18n="reg.bk.save"></button>
+          <button class="btn danger" id="btnRegBulkDel" data-i18n="reg.bk.del"></button>
+        </div>
+      </div>
+      <div id="regBulkMsg"></div>
+    </div>
+
     <div class="wrap"><table id="regGrid"><thead></thead><tbody></tbody></table></div>
     <div class="row" style="margin-top:10px;align-items:center">
       <button class="btn" id="btnRegPrev" data-i18n="reg.prev"></button>
@@ -878,7 +942,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260916f"></script>
-<script src="app.js?v=20260916f"></script>
+<script src="i18n.js?v=20260916l"></script>
+<script src="app.js?v=20260916l"></script>
 </body>
 </html>

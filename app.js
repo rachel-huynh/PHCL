@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260916f';
+const APP_VERSION = '20260916l';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -740,8 +740,11 @@ async function runAudit() {
 /* -------------------------------------------------------------- rules */
 async function fillPickers() {
   try {
+    /* manage_by comes along because it is the field that says whether a
+       category is kept one-row-per-unit ('code') or by quantity ('quantity') —
+       which has to agree with the kind the unit price implies. */
     const cats = await SB.select('am_category',
-      'select=code,group_code,label_letters,name_vi,name_en&order=code');
+      'select=code,group_code,label_letters,manage_by,name_vi,name_en&order=code');
     const orgs = await SB.select('am_org',
       'select=code,name_vi,name_en&is_department=is.true&order=code');
     const catText = c => `${c.code} — ${(LANG === 'vi' ? c.name_vi : c.name_en) || c.name_vi}`;
@@ -876,21 +879,44 @@ function renderAlrList() {
   // Same shape as the register: a running number first, money and counts ranged
   // right with their headings, everything else left. No column filters here —
   // this list is already narrowed by the pickers above it.
+  /* Two independent ticks per row, which is why each needs its own tick-all:
+       _pick  — is this asset ON the receipt at all
+       _label — is its label already printed and attached; this one prints as
+                the ✔ in the Label column instead of an empty box to fill in
+                by pen, and is written back to am_asset.label_printed on save. */
+  const all = (field, dflt) => {
+    const n = ALR.rows.filter(r => (r[field] ?? dflt) !== false).length;
+    const cb = el('input', { type: 'checkbox', title: t('alr.tickAll') });
+    cb.checked = n > 0 && n === ALR.rows.length;
+    cb.indeterminate = n > 0 && n < ALR.rows.length;
+    cb.onchange = () => {
+      for (const r of ALR.rows) r[field] = cb.checked;
+      renderAlrList();
+    };
+    return cb;
+  };
+
   head.append(el('tr', {}, [
-    el('th', { className: 'delcol' }),
+    el('th', { className: 'delcol' }, ALR.rows.length ? all('_pick', true) : null),
     el('th', { className: 'num idx', textContent: '#' }),
     ...[['alr.col.code'], ['alr.col.name'], ['alr.col.qty', 1], ['alr.col.price', 1],
         ['alr.col.loc'], ['alr.col.barcode']]
-      .map(([k, r]) => el('th', { className: r ? 'num' : '', textContent: t(k) }))
+      .map(([k, r]) => el('th', { className: r ? 'num' : '', textContent: t(k) })),
+    el('th', { className: 'lblcol' },
+      [el('div', { textContent: t('alr.col.label') }),
+       ALR.rows.length ? all('_label', false) : null])
   ]));
   if (!ALR.rows.length) {
-    body.append(el('tr', {}, el('td', { colSpan: 8, style: 'color:var(--dim);padding:14px',
+    body.append(el('tr', {}, el('td', { colSpan: 9, style: 'color:var(--dim);padding:14px',
       textContent: t('alr.listEmpty') })));
     return;
   }
   ALR.rows.forEach((r, i) => {
+    if (r._label === undefined) r._label = !!r.label_printed;
     const cb = el('input', { type: 'checkbox', checked: r._pick !== false });
-    cb.onchange = () => { r._pick = cb.checked; };
+    cb.onchange = () => { r._pick = cb.checked; renderAlrList(); };
+    const lb = el('input', { type: 'checkbox', checked: r._label });
+    lb.onchange = () => { r._label = lb.checked; renderAlrList(); };
     body.append(el('tr', {}, [
       el('td', { className: 'delcol' }, cb),
       el('td', { className: 'num idx', textContent: fmtInt(i + 1) }),
@@ -899,7 +925,8 @@ function renderAlrList() {
       el('td', { className: 'num', textContent: fmtNum(r.qty) }),
       el('td', { className: 'num', textContent: fmtNum(r.unit_price) }),
       el('td', { textContent: [r.location_code, r.location_name].filter(Boolean).join(' — ') }),
-      el('td', { textContent: r.barcode })
+      el('td', { textContent: r.barcode }),
+      el('td', { className: 'lblcol' }, lb)
     ]));
   });
 }
@@ -997,8 +1024,13 @@ function buildDoc() {
 
   root.append(...docHeader());
 
+  /* The receipt goes to the receiving department, who do not need to be told
+     what every asset cost. Dropping the column gives its width back to the
+     specification, which is the column that actually runs out of room. */
+    const hidePrice = $('#alHidePrice').checked;
   const COLS = [['alr.doc.h.no', '4%'], ['alr.doc.h.code', '16%'], ['alr.doc.h.name', '18%'],
-                ['alr.doc.h.qty', '7%'], ['alr.doc.h.spec', '27%'], ['alr.doc.h.price', '10%'],
+                ['alr.doc.h.qty', '7%'], ['alr.doc.h.spec', hidePrice ? '37%' : '27%'],
+                ...(hidePrice ? [] : [['alr.doc.h.price', '10%']]),
                 ['alr.doc.h.loc', '13%'], ['alr.doc.h.label', '5%']];
   const tb = el('table', { className: 'doc' });
   const cg = el('colgroup');
@@ -1016,14 +1048,30 @@ function buildDoc() {
       el('td', { className: 'c',
                  textContent: fmtNum(r.qty) + (r.unit_code ? ' ' + r.unit_code : '') }),
       el('td', { textContent: specSummary(r) }),
-      el('td', { className: 'r', textContent: fmtNum(r.unit_price) }),
+      ...(hidePrice ? [] : [el('td', { className: 'r', textContent: fmtNum(r.unit_price) })]),
       el('td', { textContent: [r.location_code, r.location_name].filter(Boolean).join(' — ') }),
-      // An empty box the receiver ticks to confirm the label was attached --
-      // as in the original form. The barcode belongs on the label itself,
-      // not in a column of the receipt.
-      el('td', { className: 'lbl' }, el('span', { className: 'tick' }))
+      /* Ticked in the app prints as ✔; untouched prints as the empty box the
+         receiver fills in by pen — which is what the original form is for. */
+      el('td', { className: 'lbl' },
+         el('span', { className: 'tick' + (r._label ? ' on' : ''),
+                      textContent: r._label ? '✔' : '' }))
     ]));
   });
+  /* A closing line to count the sheet against the labels actually printed —
+     one label per row, so the row count IS the label count. The quantity is
+     shown too because they differ: a low-value line of 48 glasses is 48 units
+     under one label, and someone counting glasses against labels needs to see
+     why the two numbers are not the same. */
+  const units = rows.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+  const ticked = rows.filter(r => r._label).length;
+  const sum = el('tr', { className: 'sum' });
+  sum.append(el('td', { colSpan: COLS.length - 1, className: 'r',
+                        textContent: t('alr.doc.total', { n: fmtInt(rows.length),
+                                                          u: fmtInt(units) }) }));
+  sum.append(el('td', { className: 'c',
+                        textContent: ticked ? `${fmtInt(ticked)}/${fmtInt(rows.length)}` : '' }));
+  body.append(sum);
+
   tb.append(body);
   root.append(tb);
 
@@ -1198,6 +1246,19 @@ async function saveAlr() {
     }]);
     await SB.insert('am_alr_line',
       rows.map((r, i) => ({ alr_id: alr.id, line_no: i + 1, asset_id: r.id })));
+    /* The ticks are a fact about the assets, not about this sheet of paper, so
+       they go back to am_asset — otherwise the next receipt would show every
+       label as still unattached. */
+    const ticked = rows.filter(r => r._label && r.id).map(r => r.id);
+    if (ticked.length) {
+      try {
+        await SB.call('am_asset?id=in.(' + ticked.join(',') + ')', {
+          method: 'PATCH',
+          headers: SB.hdr({ Prefer: 'return=minimal' }),
+          body: JSON.stringify({ label_printed: true })
+        });
+      } catch (e) { msg('#alOutMsg', 'warn', t('alr.labelSaveFail', { err: e.message })); }
+    }
     msg('#alOutMsg', 'ok', t('alr.saved', { code: alr.code, id: alr.id, n: rows.length }));
     alrHistory();
   } catch (e) { msg('#alOutMsg', 'err', t('alr.saveFail', { err: e.message })); }
@@ -1706,6 +1767,7 @@ function switchLang(l) {
       msSetup(id, [{ v: 'unique', t: t('reg.kindUnique') }, { v: 'low', t: t('reg.kindLow') }]);
     else msRender(id);
   }
+  regFillBulk();                          // built options, same blind spot
 
   $('#connTxt').textContent = t(CONN.ok ? 'conn.ok' : 'conn.none');
   applyHelp();
@@ -2463,7 +2525,11 @@ function regCell(col, v, row) {
 
 const REG_KEY = 'asset-intake.regCols';
 const REG_SIZE = 100;
-let REG = { cols: null, sort: 'asset_code', dir: 'asc', page: 0, total: 0, rows: [], colq: {} };
+/* sel holds asset ids, not row indexes, so a selection survives paging,
+   sorting and re-filtering — you can gather rows from four pages and act on
+   them once. anchor is the last row clicked, for shift-click ranges. */
+let REG = { cols: null, sort: 'asset_code', dir: 'asc', page: 0, total: 0, rows: [],
+            colq: {}, sel: new Set(), anchor: -1, opts: { deps: [], locs: [] } };
 
 function regLoadCols() {
   try {
@@ -2574,6 +2640,16 @@ function regRender() {
   const head = $('#regGrid thead'), body = $('#regGrid tbody');
   head.innerHTML = ''; body.innerHTML = '';
   const hr = el('tr');
+  /* Tick-all applies to THIS PAGE only. Ticking 16,000 rows from one box is a
+     mistake waiting to happen; the bulk bar offers the whole filtered set
+     separately, in words, so choosing it has to be deliberate. */
+  const all = el('input', { type: 'checkbox', title: t('reg.bk.allPage') });
+  all.checked = REG.rows.length > 0 && REG.rows.every(r => REG.sel.has(r.id));
+  all.onchange = () => {
+    for (const r of REG.rows) all.checked ? REG.sel.add(r.id) : REG.sel.delete(r.id);
+    regRender();
+  };
+  hr.append(el('th', { className: 'tickcol' }, all));
   hr.append(el('th', { className: 'num idx', textContent: '#' }));
   for (const c of REG.cols) {
     // The header carries the same alignment as its cells, so a money column
@@ -2599,6 +2675,7 @@ function regRender() {
   const over = el('button', { className: 'btn ico', textContent: '↻',
                               title: t('reg.startOver') });
   over.onclick = () => { REG.colq = {}; regLoad(true); };
+  fr.append(el('th', { className: 'tickcol' }));
   fr.append(el('th', { className: 'overcol' }, over));
   for (const c of REG.cols) {
     const box = el('input', { value: REG.colq?.[c] ?? '', placeholder: t('reg.colqPh'),
@@ -2616,7 +2693,22 @@ function regRender() {
 
   const from = REG.page * REG_SIZE;
   REG.rows.forEach((r, i) => {
-    const tr = el('tr');
+    const tr = el('tr', { className: REG.sel.has(r.id) ? 'sel' : '' });
+    const cb = el('input', { type: 'checkbox', checked: REG.sel.has(r.id) });
+    cb.onclick = ev => {
+      // Shift-click takes everything between the last tick and this one, the
+      // way a file list does -- ticking 80 rows one at a time is not a feature.
+      if (ev.shiftKey && REG.anchor >= 0 && REG.anchor !== i) {
+        const lo = Math.min(REG.anchor, i), hi = Math.max(REG.anchor, i);
+        for (let k = lo; k <= hi; k++)
+          cb.checked ? REG.sel.add(REG.rows[k].id) : REG.sel.delete(REG.rows[k].id);
+      } else {
+        cb.checked ? REG.sel.add(r.id) : REG.sel.delete(r.id);
+      }
+      REG.anchor = i;
+      regRender();
+    };
+    tr.append(el('td', { className: 'tickcol' }, cb));
     // Numbered across the whole filtered set, not restarted on every page.
     tr.append(el('td', { className: 'num idx', textContent: fmtInt(from + i + 1) }));
     for (const c of REG.cols) {
@@ -2628,8 +2720,9 @@ function regRender() {
     body.append(tr);
   });
   if (!REG.rows.length)
-    body.append(el('tr', {}, el('td', { colSpan: (REG.cols.length || 1) + 1,
+    body.append(el('tr', {}, el('td', { colSpan: (REG.cols.length || 1) + 2,
       style: 'color:var(--dim);padding:14px', textContent: t('reg.empty') })));
+  regBulkBar();
 
   /* Which rows of which total, and where in the run. With a filter on, the
      total is the FILTERED total — otherwise the number would quietly claim the
@@ -2645,6 +2738,89 @@ function regRender() {
     el('b', { textContent: t('reg.page', { p: fmtInt(REG.page + 1), n: fmtInt(pages) }) }));
   $('#btnRegPrev').disabled = REG.page <= 0;
   $('#btnRegNext').disabled = REG.page + 1 >= pages;
+}
+
+/* ------------------------------------------------------ bulk edit / delete
+   Selection is by id and lives across pages, so the bar has to say plainly how
+   many rows are held — including the ones scrolled away. */
+function regBulkBar() {
+  const bar = $('#regBulk'), n = REG.sel.size;
+  bar.hidden = n === 0;
+  if (!n) { msg($('#regBulkMsg'), '', ''); return; }
+  $('#regSelN').textContent = t('reg.bk.n', { n: fmtInt(n) });
+  const all = $('#btnRegSelAll');
+  all.textContent = t('reg.bk.all', { n: fmtInt(REG.total) });
+  all.hidden = n >= REG.total;
+  $('#btnRegBulkSave').disabled = !$('#regBulkLoc').value && !$('#regBulkDept').value;
+}
+
+/* Tick every row the current filter matches, not just the page on screen.
+   Only ids are fetched -- 16,000 of those is a small payload; 16,000 full rows
+   is not, and nothing here needs the other columns. */
+async function regSelectAll() {
+  const out = $('#regBulkMsg');
+  msg(out, 'info', t('reg.bk.loadingIds'));
+  try {
+    const step = 1000;
+    for (let off = 0; off < REG.total; off += step) {
+      const q = ['select=id', `order=${REG_JOINED[REG.sort] ? REG_JOINED[REG.sort][0] : REG.sort}.${REG.dir}`,
+                 `limit=${step}`, `offset=${off}`, ...regFilters()];
+      const { body } = await SB.call('am_asset?' + q.join('&'), { headers: SB.hdr() });
+      if (!body?.length) break;
+      for (const r of body) REG.sel.add(r.id);
+    }
+    msg(out, '', '');
+    regRender();
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+async function regBulkSave() {
+  /* The outcome goes to the register's own message line, not the bulk bar: the
+     bar disappears with the selection the moment the write succeeds, and a
+     report nobody can read is not a report. */
+  const out = $('#regMsg');
+  const loc = $('#regBulkLoc').value || null;
+  const dep = $('#regBulkDept').value || null;
+  if (!loc && !dep) return;
+  const ids = [...REG.sel];
+
+  /* Changing department is not an edit to one cell. am_asset_code_ck ties the
+     asset code to the department, so the code is REISSUED and any label already
+     printed now shows the wrong one. Say that before it happens, not after. */
+  const ask = dep ? t('reg.bk.confirmDept', { n: fmtInt(ids.length), dept: dep })
+                  : t('reg.bk.confirmLoc', { n: fmtInt(ids.length), loc });
+  if (!confirm(ask)) return;
+
+  msg(out, 'info', t('reg.bk.saving'));
+  try {
+    const r = (await SB.rpc('am_bulk_update',
+      { p_ids: ids, p_location: loc, p_dept: dep }))[0] || {};
+    const parts = [t('reg.bk.doneUpd', { n: fmtInt(r.updated || 0) })];
+    if (r.recoded) parts.push(t('reg.bk.doneRecode', { n: fmtInt(r.recoded) }));
+    if (r.relabel) parts.push(t('reg.bk.doneRelabel', { n: fmtInt(r.relabel) }));
+    if (r.skipped_legacy) parts.push(t('reg.bk.doneLegacy', { n: fmtInt(r.skipped_legacy) }));
+    REG.sel.clear();
+    $('#regBulkLoc').value = ''; $('#regBulkDept').value = '';
+    await regLoad();          // regLoad clears #regMsg, so report after it
+    msg(out, r.skipped_legacy ? 'warn' : 'ok', parts.join(' '));
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+async function regBulkDelete() {
+  const out = $('#regMsg');
+  const ids = [...REG.sel];
+  // Deleting from the register does NOT rewind the counters (see 15_bulk_edit.sql),
+  // so the confirmation has to be worth reading rather than waved through.
+  if (!confirm(t('reg.bk.confirmDel', { n: fmtInt(ids.length) }))) return;
+  msg(out, 'info', t('reg.bk.deleting'));
+  try {
+    const r = (await SB.rpc('am_bulk_delete', { p_ids: ids }))[0] || {};
+    const parts = [t('reg.bk.doneDel', { n: fmtInt(r.deleted || 0) })];
+    if (r.kept_on_receipt) parts.push(t('reg.bk.doneKept', { n: fmtInt(r.kept_on_receipt) }));
+    REG.sel.clear();
+    await regLoad();
+    msg(out, r.kept_on_receipt ? 'warn' : 'ok', parts.join(' '));
+  } catch (e) { msg(out, 'err', e.message); }
 }
 
 function regRenderCols() {
@@ -2846,6 +3022,13 @@ async function regFillPickers() {
                         { v: 'low', t: t('reg.kindLow') }]);
     for (const id of ['regDept', 'regCat', 'regLoc', 'regKind'])
       MS[id].onChange = () => {};        // filters apply on Apply, not per tick
+
+    /* The bulk bar writes one value to many rows, so it is a single-choice
+       <select> -- not the multi-select the filters use. Same lists, though:
+       there is only one set of valid codes. */
+    REG.opts.deps = deps.map(o => ({ v: o.code, t: `${o.code} — ${nm(o)}` }));
+    REG.opts.locs = locs.map(o => ({ v: o.code, t: `${o.code} — ${o.name}` }));
+    regFillBulk();
   } catch { /* the Connection screen already reports it */ }
 }
 
@@ -2873,6 +3056,26 @@ function initRegister() {
   };
   $('#btnRegPrev').onclick = () => { if (REG.page > 0) { REG.page--; regLoad(); } };
   $('#btnRegNext').onclick = () => { REG.page++; regLoad(); };
+
+  regFillBulk();
+  $('#btnRegSelAll').onclick = regSelectAll;
+  $('#btnRegSelNone').onclick = () => { REG.sel.clear(); REG.anchor = -1; regRender(); };
+  $('#regBulkLoc').onchange = regBulkBar;   // Apply stays dead until a target is set
+  $('#regBulkDept').onchange = regBulkBar;
+  $('#btnRegBulkSave').onclick = regBulkSave;
+  $('#btnRegBulkDel').onclick = regBulkDelete;
+}
+
+function regFillBulk() {
+  for (const [id, list] of [['#regBulkLoc', REG.opts.locs], ['#regBulkDept', REG.opts.deps]]) {
+    const sel = $(id);
+    if (!sel) continue;
+    const keep = sel.value;               // survive a refill or a language switch
+    sel.innerHTML = '';
+    sel.append(el('option', { value: '', textContent: t('reg.bk.keep') }));
+    for (const o of list) sel.append(el('option', { value: o.v, textContent: o.t }));
+    sel.value = keep;
+  }
 }
 
 /* ============================================================ NEW DELIVERY
@@ -2999,7 +3202,9 @@ function inRender() {
   ]));
 
   IN.lines.forEach((ln, i) => {
-    const tr = el('tr');
+    // Carries the verdict from the last Check, so the grid shows where the
+    // problems are instead of making the reviewer match line numbers by hand.
+    const tr = el('tr', { className: ln._bad ? 'bad' : ln._warn ? 'warn' : '' });
     const del = el('button', { className: 'xbtn', textContent: '✕' });
     del.onclick = () => { IN.lines.splice(i, 1); IN.checked = null; inRender(); };
     tr.append(el('td', { className: 'delcol' }, del));
@@ -3014,6 +3219,26 @@ function inRender() {
                              IN.checked = null; inRender(); };
       return el('td', { className: type === 'number' ? 'num' : '' }, inp);
     };
+    /* Money needs group separators to be read at a glance — 149801000 and
+       14980100 look alike, 149.801.000 and 14.980.100 do not. <input
+       type=number> cannot show them, so this is a text box that formats on
+       blur and keeps the raw number in the line.
+       Digits only: the intake screen books in VND, and every price in the
+       register is a whole đồng, so there is no decimal mark to preserve. */
+    const money = (field, w) => {
+      const v = ln[field];
+      const inp = el('input', { style: `width:${w}px`, inputMode: 'numeric',
+                                spellcheck: false,
+                                value: v === '' || v == null ? '' : fmtNum(v) });
+      inp.onchange = () => {
+        const digits = inp.value.replace(/[^\d]/g, '');
+        ln[field] = digits === '' ? '' : Number(digits);
+        IN.checked = null;
+        inRender();
+      };
+      return el('td', { className: 'num' }, inp);
+    };
+
     const pick = (field, list, w) => {
       const s = el('select', { style: `width:${w}px` });
       s.append(el('option', { value: '', textContent: '—' }));
@@ -3076,7 +3301,26 @@ function inRender() {
                ' · ' + t('in.conf.' + (s.conf || 'none')),
         textContent: mark
       }));
-    } else if (ln.name_vi && IN.sugRan) {
+    }
+    /* Say when the code was moved for us — a changed category the reviewer did
+       not pick must never pass unannounced, and the alternative is named so the
+       other half of the pair is one click away. */
+    if (ln._kindSwap)
+      catTd.append(el('span', { className: 'sug weak', textContent: '⇄',
+        title: t('in.kindSwapped', { was: ln._kindSwap.was,
+                                     alts: ln._kindSwap.alts.join(' / ') }) }));
+
+    /* Flag a category that fights the price right in the cell. Waiting for
+       Check hides it until the reviewer has already moved on. */
+    const catRow = (window.__CATS || []).find(c => c.code === ln.category_code);
+    const kindNow = kindOf(ln);
+    if (catRow && kindNow && catRow.manage_by &&
+        catRow.manage_by !== (kindNow === 'unique' ? 'code' : 'quantity')) {
+      catTd.append(el('span', { className: 'sug bad', textContent: '!',
+        title: t('in.kindMismatchShort',
+                 { cat: catRow.code, kind: t('reg.kind' + (kindNow === 'unique' ? 'Unique' : 'Low')) }) }));
+    }
+    if (!ln._sug && ln.name_vi && IN.sugRan) {
       // Only claim "the register does not know this name" once the lookup has
       // actually run. Before that, saying so would be a guess of our own.
       catTd.append(el('span', { className: 'sug none', title: t('in.sugNone'),
@@ -3085,7 +3329,11 @@ function inRender() {
     tr.append(catTd);
     tr.append(txt('qty', 60, 'number'));
     tr.append(pick('unit_code', IN.units || [], 90));
-    tr.append(txt('unit_price', 120, 'number'));
+    const priceTd = money('unit_price', 120);
+    // Where the number came from matters: the delivery note or the contract.
+    if (ln._priceFrom === 'contract')
+      priceTd.append(el('div', { className: 'sercount', textContent: t('in.priceContract') }));
+    tr.append(priceTd);
     /* Serials go in a textarea, not an input: one line can carry 34 of them and
        an <input> renders the newlines as nothing, running the numbers together
        into one unreadable string. */
@@ -3099,7 +3347,15 @@ function inRender() {
       textContent: t('in.nSerials', { n: fmtInt(nSer), qty: fmtInt(Number(ln.qty) || 0) }) }));
     tr.append(serTd);
     tr.append(txt('origin_raw', 130));
-    tr.append(txt('location_code', 110));
+    /* Left empty, the line inherits the department's office. Show that as the
+       placeholder so the inherited value is visible rather than implied. */
+    const locTd = txt('location_code', 110);
+    const office = inDeptOffice();
+    if (office && !ln.location_code) {
+      locTd.querySelector('input').placeholder = office.code;
+      locTd.append(el('div', { className: 'sercount', textContent: office.name }));
+    }
+    tr.append(locTd);
 
     /* Kind follows the unit price, so with no price there IS no kind. Saying
        "Low-value asset" because an empty box reads as 0 would be a claim the
@@ -3226,6 +3482,42 @@ function inSpecOpen(i) {
   box.scrollIntoView({ block: 'nearest' });
 }
 
+/* The catalogue knows what a thing IS, not what it cost. "Dây nguồn" maps to
+   LTU because that is the long-term tools code, but LTU is kept one row per
+   unit — so on a 455,000đ line it is the wrong half of the pair. Swap to the
+   sibling in the same accounting group that matches the price, and say so:
+   silently changing a code the reviewer did not choose would be worse than
+   the mismatch. Returns the code it moved away from, or null. */
+function alignKindCategory(ln) {
+  const cats = window.__CATS || [];
+  const cat = cats.find(c => c.code === ln.category_code);
+  const kind = kindOf(ln);
+  if (!cat || !kind || !cat.manage_by) return null;
+  const want = kind === 'unique' ? 'code' : 'quantity';
+  if (cat.manage_by === want) return null;
+  const alt = cats.filter(c => c.group_code === cat.group_code && c.manage_by === want)
+                  .map(c => c.code).sort();
+  if (!alt.length) return null;
+  const was = ln.category_code;
+  ln.category_code = alt[0];
+  ln._kindSwap = { was, alts: alt };
+  return was;
+}
+
+/* Scroll the grid to a line and flash it, so a number in the Check panel and a
+   row in the grid are the same thing rather than two lists to compare by eye. */
+function inJump(i) {
+  const tr = document.querySelectorAll('#inGrid tbody tr')[i - 1];
+  if (!tr) return;
+  tr.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  tr.classList.remove('flash');
+  void tr.offsetWidth;            // restart the animation
+  tr.classList.add('flash');
+}
+
+/* The office of the department currently chosen for this delivery. */
+const inDeptOffice = () => IN.deptOffice?.get($('#inDept')?.value);
+
 function kindOf(ln) {
   const v = ln.unit_price;
   if (v === '' || v == null) return null;
@@ -3255,7 +3547,8 @@ function inExpand(ln) {
     unit_code: ln.unit_code || null,
     unit_price: price,
     currency: 'VND',
-    location_code: ln.location_code || null,
+    // No location entered? The asset sits at its department's office.
+    location_code: ln.location_code || inDeptOffice()?.code || null,
     company_code: $('#inCompany').value,
     dept_code: $('#inDept').value,
     purpose_code: $('#inPurpose').value.trim() || null,
@@ -3289,17 +3582,48 @@ async function inCheck() {
   const out = $('#inMsg');
   if (!IN.lines.length) return msg(out, 'err', t('in.noLines'));
   msg(out, 'info', t('in.checking'));
+  /* Problems are recorded against their line, not flattened into a list of
+     sentences. The same sentence repeated for seven lines is unreadable and
+     impossible to cross-check against the grid; grouped by message with the
+     line numbers beside it, it is one row. */
   const errs = [], warns = [];
+  const E = (i, msg) => errs.push({ i, msg });
+  const W = (i, msg) => warns.push({ i, msg });
   let rows = 0;
 
   for (let i = 0; i < IN.lines.length; i++) {
     const ln = IN.lines[i], n = i + 1;
     ln._review = [];
-    if (!ln.name_vi?.trim()) errs.push(t('in.errNoName', { i: n }));
-    if (!ln.category_code) errs.push(t('in.errNoCat', { i: n }));
+    if (!ln.name_vi?.trim()) E(n, t('in.errNoName', { i: n }));
+    if (!ln.category_code) E(n, t('in.errNoCat', { i: n }));
     const price = Number(ln.unit_price);
-    if (!price) errs.push(t('in.errNoPrice', { i: n }));
-    if (!(Number(ln.qty) >= 1)) errs.push(t('in.errNoQty', { i: n }));
+    if (!price) E(n, t('in.errNoPrice', { i: n }));
+
+    /* The category has to agree with what the price makes this line.
+         >= 5,000,000  -> unique -> a category kept per unit  (manage_by 'code')
+         <  5,000,000  -> low    -> a category kept by quantity
+       Getting this wrong is not cosmetic: 'unique' turns one line into one row
+       PER UNIT and draws from the JVC.0… barcode range, 'low' stays one row and
+       draws from JVC.9…. A 455,000đ power cord under LTU would be issued a
+       unique asset code and a unique-range barcode it is not entitled to. */
+    const cat = (window.__CATS || []).find(c => c.code === ln.category_code);
+    const kind = kindOf(ln);
+    if (cat && kind) {
+      const want = kind === 'unique' ? 'code' : 'quantity';
+      if (cat.manage_by && cat.manage_by !== want) {
+        const alt = (window.__CATS || [])
+          .filter(c => c.group_code === cat.group_code && c.manage_by === want)
+          .map(c => c.code);
+        // Two directions, two sentences — one template cannot describe both
+        // without saying something false about the price or the category.
+        E(n, t(kind === 'unique' ? 'in.errKindNeedsCode' : 'in.errKindNeedsQty', {
+          i: n, cat: cat.code,
+          price: fmtNum(price), th: fmtNum(IN.thUnique || 5000000),
+          alt: alt.length ? alt.join(' / ') : '—'
+        }));
+      }
+    }
+    if (!(Number(ln.qty) >= 1)) E(n, t('in.errNoQty', { i: n }));
 
     if (ln.category_code && price) {
       try {
@@ -3307,9 +3631,9 @@ async function inCheck() {
           p_unit_price: price, p_category_code: ln.category_code,
           p_is_intangible: false
         }))[0];
-        if (r.violates_capex) errs.push(t('in.errCapex', { i: n, code: ln.category_code }));
-        for (const w of r.warnings || []) warns.push(`${n}: ${w}`);
-      } catch (e) { errs.push(`${n}: ${e.message}`); }
+        if (r.violates_capex) E(n, t('in.errCapex', { i: n, code: ln.category_code }));
+        for (const w of r.warnings || []) W(n, `${n}: ${w}`);
+      } catch (e) { E(n, `${n}: ${e.message}`); }
     }
 
     if (ln.origin_raw?.trim()) {
@@ -3317,7 +3641,7 @@ async function inCheck() {
         const o = (await SB.rpc('am_resolve_origin', { p_raw: ln.origin_raw }))[0];
         ln._iso = o.iso2 || null;
         if (!o.iso2) {
-          warns.push(t('in.warnOrigin', { i: n, why: t('why.' + o.reason) }));
+          W(n, t('in.warnOrigin', { i: n, why: t('why.' + o.reason) }));
           ln._review.push({ field: 'origin_iso2', reason: o.reason, raw: ln.origin_raw });
         }
       } catch { ln._iso = null; }
@@ -3330,31 +3654,36 @@ async function inCheck() {
     const ser = inSerials(ln);
     const wantSer = Number(ln.qty) || 0;
     if (ser.length && ser.length !== wantSer)
-      warns.push(t('in.warnSerial', { i: n, have: ser.length, qty: ln.qty }));
+      W(n, t('in.warnSerial', { i: n, have: ser.length, qty: ln.qty }));
     else if (!ser.length && kindOf(ln) === 'unique') {
-      warns.push(t('in.warnNoSerial', { i: n, qty: ln.qty }));
+      W(n, t('in.warnNoSerial', { i: n, qty: ln.qty }));
       ln._review.push({ field: 'serial', reason: 'missing_on_unique' });
     }
 
     // Doubt raised while reading the delivery note must survive into the
     // register, not stop at this screen.
     for (const f of ln._unsure || []) {
-      warns.push(t('in.warnUnsure', { i: n, field: f }));
+      W(n, t('in.warnUnsure', { i: n, field: f }));
       ln._review.push({ field: f, reason: 'unreadable_on_note' });
     }
     if (ln._src && ln._src !== 'printed') {
-      warns.push(t('in.warnQtySrc', { i: n, src: ln._src }));
+      W(n, t('in.warnQtySrc', { i: n, src: ln._src }));
       ln._review.push({ field: 'qty', reason: 'qty_' + ln._src });
     }
     if (ln._unitRaw && !ln.unit_code)
-      warns.push(t('in.warnUnit', { i: n, raw: ln._unitRaw }));
+      W(n, t('in.warnUnit', { i: n, raw: ln._unitRaw }));
+    // Inheriting the office is the right default, but it is still a choice the
+    // reviewer should see stated rather than discover in the register later.
+    if (!ln.location_code && inDeptOffice())
+      W(n, t('in.warnOffice', { i: n, dept: $('#inDept').value,
+                                      loc: inDeptOffice().code }));
     // A price taken from the contract is not a price off the delivery note.
     if (ln._priceFrom === 'contract') {
-      warns.push(t('in.warnPriceContract', { i: n }));
+      W(n, t('in.warnPriceContract', { i: n }));
       ln._review.push({ field: 'unit_price', reason: 'from_contract' });
     }
 
-    warns.push(t('in.warnStatus', { i: n }));
+    W(n, t('in.warnStatus', { i: n }));
     ln._review.push({ field: 'status_code', reason: 'no_source' });
 
     rows += inExpand(ln).length;
@@ -3388,9 +3717,45 @@ async function inCheck() {
 
   IN.checked = errs.length ? null : { rows };
   out.innerHTML = '';
+  /* Hand the problems back to the lines so the grid can colour itself, and
+     group them by message so one sentence carries all the line numbers it
+     applies to. Each number is a button that jumps to that row and flashes it. */
+  for (const ln of IN.lines) { ln._bad = 0; ln._warn = 0; }
+  for (const e of errs) if (IN.lines[e.i - 1]) IN.lines[e.i - 1]._bad++;
+  for (const w of warns) if (IN.lines[w.i - 1]) IN.lines[w.i - 1]._warn++;
+  inRender();
+
+  const group = list => {
+    const by = new Map();
+    for (const { i, msg } of list) {
+      // Drop the "Line 7:" prefix — the numbers move to the chips beside it.
+      const key = String(msg).replace(/^\s*(Line|Dòng)\s+\d+\s*:\s*/, '');
+      if (!by.has(key)) by.set(key, []);
+      by.get(key).push(i);
+    }
+    return [...by.entries()].sort((a, b) => b[1].length - a[1].length);
+  };
+
+  const block = (list, cls) => {
+    for (const [msg, lines] of group(list)) {
+      const row = el('div', { className: 'msg ' + cls });
+      row.append(el('div', { className: 'gmsg', textContent: msg }));
+      const chips = el('div', { className: 'chips' });
+      for (const i of lines) {
+        const b = el('button', { className: 'chip', textContent: fmtInt(i),
+                                 title: t('in.jumpTo', { i }) });
+        b.onclick = () => inJump(i);
+        chips.append(b);
+      }
+      row.append(chips);
+      out.append(row);
+    }
+  };
+
   if (errs.length) {
-    out.append(el('div', { className: 'msg err', textContent: t('in.hasErr', { n: errs.length }) }));
-    for (const e of errs) out.append(el('div', { className: 'msg err', textContent: e }));
+    out.append(el('div', { className: 'msg err',
+      textContent: t('in.hasErr', { n: new Set(errs.map(e => e.i)).size }) }));
+    block(errs, 'err');
   } else {
     out.append(el('div', { className: 'msg ok',
       textContent: t('in.okAll', { n: IN.lines.length, r: rows }) }));
@@ -3405,8 +3770,9 @@ async function inCheck() {
     }
   }
   if (warns.length) {
-    out.append(el('div', { className: 'msg warn', textContent: t('in.hasWarn', { n: warns.length }) }));
-    for (const w of warns) out.append(el('div', { className: 'msg warn', textContent: w }));
+    out.append(el('div', { className: 'msg warn',
+      textContent: t('in.hasWarn', { n: new Set(warns.map(w => w.i)).size }) }));
+    block(warns, 'warn');
   }
   $('#btnInConfirm').disabled = !IN.checked;
   inRender();
@@ -3459,7 +3825,12 @@ async function inConfirm() {
     msg(out, 'ok', t('in.written', { n: IN.committed.length,
                                      from: codes[0], to: codes[codes.length - 1] }));
     $('#btnInXlsx').disabled = false;
+    $('#btnInUndo').disabled = false;
     $('#btnInConfirm').disabled = true;
+    /* Keep the draft aside rather than dropping it. Undo has to give back the
+       lines as they were edited — the corrections in them are the expensive
+       part, not the writing. Plain data only, so a JSON round-trip clones it. */
+    IN.draft = JSON.parse(JSON.stringify(IN.lines));
     IN.lines = []; IN.checked = null; inRender();
     try {
       await SB.insert('am_data_source', [{
@@ -3470,6 +3841,59 @@ async function inConfirm() {
   } catch (e) {
     msg(out, 'err', t('in.writeFail', { err: e.message }));
   }
+}
+
+/* Undo the batch just written. Available only while this screen still holds the
+   rows it created — it is a "that was wrong, take it back" for the minute after
+   Confirm, not a general delete tool. */
+async function inUndo() {
+  if (!IN.committed.length) return msg('#inMsg', 'warn', t('in.nothingYet'));
+  const ids = IN.committed.map(r => r.id).filter(Boolean);
+  if (!ids.length) return msg('#inMsg', 'err', t('in.undoNoIds'));
+  if (!confirm(t('in.undoConfirm', { n: fmtInt(ids.length) }))) return;
+
+  msg('#inMsg', 'info', t('in.undoing', { n: fmtInt(ids.length) }));
+  let res;
+  try { res = (await SB.rpc('am_undo_intake', { p_ids: ids }))?.[0]; }
+  catch (e) { return msg('#inMsg', 'err', t('in.undoFail', { err: e.message })); }
+
+  const kept = (res?.kept_on_receipt || 0) + (res?.kept_legacy || 0);
+  const rew = res?.seq_rewound || 0, held = res?.seq_held || 0;
+  msg('#inMsg', kept || held ? 'warn' : 'ok',
+      t(kept ? 'in.undoneSome' : 'in.undone',
+        { n: fmtInt(res?.deleted || 0), kept: fmtInt(kept),
+          receipt: fmtInt(res?.kept_on_receipt || 0) }) + ' ' +
+      t(held ? 'in.undoSeqHeld' : 'in.undoSeqBack',
+        { rew: fmtInt(rew), held: fmtInt(held) }));
+
+  try {
+    await SB.insert('am_data_source', [{
+      table_name: 'am_asset', source_file: $('#inPurpose').value.trim() || 'manual intake',
+      source_kind: 'manual', rows_loaded: -(res?.deleted || 0), loaded_by: 'intake undo'
+    }]);
+  } catch { /* the provenance log is optional, never block on it */ }
+
+  if (!(res?.kept_on_receipt || res?.kept_legacy)) IN.committed = [];
+  $('#btnInUndo').disabled = !IN.committed.length;
+  $('#btnInXlsx').disabled = !IN.committed.length;
+
+  /* Put the edited lines back. Without this the undo would cost the reviewer
+     everything they had corrected — category by category — and leave them
+     re-pasting the JSON from scratch. */
+  if (IN.draft?.length) {
+    if (!IN.lines.length ||
+        confirm(t('in.undoRestore', { n: fmtInt(IN.draft.length),
+                                      cur: fmtInt(IN.lines.length) }))) {
+      IN.lines = IN.draft;
+      IN.draft = null;
+      IN.checked = null;
+      $('#btnInConfirm').disabled = true;   // must pass Check again
+      inRender();
+      msg('#inMsg', 'ok', $('#inMsg').textContent + ' ' +
+                          t('in.undoRestored', { n: fmtInt(IN.lines.length) }));
+    }
+  }
+  regLoad(true);
 }
 
 function inXlsx() {
@@ -3489,13 +3913,21 @@ function inToAlr() {
 
 async function inFill() {
   try {
-    const [orgs, units, th, prods] = await Promise.all([
+    const [orgs, units, th, prods, offices] = await Promise.all([
       SB.select('am_org', 'select=code,is_company,is_department&order=code'),
       SB.select('am_unit', 'select=code&order=sort_order'),
       SB.select('am_setting', 'select=key,value&key=eq.unique_threshold'),
       SB.select('am_product',
-        'select=std_name_vi,std_name_en,default_category,default_unit&order=std_name_vi')
+        'select=std_name_vi,std_name_en,default_category,default_unit&order=std_name_vi'),
+      /* Each department has exactly one office location (the database enforces
+         it with a unique index). An asset with no location of its own belongs
+         at its department's office — that is what the office flag is FOR, and
+         the intake screen was ignoring it, leaving the column empty. */
+      SB.select('am_location', 'select=code,name,dept_code&is_dept_office=is.true')
     ]);
+    IN.deptOffice = new Map((offices || [])
+      .filter(o => o.dept_code)
+      .map(o => [o.dept_code, { code: o.code, name: o.name }]));
     IN.units = units.map(u => u.code);
     IN.thUnique = Number(th?.[0]?.value) || 5000000;
     inProducts(prods);
@@ -3780,7 +4212,7 @@ async function inSuggest() {
   IN.sugRan = true;
 
   const by = new Map((sug || []).map(s => [s.name, s]));
-  let filled = 0, none = 0, weak = 0;
+  let filled = 0, none = 0, weak = 0, swapped = 0;
   for (const ln of IN.lines) {
     const s = by.get(ln.name_vi);
     if (!s || !s.category_code) { ln._sug = null; none++; continue; }
@@ -3797,11 +4229,14 @@ async function inSuggest() {
     }
     ln._sug = { n: s.n, src: s.src, term: s.matched_term, conf: s.confidence };
     if (s.confidence === 'low' || s.confidence === 'medium') weak++;
+    // The catalogue answers "what is it", the price answers "how is it kept".
+    if (alignKindCategory(ln)) swapped++;
   }
   IN.sugRan = true;
   inRender();
   msg('#dnMsg', none || weak ? 'warn' : 'ok',
-      t('dn.suggested', { n: filled, none, weak }));
+      t('dn.suggested', { n: filled, none, weak }) +
+      (swapped ? ' ' + t('dn.kindSwapped', { n: fmtInt(swapped) }) : ''));
 }
 
 function initDelivery() {
@@ -3817,9 +4252,12 @@ function initIntake() {
   $('#inDate').value = new Date().toISOString().slice(0, 10);
   $('#btnInAdd').onclick = () => { IN.lines.push(inBlank()); IN.checked = null; inRender(); };
   $('#btnInClear').onclick = () => { IN.lines = []; IN.checked = null; IN.sugRan = false; inRender(); };
+  // The inherited office changes with the department, so redraw the lines.
+  $('#inDept').onchange = () => inRender();
   $('#btnInCheck').onclick = inCheck;
   $('#btnInConfirm').onclick = inConfirm;
   $('#btnInXlsx').onclick = inXlsx;
+  $('#btnInUndo').onclick = inUndo;
   $('#btnInAlr').onclick = inToAlr;
   initDelivery();
   inRender();
