@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Asset Intake — Plaza Hotel</title>
+<title>Asset Management — Plaza Hotel</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2316253c'/%3E%3Cg fill='%23fff'%3E%3Crect x='3' y='4' width='1.4' height='8'/%3E%3Crect x='5.4' y='4' width='.8' height='8'/%3E%3Crect x='7.2' y='4' width='1.6' height='8'/%3E%3Crect x='9.8' y='4' width='.8' height='8'/%3E%3Crect x='11.6' y='4' width='1.4' height='8'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   :root{
@@ -53,6 +53,10 @@
   nav .kids a.sub{padding-left:30px;font-size:12.5px}
   nav .kids a.sub::before{content:'└';flex:none;width:9px;margin-left:-15px;
                           color:rgba(255,255,255,.3);font-size:11px;line-height:1}
+  /* A heading inside a group: names what its children have in common, but is
+     not itself a screen. */
+  nav .kids .subhead{padding:10px 18px 3px;color:var(--side-dim);font-size:10px;
+                     font-weight:600;letter-spacing:.1em;text-transform:uppercase}
   nav a{display:flex;align-items:center;gap:8px;padding:7px 18px;color:var(--side-ink);
         font-size:13px;cursor:pointer;border-left:4px solid transparent;text-decoration:none}
   nav a:hover{background:rgba(255,255,255,.05);color:#fff}
@@ -93,6 +97,9 @@
   .num,code,.kpi b,.tape .tp-code,textarea{font-variant-numeric:tabular-nums}
   /* Running number: narrow, quiet, never the thing the eye lands on. */
   th.idx,td.idx{width:52px;color:var(--dim);font-weight:400}
+  th.delcol,td.delcol{width:34px;padding-left:9px;padding-right:0}
+  th.overcol{padding-left:4px;padding-right:4px}
+  .btn.tiny{padding:2px 7px;font-size:11px;font-weight:600;white-space:nowrap}
   /* Per-column filter row, docked under the header of the register. */
   /* 4 + 1 border + 4 = the 9px the data cells use, so the filter box sits on
      the same margin as its column. */
@@ -188,11 +195,18 @@
   tr.grp .gn{font-size:10.5px;color:var(--dim);margin-left:8px;font-weight:400}
   tr.ctx{opacity:.45}                /* an ancestor shown only for context */
 
-  td.tcell{white-space:nowrap}
-  .guides{display:inline-flex;vertical-align:middle}
-  .guides .g{width:15px;flex:none;text-align:center;color:#c2c8d2;
-             font-family:var(--mono);font-size:12px;line-height:1;
-             user-select:none}
+  /* Rules drawn with borders over the cell's full height, so they join between
+     rows. Box-drawing glyphs leave a gap at every row edge and read as dashes. */
+  td.tcell{white-space:nowrap;position:relative}
+  .guides{position:absolute;left:0;top:0;bottom:0;display:flex;pointer-events:none}
+  .guides .g{width:15px;flex:none;position:relative}
+  .guides .g.v::before,.guides .g.t::before,.guides .g.e::before{
+    content:'';position:absolute;left:7px;width:0;border-left:1px solid #ccd3dd}
+  .guides .g.v::before,.guides .g.t::before{top:0;bottom:0}
+  .guides .g.e::before{top:0;height:50%}
+  .guides .g.t::after,.guides .g.e::after{
+    content:'';position:absolute;left:7px;top:50%;width:8px;height:0;
+    border-top:1px solid #ccd3dd}
   .caret{width:15px;flex:none;border:none;background:none;padding:0;margin-right:2px;
          color:#7d879a;font-size:10px;line-height:1;cursor:pointer;
          vertical-align:middle}
@@ -359,11 +373,14 @@
         <h2 data-i18n="setup.h.conn"></h2>
         <div class="row" style="margin-bottom:10px">
           <div class="fld grow"><label data-i18n="setup.projectUrl"></label>
-            <input id="sbUrl" placeholder="https://xxxxxxxx.supabase.co" spellcheck="false"></div>
+            <input id="sbUrl" type="password" placeholder="https://xxxxxxxx.supabase.co"
+                   spellcheck="false"></div>
+          <button class="btn" id="btnShowUrl" data-i18n="setup.show"></button>
         </div>
         <div class="row" style="margin-bottom:12px">
           <div class="fld grow"><label data-i18n="setup.anonKey"></label>
-            <input id="sbKey" placeholder="eyJhbGciOi…" spellcheck="false"></div>
+            <input id="sbKey" type="password" placeholder="eyJhbGciOi…" spellcheck="false"></div>
+          <button class="btn" id="btnShowKey" data-i18n="setup.show"></button>
         </div>
         <div class="row">
           <button class="btn pri" id="btnSave" data-i18n="setup.save"></button>
@@ -479,6 +496,8 @@
           <input id="alName" spellcheck="false" data-i18n-ph="alr.namePh"></div>
         <div class="fld" style="max-width:260px"><label data-i18n="alr.cat"></label>
           <select id="alCat"><option value="" data-i18n="alr.all"></option></select></div>
+      </div>
+      <div class="row" style="margin-top:11px">
         <button class="btn pri" id="btnAlLoad" data-i18n="alr.load"></button>
         <button class="btn" id="btnAlReset" data-i18n="alr.reset"></button>
         <button class="btn" id="btnAlDemo" data-i18n="alr.demo"></button>
@@ -667,6 +686,8 @@
             <option value="low" data-i18n="reg.kindLow"></option></select></div>
         <div class="fld" style="max-width:110px"><label data-i18n="reg.year"></label>
           <input id="regYear" type="number" placeholder="2025"></div>
+      </div>
+      <div class="row" style="margin-top:11px">
         <button class="btn pri" id="btnRegApply" data-i18n="reg.apply"></button>
         <button class="btn" id="btnRegReset" data-i18n="reg.reset"></button>
       </div>

@@ -199,6 +199,20 @@ async function lookup(table) {
 /* ------------------------------------------------------------ data grid */
 let CUR = null;   // { table, rows:[{orig,cur,isNew,dirty,del}] }
 
+/* Master data is read far more often than it is changed, so the grid opens in
+   read mode: no delete buttons, no input boxes, nothing to hit by accident. */
+let EDIT = false;
+
+/* Read mode: plain text on the cell's own margin, no input chrome. Keeping the
+   inputs and merely disabling them would leave the boxes and the 5px inset that
+   throws the content off the column heading. */
+function cellRead(col, row) {
+  const v = row.cur[col.name];
+  if (col.type === 'bool') return document.createTextNode(v ? '✔' : '');
+  if (v == null || v === '') return document.createTextNode('');
+  return document.createTextNode(typeof v === 'object' ? JSON.stringify(v) : String(v));
+}
+
 function cellInput(col, row, onChange) {
   const v = row.cur[col.name];
   if (col.type === 'bool') {
@@ -334,13 +348,17 @@ function treeOrder(rows, spec, parentField, visible, shut, folding) {
   return out;
 }
 
-/* One indent column: a rule, an elbow, or blank. */
+/* One indent column each, drawn with CSS borders rather than box characters.
+   Glyphs like │ do not touch across rows — the line comes out dashed — while a
+   border stretched over the whole row height joins up cleanly.
+     v = the branch continues past this row      e = elbow, last child
+     t = tee, this child has siblings below      (blank otherwise) */
 function treeGuides(item) {
   const box = el('span', { className: 'guides' });
   for (let j = 0; j < item.depth; j++) {
-    const ch = j === item.depth - 1 ? (item.last ? '└' : '├')
-             : item.guides[j] ? '│' : '';
-    box.append(el('span', { className: 'g', textContent: ch }));
+    const cls = j === item.depth - 1 ? (item.last ? 'e' : 't')
+              : item.guides[j] ? 'v' : '';
+    box.append(el('span', { className: 'g ' + cls }));
   }
   return box;
 }
@@ -351,7 +369,7 @@ function renderGrid() {
   const head = $('#grid thead'), body = $('#grid tbody');
   head.innerHTML = ''; body.innerHTML = '';
   const hr = el('tr');
-  hr.append(el('th', { textContent: '' }));
+  if (EDIT) hr.append(el('th', { className: 'delcol', textContent: '' }));
   for (const c of spec.cols) hr.append(el('th', { textContent: c.name }));
   head.append(hr);
 
@@ -378,10 +396,11 @@ function renderGrid() {
     return b;
   };
 
+  const cols = spec.cols.length + (EDIT ? 1 : 0);
   let shown = 0;
   for (const item of plan) {
     if (item.head !== undefined) {
-      const td = el('td', { colSpan: spec.cols.length + 1 });
+      const td = el('td', { colSpan: cols });
       td.append(caret(item), el('span', { className: 'gt', textContent: item.head }),
                 el('span', { className: 'gn',
                              textContent: t('tree.nRows', { n: fmtInt(item.n) }) }));
@@ -394,14 +413,19 @@ function renderGrid() {
     if (item.ctx) tr.classList.add('ctx');
     if (row.isNew) tr.classList.add('new');
     else if (row.dirty) tr.classList.add('dirty');
-    const del = el('button', { className: 'xbtn', textContent: '✕', title: t('table.deleteRow') });
-    del.onclick = () => {
-      if (row.isNew) CUR.rows.splice(CUR.rows.indexOf(row), 1);
-      else if (confirm(t('table.confirmDelete', { id: row.cur[spec.pk] }))) row.del = true;
-      else return;
-      dirtyCheck(); renderGrid();
-    };
-    tr.append(el('td', {}, del));
+    // Deleting is only offered in edit mode; in read mode the column is gone
+    // entirely rather than greyed, so the tree it sits beside stays legible.
+    if (EDIT) {
+      const del = el('button', { className: 'xbtn', textContent: '✕',
+                                 title: t('table.deleteRow') });
+      del.onclick = () => {
+        if (row.isNew) CUR.rows.splice(CUR.rows.indexOf(row), 1);
+        else if (confirm(t('table.confirmDelete', { id: row.cur[spec.pk] }))) row.del = true;
+        else return;
+        dirtyCheck(); renderGrid();
+      };
+      tr.append(el('td', { className: 'delcol' }, del));
+    }
     let first = true;
     for (const c of spec.cols) {
       // The tree lives in the editable grid rather than beside it, so every
@@ -409,9 +433,13 @@ function renderGrid() {
       const td = el('td', first && parentField
         ? { className: 'tcell lvl' + Math.min(item.depth, 2) } : {});
       if (first && parentField) {
+        // The rules are absolutely positioned over the cell's full height, so
+        // the cell reserves their width as padding instead of flowing them.
+        td.style.paddingLeft = (item.depth * 15 + 4) + 'px';
         td.append(treeGuides(item), caret(item));
         first = false;
       }
+      if (!EDIT) { td.append(cellRead(c, row)); tr.append(td); continue; }
       td.append(cellInput(c, row, (field, val) => {
         row.cur[field] = val;
         row.dirty = row.isNew || spec.cols.some(k => row.cur[k.name] !== row.orig?.[k.name]);
@@ -1302,8 +1330,11 @@ const NAV = [
     ['tbl:am_org', null, [['tbl:am_org_alias', null]]],
     ['cat', 'nav.cat'],
     ['tbl:am_unit', null], ['tbl:am_location', null], ['tbl:am_product', null],
-    ['tbl:am_origin', null, [['tbl:am_origin_alias', null],
-                             ['tbl:am_origin_rejected', null]]]
+    // A heading, not a screen: the three origin tables belong together, and
+    // none of them is the natural parent of the other two.
+    [null, 'nav.originHead', [['tbl:am_origin', null],
+                              ['tbl:am_origin_alias', null],
+                              ['tbl:am_origin_rejected', null]]]
   ]],
   ['nav.system', [
     ['sources', 'nav.sources'], ['tbl:am_setting', null],
@@ -1339,7 +1370,8 @@ function buildNav() {
   for (const [grpKey, items] of NAV) {
     // A group holding the current view is always expanded, so the active item
     // can never be hidden inside a collapsed branch.
-    const flat = items.flatMap(([id, , ch]) => [id, ...(ch || []).map(c => c[0])]);
+    const flat = items.flatMap(([id, , ch]) => [id, ...(ch || []).map(c => c[0])])
+                      .filter(Boolean);        // a heading has no view of its own
     const holdsCurrent = flat.includes(VIEW);
     const shut = NAV_SHUT.has(grpKey) && !holdsCurrent;
 
@@ -1367,7 +1399,8 @@ function buildNav() {
       kids.append(a);
     };
     for (const [id, labelKey, children] of items) {
-      addItem(id, labelKey, 0);
+      if (id) addItem(id, labelKey, 0);
+      else kids.append(el('div', { className: 'subhead', textContent: t(labelKey) }));
       for (const [cid, ckey] of children || []) addItem(cid, ckey, 1);
     }
     nav.append(head, kids);
@@ -1447,12 +1480,31 @@ function buildTools(view) {
     f.oninput = () => renderGrid();
     const reload = el('button', { className: 'btn', textContent: t('tool.reload') });
     reload.onclick = () => loadTable(table);
-    const add = el('button', { className: 'btn', textContent: t('tool.add') });
-    add.onclick = addRow;
-    const save = el('button', { className: 'btn pri', id: 'btnCommit',
-                                textContent: t('tool.save'), disabled: true });
-    save.onclick = commit;
-    box.append(f, reload, add, save);
+    box.append(f, reload);
+
+    const edit = el('button', { className: 'btn' + (EDIT ? ' pri' : ''),
+                                textContent: t(EDIT ? 'tool.editOff' : 'tool.editOn') });
+    edit.onclick = () => {
+      const n = (CUR?.rows || []).filter(r => r.isNew || r.dirty || r.del).length;
+      if (EDIT && n && !confirm(t('table.confirmLeave', { n }))) return;
+      if (EDIT && n) loadTable(table);       // leaving edit discards unsaved edits
+      EDIT = !EDIT;
+      const keep = $('#filter')?.value || '';
+      buildTools(VIEW);
+      if ($('#filter')) $('#filter').value = keep;
+      renderGrid();
+    };
+    box.append(edit);
+
+    if (EDIT) {
+      const add = el('button', { className: 'btn', textContent: t('tool.add') });
+      add.onclick = addRow;
+      const save = el('button', { className: 'btn pri', id: 'btnCommit',
+                                  textContent: t('tool.save'), disabled: true });
+      save.onclick = commit;
+      box.append(add, save);
+      dirtyCheck();
+    }
   } else if (view === 'counter') {
     const a = el('button', { className: 'btn', textContent: t('tool.loadStatus') });
     a.onclick = loadCounters;
@@ -1590,6 +1642,17 @@ function init() {
   markLang();
   $$('#langSeg button').forEach(b => { b.onclick = () => switchLang(b.dataset.lang); });
   buildNav();
+
+  /* The connection details are masked by default. The repo is public and the
+     link carrying them gets shared, so they should not sit on screen during a
+     screen-share or a screenshot unless someone asks to see them. */
+  for (const [btn, field] of [['#btnShowUrl', '#sbUrl'], ['#btnShowKey', '#sbKey']]) {
+    $(btn).onclick = () => {
+      const i = $(field), show = i.type === 'password';
+      i.type = show ? 'text' : 'password';
+      $(btn).textContent = t(show ? 'setup.hide' : 'setup.show');
+    };
+  }
 
   $('#btnSave').onclick = async () => {
     CFG = { url: $('#sbUrl').value.trim().replace(/\/+$/, ''), key: $('#sbKey').value.trim() };
@@ -2124,8 +2187,13 @@ async function srcLoad() {
         el('td', { textContent: r?.loaded_by || '' })
       ]));
     }
+    // Same card + heading + wrap as the history table below, so the two read as
+    // one pair rather than one loose table above a framed one.
     cur.innerHTML = '';
-    cur.append(el('div', { className: 'wrap' }, tb));
+    cur.append(el('div', { className: 'card' }, [
+      el('h2', { textContent: t('src.h.current') }),
+      el('div', { className: 'wrap' }, tb)
+    ]));
 
     hist.innerHTML = '';
     if (!log.length) { msg(hist, 'warn', t('src.noHistory')); return; }
@@ -2369,9 +2437,10 @@ function regRender() {
   /* A filter box per column, applied on the server so it searches the whole
      register and not just the page on screen. */
   const fr = el('tr', { className: 'colf' });
-  fr.append(el('th', {}, el('button', { className: 'xbtn', textContent: '✕',
-                                        title: t('reg.colqClear'),
-                                        onclick: () => { REG.colq = {}; regLoad(true); } })));
+  const over = el('button', { className: 'btn tiny', textContent: t('reg.startOver'),
+                              title: t('reg.colqClear') });
+  over.onclick = () => { REG.colq = {}; regLoad(true); };
+  fr.append(el('th', { className: 'overcol' }, over));
   for (const c of REG.cols) {
     const box = el('input', { value: REG.colq?.[c] ?? '', placeholder: t('reg.colqPh'),
                               spellcheck: false });

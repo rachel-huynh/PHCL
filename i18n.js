@@ -7,12 +7,13 @@
 const I18N = {
 
 en: {
-  'app.subtitle': 'Asset Intake · Asset receiving',
+  'app.subtitle': 'Asset Management',
   'side.note': 'Data lives on Supabase. The connection settings are stored in this browser only, never in the source code.',
   'conn.none': 'not connected',
   'conn.error': 'connection error',
 
   'nav.catalog': 'Master data',
+  'nav.originHead': 'Origin',
   'nav.assets': 'Assets',
   'nav.system': 'System',
   'nav.counter': 'Code counters',
@@ -27,6 +28,8 @@ en: {
 
   'tool.filter': 'Quick filter…',
   'tool.reload': 'Reload',
+  'tool.editOn': 'Edit',
+  'tool.editOff': 'Done editing',
   'tool.add': '+ Add row',
   'tool.save': 'Save changes',
   'tool.saveN': 'Save {n} changes',
@@ -37,6 +40,8 @@ en: {
   'setup.h.conn': 'Supabase connection',
   'setup.projectUrl': 'Project URL',
   'setup.anonKey': 'Anon key',
+  'setup.show': 'Show',
+  'setup.hide': 'Hide',
   'setup.save': 'Save & test',
   'setup.link': 'Create pre-configured link',
   'setup.forget': 'Forget on this device',
@@ -286,7 +291,7 @@ en: {
   'bk.reseedNone': 'The snapshot holds no asset yet, so there is nothing to re-seed.',
   'bk.err': 'Failed at {table}: {err}',
 
-  'nav.cat': 'Category codes',
+  'nav.cat': 'Category',
   'page.cat': 'Categories and asset groups',
   'cat.codes': 'Category codes',
   'cat.groups': 'Asset groups',
@@ -409,6 +414,7 @@ en: {
   'reg.apply': 'Apply',
   'reg.reset': 'Reset',
   'reg.colqPh': 'filter…',
+  'reg.startOver': 'Start over',
   'reg.colqClear': 'Clear the column filters',
   'reg.cols': 'Columns',
   'reg.xlsx': 'Export Excel',
@@ -475,7 +481,7 @@ en: {
   'src.kind.manual': 'Edited by hand',
   'src.kind.register-scan': 'Register scan',
 
-  'tbl.am_org.label': 'Units & departments',
+  'tbl.am_org.label': 'Departments',
   'tbl.am_org.sub': 'A flat list of four levels. One code can be both a member company (is_company) and sit in position #1 of the asset code (is_department) — CEN and SOF, for example.',
   'tbl.am_org_alias.label': 'Department aliases',
   'tbl.am_org_alias.sub': 'The source files disagree with each other (HKD/HKP, ITD/IT, SEC/Security). This table keeps old imports working; the canonical code stays single.',
@@ -485,7 +491,7 @@ en: {
   'tbl.am_category.sub': 'label_letters is the code with the -QR suffix removed. LTG and LTG-QR both render as “LTG”, so they MUST share one sequence.',
   'tbl.am_unit.label': 'Units of measure',
   'tbl.am_unit.sub': '',
-  'tbl.am_origin.label': 'Countries (ISO 3166-1)',
+  'tbl.am_origin.label': 'Countries',
   'tbl.am_origin.sub': 'The list has to be COMPLETE for the rule “assign a code only on an exact single-country match” to hold — any missing country gets misclassified.',
   'tbl.am_origin_alias.label': 'Origin aliases',
   'tbl.am_origin_alias.sub': 'Add an entry ONLY when the text names exactly ONE country. alias_norm must be lowercase with the diacritics stripped.',
@@ -500,12 +506,13 @@ en: {
 },
 
 vi: {
-  'app.subtitle': 'Asset Intake · Quản lý nhập tài sản',
+  'app.subtitle': 'Asset Management',
   'side.note': 'Dữ liệu nằm trên Supabase. Cấu hình kết nối lưu trong trình duyệt này, không nằm trong mã nguồn.',
   'conn.none': 'chưa kết nối',
   'conn.error': 'lỗi kết nối',
 
   'nav.catalog': 'Danh mục',
+  'nav.originHead': 'Xuất xứ',
   'nav.assets': 'Tài sản',
   'nav.system': 'Hệ thống',
   'nav.counter': 'Bộ đếm mã',
@@ -520,6 +527,8 @@ vi: {
 
   'tool.filter': 'Lọc nhanh…',
   'tool.reload': 'Tải lại',
+  'tool.editOn': 'Sửa',
+  'tool.editOff': 'Xong',
   'tool.add': '+ Thêm dòng',
   'tool.save': 'Lưu thay đổi',
   'tool.saveN': 'Lưu {n} thay đổi',
@@ -530,6 +539,8 @@ vi: {
   'setup.h.conn': 'Kết nối Supabase',
   'setup.projectUrl': 'Project URL',
   'setup.anonKey': 'Anon key',
+  'setup.show': 'Hiện',
+  'setup.hide': 'Ẩn',
   'setup.save': 'Lưu & kiểm tra',
   'setup.link': 'Tạo link cài sẵn',
   'setup.forget': 'Xoá khỏi máy này',
@@ -779,7 +790,7 @@ vi: {
   'bk.reseedNone': 'Bản chụp chưa có tài sản nào nên không có gì để nạp.',
   'bk.err': 'Hỏng ở bảng {table}: {err}',
 
-  'nav.cat': 'Mã danh mục',
+  'nav.cat': 'Danh mục',
   'page.cat': 'Danh mục và nhóm tài sản',
   'cat.codes': 'Mã danh mục',
   'cat.groups': 'Nhóm tài sản',
@@ -903,6 +914,7 @@ vi: {
   'reg.apply': 'Lọc',
   'reg.reset': 'Bỏ lọc',
   'reg.colqPh': 'lọc…',
+  'reg.startOver': 'Làm lại',
   'reg.colqClear': 'Xoá các ô lọc cột',
   'reg.cols': 'Cột hiển thị',
   'reg.xlsx': 'Xuất Excel',
@@ -969,7 +981,7 @@ vi: {
   'src.kind.manual': 'Sửa tay',
   'src.kind.register-scan': 'Quét sổ tài sản',
 
-  'tbl.am_org.label': 'Đơn vị & phòng ban',
+  'tbl.am_org.label': 'Phòng ban',
   'tbl.am_org.sub': 'Danh sách phẳng 4 cấp. Một mã có thể vừa là công ty thành viên (is_company) vừa đứng ở vị trí #1 của Mã Tài Sản (is_department) — ví dụ CEN, SOF.',
   'tbl.am_org_alias.label': 'Bí danh phòng ban',
   'tbl.am_org_alias.sub': 'Dữ liệu gốc không nhất quán (HKD/HKP, ITD/IT, SEC/Security). Bảng này để import file cũ không vỡ; mã chuẩn vẫn chỉ có một.',
@@ -979,7 +991,7 @@ vi: {
   'tbl.am_category.sub': 'label_letters = code sau khi bỏ hậu tố -QR. LTG và LTG-QR cùng ra “LTG” nên dùng CHUNG một dãy số thứ tự.',
   'tbl.am_unit.label': 'Đơn vị tính',
   'tbl.am_unit.sub': '',
-  'tbl.am_origin.label': 'Danh mục quốc gia (ISO 3166-1)',
+  'tbl.am_origin.label': 'Quốc gia',
   'tbl.am_origin.sub': 'Danh sách phải ĐẦY ĐỦ thì quy tắc “chỉ gán mã khi khớp đúng một quốc gia có thật” mới đúng — thiếu nước nào là nước đó bị xếp nhầm.',
   'tbl.am_origin_alias.label': 'Bí danh xuất xứ',
   'tbl.am_origin_alias.sub': 'CHỈ thêm khi chuỗi chỉ đích danh MỘT quốc gia. alias_norm phải viết thường, bỏ dấu.',
