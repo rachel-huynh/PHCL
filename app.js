@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260916d';
+const APP_VERSION = '20260916f';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -2968,9 +2968,20 @@ function btExport(rows, stamp) {
 /* ------------------------------------------------------------ the screen */
 const IN = { lines: [], checked: null, committed: [], sugRan: false };
 
+/* The register keeps specifications in SEPARATE columns, not one blob — the
+   label receipt and the Beetrack sheet both read them individually. Intake used
+   to write none of them, so every asset it created had an empty spec cell.
+   Key here = column in am_asset, minus the spec_ prefix. */
+const SPEC_FIELDS = ['brand', 'model', 'function', 'capacity',
+                     'length', 'width', 'height', 'weight',
+                     'material', 'color', 'shape', 'radius', 'fuel',
+                     'area', 'perimeter', 'mfg_year', 'accessory'];
+const specFilled = ln => SPEC_FIELDS.filter(f => (ln.spec?.[f] || '').trim()).length;
+
 const inBlank = () => ({
   name_vi: '', name_en: '', category_code: '', qty: 1, unit_code: 'pcs',
-  unit_price: '', serials: '', origin_raw: '', location_code: '', description: ''
+  unit_price: '', serials: '', origin_raw: '', location_code: '', description: '',
+  spec: {}
 });
 
 function inRender() {
@@ -2980,7 +2991,8 @@ function inRender() {
   head.append(el('tr', {}, [
     el('th', { className: 'delcol' }),
     el('th', { className: 'num idx', textContent: '#' }),
-    ...[['in.col.name'], ['in.col.cat'], ['in.col.qty', 1], ['in.col.unit'],
+    ...[['in.col.name'], ['in.col.desc'], ['in.col.spec'], ['in.col.cat'],
+        ['in.col.qty', 1], ['in.col.unit'],
         ['in.col.price', 1], ['in.col.serial'], ['in.col.origin'], ['in.col.loc'],
         ['in.col.kind'], ['in.col.rows', 1], ['in.col.mem']]
       .map(([k, r]) => el('th', { className: r ? 'num' : '', textContent: t(k) }))
@@ -3011,7 +3023,40 @@ function inRender() {
       return el('td', {}, s);
     };
 
-    tr.append(txt('name_vi', 200));
+    // Name: one box carrying "vi / en", backed by the catalogue as a type-ahead.
+    const nameTd = el('td');
+    const nameIn = el('input', { style: 'width:230px', spellcheck: false,
+                                 value: inLabel({ std_name_vi: ln.name_vi,
+                                                  std_name_en: ln.name_en }) });
+    nameIn.setAttribute('list', 'prodList');
+    nameIn.onchange = () => { inSetName(ln, nameIn.value); IN.checked = null; inRender(); };
+    nameTd.append(nameIn);
+    if (IN.prod?.has(inLabel({ std_name_vi: ln.name_vi, std_name_en: ln.name_en })))
+      nameTd.append(el('span', { className: 'sug', title: t('in.sug.product'),
+                                 textContent: '★' }));
+    tr.append(nameTd);
+
+    /* What the delivery note actually said. When a standard name replaces the
+       supplier's spec line, the original lands here — so the reviewer can see
+       what the tidy name was derived from and correct it if the match was
+       wrong. It also carries brand, model and any note off the paper. */
+    const descTd = el('td');
+    const desc = el('textarea', { className: 'ser', value: ln.description ?? '',
+                                  rows: 2, spellcheck: false });
+    desc.onchange = () => { ln.description = desc.value; IN.checked = null; };
+    descTd.append(desc);
+    if (ln._rawName)
+      descTd.append(el('div', { className: 'sercount', textContent: t('in.fromNote') }));
+    tr.append(descTd);
+
+    /* Specs get a button, not 17 columns. The count is what matters at a glance
+       — an asset with none will print an empty specification cell. */
+    const nSpec = specFilled(ln);
+    const spec = el('button', { className: 'btn ico wide' + (nSpec ? ' has' : ''),
+                                textContent: nSpec ? `⚙ ${nSpec}` : '⚙',
+                                title: t('in.specEdit') });
+    spec.onclick = () => inSpecOpen(i);
+    tr.append(el('td', {}, spec));
 
     // Category, plus the evidence behind the suggestion. A code filled in from
     // 40 historical rows and one filled in from a single row are not the same
@@ -3079,7 +3124,7 @@ function inRender() {
   });
 
   if (!IN.lines.length)
-    body.append(el('tr', {}, el('td', { colSpan: 13, style: 'color:var(--dim);padding:14px',
+    body.append(el('tr', {}, el('td', { colSpan: 15, style: 'color:var(--dim);padding:14px',
       textContent: t('in.noLines') })));
 }
 
@@ -3112,6 +3157,75 @@ async function inRemember(ln, btn) {
    and the expander alike — they disagreed before, which is how every line of a
    price-less delivery came out labelled "Low-value asset".
    null means the price is not known yet, so the kind is not either. */
+/* The product catalogue as a type-ahead list. A <datalist> is the right control
+   here: it filters as you type but still accepts a name that is not in the
+   catalogue yet — which is most of a first delivery from a new supplier. The
+   label is "vi / en" because that is how the register and Beetrack write it. */
+const inLabel = p => [p.std_name_vi, p.std_name_en].filter(Boolean).join(' / ');
+
+function inProducts(rows) {
+  IN.prod = new Map();
+  const dl = $('#prodList');
+  dl.innerHTML = '';
+  for (const p of rows || []) {
+    const label = inLabel(p);
+    if (!label || IN.prod.has(label)) continue;
+    IN.prod.set(label, p);
+    dl.append(el('option', { value: label }));
+  }
+}
+
+/* Split what the user typed back into the two name columns. An exact catalogue
+   hit also brings its category and unit; anything else is kept verbatim. */
+function inSetName(ln, text) {
+  const v = (text || '').trim();
+  const hit = IN.prod?.get(v);
+  if (hit) {
+    ln.name_vi = hit.std_name_vi || '';
+    ln.name_en = hit.std_name_en || '';
+    if (hit.default_category) ln.category_code = hit.default_category;
+    if (hit.default_unit) ln.unit_code = hit.default_unit;
+    ln._sug = { src: 'product', n: 0, conf: 'high' };
+    return;
+  }
+  const i = v.indexOf(' / ');
+  ln.name_vi = i > 0 ? v.slice(0, i).trim() : v;
+  ln.name_en = i > 0 ? v.slice(i + 3).trim() : '';
+}
+
+/* The spec editor for one line. A panel under the grid rather than a dialog:
+   the reviewer usually wants the delivery note's description visible while
+   filling these in, and the description is one column away. */
+function inSpecOpen(i) {
+  const ln = IN.lines[i];
+  const box = $('#inSpec');
+  box.innerHTML = '';
+  if (!ln) { box.hidden = true; return; }
+  box.hidden = false;
+
+  const head = el('div', { className: 'chead' });
+  head.append(el('h2', { textContent: t('in.specFor', { i: i + 1, name: ln.name_vi || '—' }) }));
+  const close = el('button', { className: 'btn', textContent: t('in.specClose') });
+  close.onclick = () => { box.hidden = true; inRender(); };
+  head.append(el('div', { className: 'row' }, close));
+  box.append(head);
+
+  const grid = el('div', { className: 'specgrid' });
+  for (const f of SPEC_FIELDS) {
+    const inp = el('input', { value: ln.spec?.[f] ?? '', spellcheck: false });
+    inp.onchange = () => {
+      ln.spec = ln.spec || {};
+      ln.spec[f] = inp.value;
+      IN.checked = null;
+    };
+    grid.append(el('div', { className: 'fld' },
+      [el('label', { textContent: t('spec.' + f) }), inp]));
+  }
+  box.append(grid);
+  box.append(el('div', { className: 'hint', textContent: t('in.specNote') }));
+  box.scrollIntoView({ block: 'nearest' });
+}
+
 function kindOf(ln) {
   const v = ln.unit_price;
   if (v === '' || v == null) return null;
@@ -3152,6 +3266,10 @@ function inExpand(ln) {
     purchase_year: Number(($('#inDate').value || '').slice(0, 4)) || new Date().getFullYear(),
     origin_iso2: ln._iso || null,
     status_code: null,
+    // Each spec lands in its own column, which is what the label receipt and
+    // the Beetrack sheet read. A blank one stays null rather than ''.
+    ...Object.fromEntries(SPEC_FIELDS.map(f =>
+      ['spec_' + f, (ln.spec?.[f] || '').trim() || null])),
     needs_review: ln._review || []
   };
   const out = [];
@@ -3242,6 +3360,32 @@ async function inCheck() {
     rows += inExpand(ln).length;
   }
 
+  /* What the codes WILL be. Read from the counters without touching them —
+     a number is only spent when a row is actually written, so nothing here
+     leaves a gap if the user walks away. This is also the answer to "where is
+     the asset code?": it does not exist until Confirm, on purpose. */
+  let preview = [];
+  if (!errs.length && SB.ready()) {
+    try {
+      const audit = await SB.rpc('am_audit_counters');
+      const next = new Map((audit || []).map(a => [a.scope, Number(a.counter_next)]));
+      const byKey = new Map();
+      for (const r of IN.lines.flatMap(inExpand)) {
+        const k = `${r.dept_code}|${r.letters}`;
+        byKey.set(k, (byKey.get(k) || 0) + 1);
+      }
+      for (const [k, n] of byKey) {
+        const [dept, letters] = k.split('|');
+        const from = next.get(k) || 1;
+        const year = Number(($('#inDate').value || '').slice(0, 4)) || new Date().getFullYear();
+        const grp = (window.__CATS || []).find(c => c.label_letters === letters)?.group_code || '…';
+        const code = s => `${dept}.${grp}.${letters}.${year}.${String(s).padStart(5, '0')}`;
+        preview.push(n === 1 ? code(from)
+                             : `${code(from)} → …${String(from + n - 1).padStart(5, '0')}`);
+      }
+    } catch { /* the preview is a courtesy; never block Check on it */ }
+  }
+
   IN.checked = errs.length ? null : { rows };
   out.innerHTML = '';
   if (errs.length) {
@@ -3250,6 +3394,15 @@ async function inCheck() {
   } else {
     out.append(el('div', { className: 'msg ok',
       textContent: t('in.okAll', { n: IN.lines.length, r: rows }) }));
+    if (preview.length) {
+      const box = el('div', { className: 'msg' });
+      box.append(el('b', { textContent: t('in.willAllocate') }));
+      for (const p of preview)
+        box.append(el('div', { className: 'prev', textContent: p }));
+      box.append(el('div', { className: 'hint', style: 'margin-top:5px',
+                             textContent: t('in.allocNote') }));
+      out.append(box);
+    }
   }
   if (warns.length) {
     out.append(el('div', { className: 'msg warn', textContent: t('in.hasWarn', { n: warns.length }) }));
@@ -3336,13 +3489,16 @@ function inToAlr() {
 
 async function inFill() {
   try {
-    const [orgs, units, th] = await Promise.all([
+    const [orgs, units, th, prods] = await Promise.all([
       SB.select('am_org', 'select=code,is_company,is_department&order=code'),
       SB.select('am_unit', 'select=code&order=sort_order'),
-      SB.select('am_setting', 'select=key,value&key=eq.unique_threshold')
+      SB.select('am_setting', 'select=key,value&key=eq.unique_threshold'),
+      SB.select('am_product',
+        'select=std_name_vi,std_name_en,default_category,default_unit&order=std_name_vi')
     ]);
     IN.units = units.map(u => u.code);
     IN.thUnique = Number(th?.[0]?.value) || 5000000;
+    inProducts(prods);
     const fill = (sel, list, keep) => {
       const s = $(sel); s.innerHTML = '';
       for (const c of list) s.append(el('option', { value: c, textContent: c }));
@@ -3395,6 +3551,7 @@ OUTPUT: a single JSON object, no prose, no markdown fence:
     "serials": [string],
     "brand": string|null,
     "model": string|null,
+    "spec": { … see rule 11 … },
     "origin_raw": string|null,
     "uncertain": [string],
     "note": string|null
@@ -3467,7 +3624,24 @@ RULES
     exactly as you wrote it in the delivery line's "model". That string is what
     the two tables are joined on.
 
-    If the file has no price schedule, return "price_list": [].`;
+    If the file has no price schedule, return "price_list": [].
+
+11. SPECIFICATIONS, one field at a time. The register keeps each of these in its
+    own column, and the label receipt and the Beetrack upload read them
+    individually — a specification left as one paragraph reaches neither.
+
+      "spec": { "function": …, "capacity": …, "length": …, "width": …,
+                "height":  …, "weight":  …, "material": …, "color": …,
+                "shape":   …, "radius":  …, "fuel": …, "area": …,
+                "perimeter": …, "mfg_year": …, "accessory": … }
+
+    All strings or null. Keep the unit with the number: "2100mm", "558L",
+    "80kg" — the column is text, and a bare 2100 means nothing later.
+    Brand and model stay in their own top-level keys; do not repeat them here.
+
+    Only what is printed. A delivery note usually gives few of these, and an
+    empty spec is the correct answer — do not infer dimensions from a model
+    number or a product photograph.`;
 
 const DN = { parsed: [], prices: new Map() };
 
@@ -3559,9 +3733,12 @@ async function dnApply(i) {
     const ln = inBlank();
     ln.name_vi = (l.name_vi || '').trim();
     ln.name_en = (l.name_en || '').trim();
-    ln.description = [l.description, l.brand && `Brand: ${l.brand}`,
-                      l.model && `Model: ${l.model}`, l.note]
-                     .filter(Boolean).join(' · ') || '';
+    /* Brand and model go to their own columns now, not into the description
+       blob — that blob was why every intake row printed an empty spec cell. */
+    ln.spec = { brand: l.brand || '', model: l.model || '' };
+    for (const f of SPEC_FIELDS)
+      if (l.spec && l.spec[f] != null && l.spec[f] !== '') ln.spec[f] = String(l.spec[f]);
+    ln.description = [l.description, l.note].filter(Boolean).join(' · ') || '';
     ln.qty = dnNum(l.qty) ?? 1;
     ln.unit_price = dnNum(l.unit_price) ?? '';
     /* No price on the note? Take it from the contract schedule, matched on the

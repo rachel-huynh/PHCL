@@ -289,6 +289,11 @@
                border:1px solid transparent;background:none;resize:vertical}
   textarea.ser:focus{background:var(--panel);border-color:var(--blue)}
   .sercount{font-size:10.5px;color:var(--dim);margin-top:1px}
+  .specgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+  .btn.ico.wide{width:auto;min-width:32px;padding:0 6px}
+  .btn.ico.has{color:var(--navy);font-weight:700}
+  .prev{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px;
+        margin-top:3px;color:var(--ink)}
   .neg{color:var(--red);font-weight:600} .pos{color:var(--green)}
   code{font-family:var(--mono);font-size:12px}
 
@@ -725,9 +730,13 @@
         <button class="btn" id="btnInSuggest" data-i18n="in.suggest"></button>
         <button class="btn" id="btnInClear" data-i18n="in.clear"></button>
       </div>
+      <!-- Type-ahead source for the Name boxes, filled from am_product. -->
+      <datalist id="prodList"></datalist>
       <div class="wrap" style="max-height:44vh">
         <table id="inGrid"><thead></thead><tbody></tbody></table>
       </div>
+      <!-- Spec editor for one line; 17 columns would not fit the grid. -->
+      <div class="card" id="inSpec" hidden style="margin:12px 0 0"></div>
     </div>
 
     <div class="card">
@@ -869,7 +878,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260916d"></script>
-<script src="app.js?v=20260916d"></script>
+<script src="i18n.js?v=20260916f"></script>
+<script src="app.js?v=20260916f"></script>
 </body>
 </html>
