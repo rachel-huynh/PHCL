@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260917a';
+const APP_VERSION = '20260917b';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -985,9 +985,13 @@ function renderAlrList() {
     ...[['alr.col.code'], ['alr.col.name'], ['alr.col.qty', 1], ['alr.col.price', 1],
         ['alr.col.loc'], ['alr.col.barcode']]
       .map(([k, r]) => el('th', { className: r ? 'num' : '', textContent: t(k) })),
+    /* Heading and its tick-all on ONE line. Stacked, the box dropped to a second
+       row and no longer lined up with the tick-all at the far left of the same
+       header — two controls doing the same job, sitting at two heights. */
     el('th', { className: 'lblcol' },
-      [el('div', { textContent: t('alr.col.label') }),
-       ALR.rows.length ? all('_label', false) : null])
+      el('div', { className: 'thtick' },
+        [el('span', { textContent: t('alr.col.label') }),
+         ALR.rows.length ? all('_label', false) : null]))
   ]));
   if (!ALR.rows.length) {
     body.append(el('tr', {}, el('td', { colSpan: 9, style: 'color:var(--dim);padding:14px',

@@ -394,7 +394,14 @@
             font-weight:500;text-transform:none;letter-spacing:0;color:var(--ink);
             white-space:nowrap;cursor:pointer}
   label.chk input{width:auto;margin:0}
-  th.lblcol div{margin-bottom:3px}
+  /* A header cell holding a tick-all: the box sits on the heading's own line,
+     not under it, and centred on that line so it lines up with the tick-all in
+     the first column. Cells that are nothing BUT a tick get the same centring —
+     th is vertical-align:top by default, which leaves a 13px box riding high
+     against 16px of text beside it. */
+  .thtick{display:flex;align-items:center;justify-content:center;gap:5px}
+  .thtick input{width:auto;margin:0}
+  th.delcol,th.tickcol,th.lblcol{vertical-align:middle}
   table.doc .lbl svg{display:block;margin:0 auto;max-width:100%}
   .doc-notes{margin-top:12px;font-size:10.5px;line-height:1.45;white-space:pre-wrap}
   .doc-sign{display:flex;justify-content:space-between;margin-top:26px;font-size:11.5px;
@@ -973,7 +980,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260917a"></script>
-<script src="app.js?v=20260917a"></script>
+<script src="i18n.js?v=20260917b"></script>
+<script src="app.js?v=20260917b"></script>
 </body>
 </html>
