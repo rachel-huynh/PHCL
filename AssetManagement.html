@@ -55,16 +55,11 @@
   nav .kids a.sub{padding-left:30px;font-size:12.5px}
   nav .kids a.sub::before{content:'└';flex:none;width:9px;margin-left:-15px;
                           color:rgba(255,255,255,.3);font-size:11px;line-height:1}
-  /* A heading inside a group: names what its children have in common, but is
-     not itself a screen. */
-  nav .kids .subhead{display:flex;align-items:center;gap:6px;width:100%;background:none;
-                     border:none;border-radius:0;text-align:left;cursor:pointer;
-                     padding:10px 18px 3px;color:var(--side-dim);font-size:10px;
-                     font-weight:600;letter-spacing:.1em;text-transform:uppercase}
-  nav .kids .subhead:hover{color:#fff}
-  nav .kids .subhead .car{display:inline-block;width:9px;flex:none;font-size:9px;
-                          line-height:1;transition:transform .12s;transform:rotate(90deg)}
-  nav .kids .subhead.shut .car{transform:rotate(0deg)}
+  /* A branch that names what its children share but opens no screen of its own.
+     It uses the plain `nav a` rules above, so it reads exactly like the items
+     beside it — the earlier small-caps heading looked like a different kind of
+     thing entirely. Only the cursor hints that it folds rather than navigates. */
+  nav .kids a.branch{cursor:pointer}
   nav .kids .subkids.shut{display:none}
   nav a{display:flex;align-items:center;gap:8px;padding:7px 18px;color:var(--side-ink);
         font-size:13px;cursor:pointer;border-left:4px solid transparent;text-decoration:none}
@@ -91,6 +86,7 @@
         color:var(--side-dim)}
   .conn i{width:7px;height:7px;border-radius:50%;background:var(--red);flex:none}
   .conn i.on{background:var(--green)}
+  .ver{margin-top:6px;font-size:10px;color:var(--side-dim);letter-spacing:.04em}
 
   /* ------------------------------------------------------------ topbar */
   .content{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
@@ -287,6 +283,12 @@
   .sug.none{background:#fbe3e3;color:#95241f}
   /* A value the paperwork does not support yet. */
   td.unsure{color:var(--dim);font-style:italic}
+  /* A line can carry dozens of serials; give them room and a count to check
+     against the quantity. */
+  textarea.ser{min-height:34px;width:230px;font-size:11.5px;padding:3px 4px;
+               border:1px solid transparent;background:none;resize:vertical}
+  textarea.ser:focus{background:var(--panel);border-color:var(--blue)}
+  .sercount{font-size:10.5px;color:var(--dim);margin-top:1px}
   .neg{color:var(--red);font-weight:600} .pos{color:var(--green)}
   code{font-family:var(--mono);font-size:12px}
 
@@ -433,6 +435,7 @@
     <b>Rachel Huynh</b>
     <span>projectassistant@jvcplaza.vn</span>
     <div class="conn"><i id="dot"></i><span id="connTxt"></span></div>
+    <div class="ver" id="appVer"></div>
     <div class="sidenote" data-i18n="side.note"></div>
   </div>
 </aside>
@@ -862,7 +865,11 @@
 <!-- Brother label = QR, not Code128. The existing hotel labels and the hand
      scanners are set up for QR, so the tape print has to match. -->
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
-<script src="i18n.js"></script>
-<script src="app.js"></script>
+<!-- ?v= is a cache buster. GitHub Pages and the browser both hold on to app.js,
+     so without it a push can land while the page still runs yesterday's code —
+     which looks exactly like the change never worked. Bump on every release;
+     scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
+<script src="i18n.js?v=20260916c"></script>
+<script src="app.js?v=20260916c"></script>
 </body>
 </html>

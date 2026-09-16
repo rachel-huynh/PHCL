@@ -4,6 +4,11 @@
    All user-facing text goes through t() in i18n.js — English is official. */
 'use strict';
 
+/* Shown in the sidebar. If this does not match the ?v= on the script tag in
+   AssetManagement.html, the browser is running a cached older app.js — which
+   looks identical to "the change did not work". Check here first. */
+const APP_VERSION = '20260916c';
+
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -1455,19 +1460,25 @@ function buildNav() {
          opened once in a while, and left open they cost four lines in every
          screen's sidebar. The key records the OPPOSITE — that the user opened
          it — so "no state" means closed. */
+      /* Built from the same DOM as a real entry — <a> with a .car and a .lbl —
+         so it inherits the identical type, colour and indent. The only
+         difference is that it opens nothing: it has no data-view, and clicking
+         anywhere on it folds instead of navigating. */
       const key = 'subopen:' + labelKey;
       const inner = el('div', { className: 'subkids' });
       const holds = (children || []).some(c => c[0] === VIEW);
       const shutSub = !holds && !NAV_SHUT.has(key);
       inner.classList.toggle('shut', shutSub);
-      const head = el('button', { className: 'subhead' + (shutSub ? ' shut' : '') }, [
-        el('span', { className: 'car', textContent: '▶' }),
-        el('span', { textContent: t(labelKey) })
-      ]);
-      head.onclick = () => {
+
+      const head = el('a', { href: '#', className: 'branch' });
+      const car = el('button', { className: 'car' + (shutSub ? ' shut' : ''),
+                                 textContent: '▶', title: t('tree.fold') });
+      head.append(car, el('span', { className: 'lbl', textContent: t(labelKey) }));
+      head.onclick = ev => {
+        ev.preventDefault();
         const nowShut = !inner.classList.contains('shut');
         inner.classList.toggle('shut', nowShut);
-        head.classList.toggle('shut', nowShut);
+        car.classList.toggle('shut', nowShut);
         if (nowShut) NAV_SHUT.delete(key); else NAV_SHUT.add(key);
         navSaveShut();
       };
@@ -1757,6 +1768,7 @@ function init() {
   applyI18n();
   markLang();
   layoutCards();          // once: the cards are static markup
+  $('#appVer').textContent = 'v' + APP_VERSION;
   $('#btnHelp').onclick = () => {
     HELP_ON = !HELP_ON;
     try { localStorage.setItem(HELP_KEY, HELP_ON ? '1' : '0'); } catch {}
@@ -3029,7 +3041,18 @@ function inRender() {
     tr.append(txt('qty', 60, 'number'));
     tr.append(pick('unit_code', IN.units || [], 90));
     tr.append(txt('unit_price', 120, 'number'));
-    tr.append(txt('serials', 170));
+    /* Serials go in a textarea, not an input: one line can carry 34 of them and
+       an <input> renders the newlines as nothing, running the numbers together
+       into one unreadable string. */
+    const serTd = el('td');
+    const ser = el('textarea', { className: 'ser', value: ln.serials ?? '',
+                                 rows: 2, spellcheck: false });
+    ser.onchange = () => { ln.serials = ser.value; IN.checked = null; inRender(); };
+    const nSer = inSerials(ln).length;
+    serTd.append(ser);
+    if (nSer) serTd.append(el('div', { className: 'sercount',
+      textContent: t('in.nSerials', { n: fmtInt(nSer), qty: fmtInt(Number(ln.qty) || 0) }) }));
+    tr.append(serTd);
     tr.append(txt('origin_raw', 130));
     tr.append(txt('location_code', 110));
 
