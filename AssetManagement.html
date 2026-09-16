@@ -68,6 +68,14 @@
   nav .kids .subkids.shut{display:none}
   nav a{display:flex;align-items:center;gap:8px;padding:7px 18px;color:var(--side-ink);
         font-size:13px;cursor:pointer;border-left:4px solid transparent;text-decoration:none}
+  nav a .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* Caret on an item that has children: its own click target, so folding the
+     branch and opening the screen are separate actions. */
+  nav a > .car{flex:none;width:11px;margin-left:-13px;border:none;background:none;
+               padding:0;color:var(--side-dim);font-size:8px;line-height:1;cursor:pointer;
+               transition:transform .12s;transform:rotate(90deg)}
+  nav a > .car.shut{transform:rotate(0deg)}
+  nav a:hover > .car{color:#fff}
   nav a:hover{background:rgba(255,255,255,.05);color:#fff}
   nav a.on{background:var(--navy-2);color:#fff;font-weight:600;border-left-color:var(--gold)}
   nav a.on::before{color:var(--gold)}
@@ -273,7 +281,12 @@
        font-family:var(--mono);font-size:10.5px;font-weight:700;cursor:help;
        background:#e6f2ea;color:#1c6b3f}
   .sug.weak{background:#fdf1dc;color:#8a5a12}
+  /* Matched on one short word — shown, but never as if it were settled. */
+  .sug.poor{background:#fbe8d8;color:#9c4a12;font-style:italic;max-width:110px;
+            overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
   .sug.none{background:#fbe3e3;color:#95241f}
+  /* A value the paperwork does not support yet. */
+  td.unsure{color:var(--dim);font-style:italic}
   .neg{color:var(--red);font-weight:600} .pos{color:var(--green)}
   code{font-family:var(--mono);font-size:12px}
 

@@ -1408,18 +1408,45 @@ function buildNav() {
     };
 
     const addItem = (id, labelKey, depth, into) => {
-      const a = el('a', { href: '#',
-        textContent: labelKey ? t(labelKey) : tblLabel(id.slice(4)) });
+      const a = el('a', { href: '#' });
       a.dataset.view = id;
       a.classList.toggle('on', id === VIEW);
       if (depth) a.classList.add('sub');
+      a.append(el('span', { className: 'lbl',
+        textContent: labelKey ? t(labelKey) : tblLabel(id.slice(4)) }));
       a.onclick = ev => { ev.preventDefault(); showView(id); };
       (into || kids).append(a);
+      return a;
+    };
+
+    /* An item that has children folds them away. The caret is its own click
+       target inside the link, so opening the branch and opening the screen stay
+       separate actions. Folded by default, same as the headings: the parent is
+       what people navigate to, the children are occasional. */
+    const addBranch = (parent, children) => {
+      const key = 'subopen:' + parent.dataset.view;
+      const inner = el('div', { className: 'subkids' });
+      const holds = children.some(c => c[0] === VIEW);
+      const shut = !holds && !NAV_SHUT.has(key);
+      inner.classList.toggle('shut', shut);
+      const car = el('button', { className: 'car' + (shut ? ' shut' : ''),
+                                 textContent: '▶', title: t('tree.fold') });
+      car.onclick = ev => {
+        ev.preventDefault(); ev.stopPropagation();
+        const nowShut = !inner.classList.contains('shut');
+        inner.classList.toggle('shut', nowShut);
+        car.classList.toggle('shut', nowShut);
+        if (nowShut) NAV_SHUT.delete(key); else NAV_SHUT.add(key);
+        navSaveShut();
+      };
+      parent.prepend(car);
+      parent.after(inner);
+      for (const [cid, ckey] of children) addItem(cid, ckey, 1, inner);
     };
     for (const [id, labelKey, children] of items) {
       if (id) {
-        addItem(id, labelKey, 0);
-        for (const [cid, ckey] of children || []) addItem(cid, ckey, 1);
+        const a = addItem(id, labelKey, 0);
+        if (children && children.length) addBranch(a, children);
         continue;
       }
       /* A heading with no screen of its own still folds, like the groups above
@@ -2943,7 +2970,7 @@ function inRender() {
     el('th', { className: 'num idx', textContent: '#' }),
     ...[['in.col.name'], ['in.col.cat'], ['in.col.qty', 1], ['in.col.unit'],
         ['in.col.price', 1], ['in.col.serial'], ['in.col.origin'], ['in.col.loc'],
-        ['in.col.kind'], ['in.col.rows', 1]]
+        ['in.col.kind'], ['in.col.rows', 1], ['in.col.mem']]
       .map(([k, r]) => el('th', { className: r ? 'num' : '', textContent: t(k) }))
   ]));
 
@@ -2979,12 +3006,18 @@ function inRender() {
     // claim, so the count is shown rather than hidden behind a tick.
     const catTd = pick('category_code', (window.__CATS || []).map(c => c.code), 110);
     if (ln._sug) {
-      const weak = ln._sug.n < 3 && ln._sug.src !== 'product';
+      /* The badge says WHERE the code came from and HOW sure that is, because a
+         code matched on the single word "base" is not the same claim as one
+         backed by 47 register rows — and only the reviewer can tell them apart. */
+      const s = ln._sug;
+      const mark = s.src === 'product' ? '★'
+                 : s.src === 'history' ? '×' + fmtInt(s.n)
+                 : '“' + (s.term || '') + '”';
       catTd.append(el('span', {
-        className: 'sug' + (weak ? ' weak' : ''),
-        title: t(ln._sug.src === 'product' ? 'in.sugProduct' : 'in.sugHistory',
-                 { n: ln._sug.n }),
-        textContent: ln._sug.src === 'product' ? '★' : '×' + fmtInt(ln._sug.n)
+        className: 'sug' + (s.conf === 'high' ? '' : s.conf === 'medium' ? ' weak' : ' poor'),
+        title: t('in.sug.' + s.src, { n: fmtInt(s.n), term: s.term || '' }) +
+               ' · ' + t('in.conf.' + (s.conf || 'none')),
+        textContent: mark
       }));
     } else if (ln.name_vi && IN.sugRan) {
       // Only claim "the register does not know this name" once the lookup has
@@ -3000,18 +3033,58 @@ function inRender() {
     tr.append(txt('origin_raw', 130));
     tr.append(txt('location_code', 110));
 
+    /* Kind follows the unit price, so with no price there IS no kind. Saying
+       "Low-value asset" because an empty box reads as 0 would be a claim the
+       paperwork does not support — and on this delivery that was every line. */
+    const priced = ln.unit_price !== '' && ln.unit_price != null && Number(ln.unit_price) > 0;
     const price = Number(ln.unit_price) || 0;
-    const kind = price >= (IN.thUnique || 5000000) ? 'unique' : 'low';
-    const rows = kind === 'unique' ? (Number(ln.qty) || 0)
-                 : (inSerials(ln).length || 1);
-    tr.append(el('td', { textContent: kind === 'unique' ? t('reg.kindUnique') : t('reg.kindLow') }));
-    tr.append(el('td', { className: 'num', textContent: String(rows) }));
+    const kind = !priced ? null : price >= (IN.thUnique || 5000000) ? 'unique' : 'low';
+    const rows = !priced ? null
+               : kind === 'unique' ? (Number(ln.qty) || 0)
+               : (inSerials(ln).length || 1);
+    tr.append(el('td', { className: priced ? '' : 'unsure',
+      textContent: !priced ? t('in.kindUnknown')
+                 : kind === 'unique' ? t('reg.kindUnique') : t('reg.kindLow') }));
+    tr.append(el('td', { className: 'num', textContent: rows == null ? '—' : String(rows) }));
+
+    // Teach the catalogue: one click writes this name -> category back to
+    // am_product, so the next delivery from this supplier fills itself in.
+    const mem = el('button', { className: 'btn ico', textContent: '✚',
+                               title: t('in.remember') });
+    mem.disabled = !ln.name_vi?.trim() || !ln.category_code;
+    mem.onclick = () => inRemember(ln, mem);
+    tr.append(el('td', {}, mem));
     body.append(tr);
   });
 
   if (!IN.lines.length)
-    body.append(el('tr', {}, el('td', { colSpan: 12, style: 'color:var(--dim);padding:14px',
+    body.append(el('tr', {}, el('td', { colSpan: 13, style: 'color:var(--dim);padding:14px',
       textContent: t('in.noLines') })));
+}
+
+/* Write this line's name -> standard name + category back into am_product.
+   The name remembered is the RAW one off the delivery note, not the tidied one,
+   because the raw one is what the next note will say. */
+async function inRemember(ln, btn) {
+  const raw = (ln._rawName || ln.name_vi || '').trim();
+  if (!raw || !ln.category_code) return;
+  btn.disabled = true;
+  try {
+    await SB.rpc('am_remember_product', {
+      p_raw_name: raw,
+      p_std_vi: ln.name_vi || raw,
+      p_std_en: ln.name_en || null,
+      p_category: ln.category_code,
+      p_unit: ln.unit_code || null
+    });
+    btn.textContent = '✔';
+    btn.title = t('in.remembered', { name: raw });
+    ln._sug = { src: 'product', n: 1, conf: 'high' };
+    msg('#inMsg', 'ok', t('in.remembered', { name: raw }));
+  } catch (e) {
+    btn.disabled = false;
+    msg('#inMsg', 'err', e.message);
+  }
 }
 
 const inSerials = ln => String(ln.serials || '')
@@ -3113,6 +3186,11 @@ async function inCheck() {
     }
     if (ln._unitRaw && !ln.unit_code)
       warns.push(t('in.warnUnit', { i: n, raw: ln._unitRaw }));
+    // A price taken from the contract is not a price off the delivery note.
+    if (ln._priceFrom === 'contract') {
+      warns.push(t('in.warnPriceContract', { i: n }));
+      ln._review.push({ field: 'unit_price', reason: 'from_contract' });
+    }
 
     warns.push(t('in.warnStatus', { i: n }));
     ln._review.push({ field: 'status_code', reason: 'no_source' });
@@ -3254,7 +3332,8 @@ const DN_PROMPT = `You are reading one or more delivery notes ("phiếu giao hà
 
 OUTPUT: a single JSON object, no prose, no markdown fence:
 
-{"deliveries":[{
+{"price_list":[ … see rule 10 … ],
+ "deliveries":[{
   "delivery_no": string|null,
   "delivery_date": "YYYY-MM-DD"|null,
   "supplier": string|null,
@@ -3307,9 +3386,34 @@ RULES
    application derives them. Adding them would be a guess.
 
 9. If a page is a scan and a character is unreadable, prefer null plus an
-   "uncertain" entry over a plausible-looking reading.`;
+   "uncertain" entry over a plausible-looking reading.
 
-const DN = { parsed: [] };
+10. PRICE SCHEDULE. A delivery note often carries no prices at all — the
+    contract or its appendix does. If the file ALSO contains a price schedule
+    ("bảng giá", "phụ lục hợp đồng", a contract line-item table with unit
+    prices), return it SEPARATELY, beside "deliveries" and at the same level:
+
+      "price_list": [{ "model": string|null,
+                       "name": string|null,
+                       "unit_price": number,
+                       "currency": string|null }]
+
+    Do NOT copy those prices onto the delivery lines. The application joins the
+    two tables itself and shows the reviewer that the price came from the
+    contract rather than off the delivery note — a distinction that is lost the
+    moment the two are merged.
+
+    "model" is the manufacturer part number, written exactly as it appears, and
+    exactly as you wrote it in the delivery line's "model". That string is what
+    the two tables are joined on.
+
+    If the file has no price schedule, return "price_list": [].`;
+
+const DN = { parsed: [], prices: new Map() };
+
+/* Part numbers are written inconsistently between a contract appendix and a
+   delivery note — spaces, hyphens and case all drift. Compare them stripped. */
+const dnModelKey = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 async function dnCopyPrompt() {
   try {
@@ -3347,10 +3451,18 @@ function dnParse() {
     if (!Array.isArray(d.lines)) return msg(out, 'err', t('dn.noLines'));
 
   DN.parsed = list;
+  // The price schedule sits beside the deliveries, keyed by part number.
+  DN.prices = new Map();
+  for (const p of (data.price_list || [])) {
+    const k = dnModelKey(p.model);
+    const v = dnNum(p.unit_price);
+    if (k && v != null) DN.prices.set(k, { price: v, currency: p.currency || null });
+  }
   dnRender();
   msg(out, 'ok', t('dn.parsed', {
     n: list.length,
-    r: list.reduce((s, d) => s + d.lines.length, 0)
+    r: list.reduce((s, d) => s + d.lines.length, 0),
+    p: DN.prices.size
   }));
 }
 
@@ -3382,6 +3494,7 @@ async function dnApply(i) {
   if (d.supplier) $('#inSupplier').value = d.supplier;
   if (d.invoice_no) $('#inInvoice').value = d.invoice_no;
 
+  let priced = 0;
   IN.lines = d.lines.map(l => {
     const ln = inBlank();
     ln.name_vi = (l.name_vi || '').trim();
@@ -3391,6 +3504,17 @@ async function dnApply(i) {
                      .filter(Boolean).join(' · ') || '';
     ln.qty = dnNum(l.qty) ?? 1;
     ln.unit_price = dnNum(l.unit_price) ?? '';
+    /* No price on the note? Take it from the contract schedule, matched on the
+       part number — and record that it came from there, because a price off a
+       contract is a different fact from a price off the delivery note. */
+    if (ln.unit_price === '' && l.model) {
+      const hit = DN.prices.get(dnModelKey(l.model));
+      if (hit) {
+        ln.unit_price = hit.price;
+        ln._priceFrom = 'contract';
+        priced++;
+      }
+    }
     ln.origin_raw = (l.origin_raw || '').trim();
     ln.serials = (l.serials || []).join('\n');
     // Carried into needs_review at Confirm, so the doubt survives into the register.
@@ -3401,7 +3525,8 @@ async function dnApply(i) {
   });
   IN.checked = null; IN.sugRan = false;
   inRender();
-  msg(out, 'ok', t('dn.applied', { n: IN.lines.length }));
+  msg(out, 'ok', t(priced ? 'dn.appliedPriced' : 'dn.applied',
+                   { n: IN.lines.length, p: priced }));
   await inSuggest();
 }
 
@@ -3418,16 +3543,28 @@ async function inSuggest() {
   IN.sugRan = true;
 
   const by = new Map((sug || []).map(s => [s.name, s]));
-  let filled = 0, none = 0;
+  let filled = 0, none = 0, weak = 0;
   for (const ln of IN.lines) {
     const s = by.get(ln.name_vi);
     if (!s || !s.category_code) { ln._sug = null; none++; continue; }
     if (!ln.category_code) { ln.category_code = s.category_code; filled++; }
     if (!ln.unit_code && s.unit_code) ln.unit_code = s.unit_code;
-    ln._sug = { n: s.n, src: s.src };
+    /* The standard name replaces the supplier's spec line — but the original is
+       kept in the description, because that is what the delivery note says and
+       the register should still be able to show it. */
+    if (s.std_name_vi && s.std_name_vi !== ln.name_vi) {
+      ln._rawName = ln._rawName || ln.name_vi;
+      ln.description = [ln._rawName, ln.description].filter(Boolean).join(' · ');
+      ln.name_vi = s.std_name_vi;
+      ln.name_en = s.std_name_en || ln.name_en;
+    }
+    ln._sug = { n: s.n, src: s.src, term: s.matched_term, conf: s.confidence };
+    if (s.confidence === 'low' || s.confidence === 'medium') weak++;
   }
+  IN.sugRan = true;
   inRender();
-  msg('#dnMsg', none ? 'warn' : 'ok', t('dn.suggested', { n: filled, none }));
+  msg('#dnMsg', none || weak ? 'warn' : 'ok',
+      t('dn.suggested', { n: filled, none, weak }));
 }
 
 function initDelivery() {
