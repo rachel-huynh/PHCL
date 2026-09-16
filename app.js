@@ -247,13 +247,25 @@ const TREE_PARENT = {
   am_category: 'group_code'
 };
 const TREE_KEY = 'asset-intake.tree';
+const SHUT_KEY = 'asset-intake.tree.shut';
 let TREE_ON = (() => { try { return localStorage.getItem(TREE_KEY) !== '0'; } catch { return true; } })();
+
+/* Which branches are folded, per table. Survives a reload: refolding 675
+   locations by hand every time would make the fold useless. */
+const SHUT = (() => {
+  try { return JSON.parse(localStorage.getItem(SHUT_KEY) || '{}'); } catch { return {}; }
+})();
+const shutSet = tbl => new Set(SHUT[tbl] || []);
+const shutSave = (tbl, set) => {
+  SHUT[tbl] = [...set];
+  try { localStorage.setItem(SHUT_KEY, JSON.stringify(SHUT)); } catch {}
+};
 
 /* Order the visible rows as a depth-first walk and give each one a depth.
    Rows whose parent is not a row of this table are collected under a header
    for that parent value -- which is what makes the category screen group by
    accounting group, and what surfaces a broken parent_code instead of hiding it. */
-function treeOrder(rows, spec, parentField, visible) {
+function treeOrder(rows, spec, parentField, visible, shut, folding) {
   const pk = spec.pk;
   const byKey = new Map(rows.map(r => [String(r.cur[pk] ?? ''), r]));
   const kids = new Map();          // parent key -> rows
@@ -285,20 +297,52 @@ function treeOrder(rows, spec, parentField, visible) {
   };
   for (const r of rows) if (visible(r)) mark(r);
 
+  /* A node at depth d draws d-1 continuation columns then its own elbow, so
+     guides has length d-1: guides[j] asks whether the ancestor at depth j+1
+     still has siblings below, because column j is where that ancestor drew its
+     elbow. Hence the rule below -- a child of a ROOT gets an empty array (a
+     depth-1 row has no continuation column at all), and only from depth 2 down
+     does the parent's own sibling state get appended. Getting this off by one
+     draws the rule under the wrong branch. */
   const out = [];
-  const walk = (r, d) => {
+  const childrenOf = r =>
+    (kids.get(String(r.cur[pk] ?? '')) || []).filter(c => keep.has(c));
+
+  const walk = (r, depth, guides, last) => {
     if (!keep.has(r)) return;
-    out.push({ row: r, depth: d, ctx: !visible(r) });
-    for (const c of (kids.get(String(r.cur[pk] ?? '')) || [])) walk(c, d + 1);
+    const ch = childrenOf(r);
+    const key = String(r.cur[pk] ?? '');
+    // While filtering, a folded branch would hide the match -- so ignore folds.
+    const folded = folding && ch.length > 0 && shut.has(key);
+    out.push({ row: r, depth, guides, last, kids: ch.length, folded, key,
+               ctx: !visible(r) });
+    if (folded) return;
+    const childGuides = depth === 0 ? [] : [...guides, !last];
+    ch.forEach((c, i) => walk(c, depth + 1, childGuides, i === ch.length - 1));
   };
+
   for (const key of [...heads.keys()].sort()) {
     const list = heads.get(key).filter(r => keep.has(r));
     if (!list.length) continue;
-    out.push({ head: key, n: list.length, depth: 0 });
-    for (const r of list) walk(r, 1);
+    const hkey = 'head:' + key;
+    const folded = folding && shut.has(hkey);
+    out.push({ head: key, n: list.length, depth: 0, folded, key: hkey, kids: list.length });
+    if (folded) continue;
+    list.forEach((r, i) => walk(r, 1, [], i === list.length - 1));
   }
-  for (const r of roots) walk(r, 0);
+  roots.forEach((r, i) => walk(r, 0, [], i === roots.length - 1));
   return out;
+}
+
+/* One indent column: a rule, an elbow, or blank. */
+function treeGuides(item) {
+  const box = el('span', { className: 'guides' });
+  for (let j = 0; j < item.depth; j++) {
+    const ch = j === item.depth - 1 ? (item.last ? '└' : '├')
+             : item.guides[j] ? '│' : '';
+    box.append(el('span', { className: 'g', textContent: ch }));
+  }
+  return box;
 }
 
 function renderGrid() {
@@ -315,18 +359,33 @@ function renderGrid() {
   const parentField = TREE_ON ? TREE_PARENT[CUR.table] : null;
   const alive = CUR.rows.filter(r => !r.del);
   const visible = r => !q || JSON.stringify(r.cur).toLowerCase().includes(q);
+  const shut = shutSet(CUR.table);
 
   const plan = parentField
-    ? treeOrder(alive, spec, parentField, visible)
-    : alive.filter(visible).map(r => ({ row: r, depth: 0 }));
+    ? treeOrder(alive, spec, parentField, visible, shut, !q)
+    : alive.filter(visible).map(r => ({ row: r, depth: 0, guides: [] }));
+
+  const fold = key => {
+    if (shut.has(key)) shut.delete(key); else shut.add(key);
+    shutSave(CUR.table, shut);
+    renderGrid();
+  };
+  const caret = item => {
+    if (!item.kids) return el('span', { className: 'caret pad' });
+    const b = el('button', { className: 'caret', title: t('tree.fold'),
+                             textContent: item.folded ? '▸' : '▾' });
+    b.onclick = () => fold(item.key);
+    return b;
+  };
 
   let shown = 0;
   for (const item of plan) {
     if (item.head !== undefined) {
-      body.append(el('tr', { className: 'grp' }, el('td', {
-        colSpan: spec.cols.length + 1,
-        textContent: `${item.head} · ${t('tree.nRows', { n: fmtInt(item.n) })}`
-      })));
+      const td = el('td', { colSpan: spec.cols.length + 1 });
+      td.append(caret(item), el('span', { className: 'gt', textContent: item.head }),
+                el('span', { className: 'gn',
+                             textContent: t('tree.nRows', { n: fmtInt(item.n) }) }));
+      body.append(el('tr', { className: 'grp' }, td));
       continue;
     }
     const row = item.row;
@@ -345,12 +404,12 @@ function renderGrid() {
     tr.append(el('td', {}, del));
     let first = true;
     for (const c of spec.cols) {
-      const td = el('td');
-      // Indent the code cell by depth — the tree lives in the editable grid
-      // rather than beside it, so every row stays editable.
-      if (first && item.depth) {
-        td.style.paddingLeft = (6 + item.depth * 16) + 'px';
-        td.append(el('span', { className: 'twig', textContent: '└' }));
+      // The tree lives in the editable grid rather than beside it, so every
+      // row stays editable; only the first cell carries the outline.
+      const td = el('td', first && parentField
+        ? { className: 'tcell lvl' + Math.min(item.depth, 2) } : {});
+      if (first && parentField) {
+        td.append(treeGuides(item), caret(item));
         first = false;
       }
       td.append(cellInput(c, row, (field, val) => {
@@ -732,7 +791,7 @@ const fmtNum = n => n == null || n === ''
 const fmtDate = iso => {
   if (!iso) return '';
   const [y, m, d] = iso.split('-');
-  return `${d}.${m}.${y}`;
+  return `${d}/${m}/${y}`;
 };
 
 /* Specification cell: short roll-up of the detailed spec fields.
@@ -1226,20 +1285,30 @@ function initAlr() {
 /* Each entry is [viewId, labelKey, children?]. Children render one level
    deeper, so an item that belongs to another one sits under it rather than
    beside it. */
+/* Assets first: the register is the thing people open the app for, and intake,
+   the label receipt and the counters are all steps around it — so they live in
+   that one module instead of being scattered as sibling groups. Origin sits
+   under the catalogue (it is master data like the rest) and backup under the
+   system (it is plumbing, not daily work). */
 const NAV = [
+  ['nav.assets', [
+    ['register', 'nav.register'],
+    ['intake', 'nav.intake'],
+    ['alr', 'nav.alr'],
+    ['counter', 'nav.counter'],
+    ['rules', 'nav.rules']
+  ]],
   ['nav.catalog', [
     ['tbl:am_org', null, [['tbl:am_org_alias', null]]],
     ['cat', 'nav.cat'],
-    ['tbl:am_unit', null], ['tbl:am_location', null], ['tbl:am_product', null]
+    ['tbl:am_unit', null], ['tbl:am_location', null], ['tbl:am_product', null],
+    ['tbl:am_origin', null, [['tbl:am_origin_alias', null],
+                             ['tbl:am_origin_rejected', null]]]
   ]],
-  ['nav.originGrp', [
-    ['tbl:am_origin', null], ['tbl:am_origin_alias', null], ['tbl:am_origin_rejected', null]
-  ]],
-  ['nav.counters', [['counter', 'nav.counter'], ['rules', 'nav.rules']]],
-  ['nav.registerGrp', [['intake', 'nav.intake'], ['register', 'nav.register']]],
-  ['nav.docs',      [['alr', 'nav.alr']]],
-  ['nav.backupGrp', [['backup', 'nav.backup']]],
-  ['nav.system',    [['sources', 'nav.sources'], ['tbl:am_setting', null], ['setup', 'nav.setup']]]
+  ['nav.system', [
+    ['sources', 'nav.sources'], ['tbl:am_setting', null],
+    ['backup', 'nav.backup'], ['setup', 'nav.setup']
+  ]]
 ];
 
 let VIEW = 'setup';
@@ -1346,6 +1415,32 @@ function buildTools(view) {
         seg.append(b);
       }
       box.append(seg);
+      if (TREE_ON) {
+        const anyShut = (SHUT[table] || []).length > 0;
+        const fold = el('button', { className: 'btn',
+          textContent: t(anyShut ? 'tree.expandAll' : 'tree.foldAll') });
+        fold.onclick = () => {
+          if (anyShut) shutSave(table, new Set());
+          else {
+            // Fold every branch that has children, so only the top level shows.
+            const pf = TREE_PARENT[table], set = new Set();
+            const present = new Set((CUR?.rows || [])
+              .filter(r => !r.del).map(r => String(r.cur[TABLES[table].pk] ?? '')));
+            for (const r of (CUR?.rows || [])) {
+              if (r.del) continue;
+              const p = r.cur[pf];
+              if (p == null || p === '') continue;
+              set.add(present.has(String(p)) ? String(p) : 'head:' + p);
+            }
+            shutSave(table, set);
+          }
+          const keep = $('#filter')?.value || '';
+          buildTools(VIEW);
+          if ($('#filter')) $('#filter').value = keep;
+          renderGrid();
+        };
+        box.append(fold);
+      }
     }
     const f = el('input', { id: 'filter', style: 'width:190px' });
     f.placeholder = t('tool.filter');
@@ -2054,9 +2149,66 @@ async function srcLoad() {
   }
 }
 
+/* ------------------------------------------------------ blank templates
+   The upload boxes above only accept a sheet whose columns they recognise, so
+   the app has to be able to hand out that shape. Headers come from the same
+   TABLES descriptors the grids are built from — they cannot drift apart — and
+   the asset upload sheet from the Beetrack column maps. A few real rows are
+   included when connected, because a column is far easier to fill in correctly
+   with an example beside it than from a bare heading. */
+const TPL_MASTER = ['am_org', 'am_org_alias', 'am_category_group', 'am_category',
+                    'am_unit', 'am_origin', 'am_origin_alias', 'am_location',
+                    'am_product'];
+
+function tplFill() {
+  const s = $('#tplPick');
+  if (!s || s.options.length) return;
+  for (const tbl of TPL_MASTER)
+    s.append(el('option', { value: 'tbl:' + tbl, textContent: tblLabel(tbl) }));
+  s.append(el('option', { value: 'beetrack', textContent: t('tpl.beetrack') }));
+}
+
+async function tplGet() {
+  const out = $('#tplMsg');
+  const pick = $('#tplPick').value;
+  const want = Number($('#tplRows').value) || 0;
+  try {
+    msg(out, 'info', t('tpl.building'));
+    const wb = XLSX.utils.book_new();
+    let file;
+
+    if (pick === 'beetrack') {
+      // Exactly the two sheets the Beetrack importer accepts, headers only.
+      for (const [name, cols] of [['Unique asset', BT_UNIQUE], ['Low-value asset', BT_LOW]])
+        XLSX.utils.book_append_sheet(wb, btSheet(cols, []), name);
+      file = `phcl-template-asset-upload-${bkStamp()}.xlsx`;
+    } else {
+      const tbl = pick.slice(4);
+      const cols = TABLES[tbl].cols.map(c => c.name);
+      let rows = [];
+      if (want && SB.ready()) {
+        try {
+          rows = await SB.select(tbl,
+            `select=${cols.join(',')}&order=${TABLES[tbl].order || TABLES[tbl].pk}&limit=${want}`);
+        } catch { /* headers alone are still a usable template */ }
+      }
+      const aoa = [cols, ...rows.map(r => cols.map(c => {
+        const v = r[c];
+        return v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : v;
+      }))];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), tbl.slice(0, 31));
+      file = `phcl-template-${tbl}-${bkStamp()}.xlsx`;
+    }
+    XLSX.writeFile(wb, file);
+    msg(out, 'ok', t('tpl.done', { file }));
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
 function initSources() {
   $('#btnSrcRead').onclick = srcRead;
   $('#btnSrcImport').onclick = srcImport;
+  $('#btnTplGet').onclick = tplGet;
+  tplFill();
 }
 
 /* ========================================================= ASSET REGISTER
@@ -2064,8 +2216,13 @@ function initSources() {
    the DOM, so filtering, sorting and paging all happen on the server; only one
    page is ever rendered. Export walks the same filter page by page. */
 
+/* "name" is not a column of am_asset: it is name_vi and name_en joined with a
+   slash, the way the register and the Beetrack sheets have always shown them.
+   It is fetched as the two real columns and merged at render time. */
+const REG_JOINED = { name: ['name_vi', 'name_en'] };
+
 const REG_COLS = [
-  'asset_code', 'barcode', 'asset_kind', 'name_vi', 'name_en',
+  'asset_code', 'barcode', 'asset_kind', 'name', 'name_vi', 'name_en',
   'category_code', 'group_code', 'letters', 'seq', 'purchase_year',
   'company_code', 'dept_code', 'location_code',
   'qty', 'unit_code', 'unit_price', 'currency', 'serial',
@@ -2077,9 +2234,9 @@ const REG_COLS = [
   'spec_area', 'spec_perimeter', 'spec_mfg_year', 'spec_accessory',
   'description', 'status_code', 'label_printed', 'note', 'created_at'
 ];
-const REG_DEFAULT = ['asset_code', 'barcode', 'name_vi', 'category_code',
+const REG_DEFAULT = ['asset_code', 'barcode', 'name', 'category_code',
                      'dept_code', 'location_code', 'qty', 'unit_code',
-                     'unit_price', 'purchase_year', 'status_code'];
+                     'unit_price', 'purchase_date', 'status_code'];
 /* How each column is rendered. Only money and quantities are right-aligned —
    header included — everything else reads better ranged left.
    Years and sequence numbers are numeric but are NOT quantities: a thousands
@@ -2088,7 +2245,10 @@ const REG_RIGHT = new Set(['qty', 'unit_price', 'depreciate_months']);
 const REG_PLAIN = new Set(['seq', 'purchase_year', 'spec_mfg_year']);
 const REG_DATE  = new Set(['purchase_date', 'in_use_date', 'created_at']);
 
-function regCell(col, v) {
+function regCell(col, v, row) {
+  if (REG_JOINED[col])
+    return REG_JOINED[col].map(f => (row?.[f] || '').trim())
+                          .filter(Boolean).join(' / ');
   if (v == null || v === '') return '';
   if (REG_RIGHT.has(col)) return fmtNum(v);
   if (REG_PLAIN.has(col)) return String(v);
@@ -2100,7 +2260,7 @@ function regCell(col, v) {
 
 const REG_KEY = 'asset-intake.regCols';
 const REG_SIZE = 100;
-let REG = { cols: null, sort: 'asset_code', dir: 'asc', page: 0, total: 0, rows: [] };
+let REG = { cols: null, sort: 'asset_code', dir: 'asc', page: 0, total: 0, rows: [], colq: {} };
 
 function regLoadCols() {
   try {
@@ -2118,20 +2278,51 @@ const regSaveCols = () => {
   try { localStorage.setItem(REG_KEY, JSON.stringify(REG.cols)); } catch {}
 };
 
+const regSafe = s => String(s).replace(/[(),*]/g, ' ').trim();
+
 function regFilters() {
-  const f = [];
-  const q = $('#regQ').value.trim();
-  if (q) {
-    const safe = q.replace(/[(),*]/g, ' ').trim();
-    if (safe) f.push(`or=(asset_code.ilike.*${safe}*,name_vi.ilike.*${safe}*,` +
-                     `name_en.ilike.*${safe}*,barcode.ilike.*${safe}*)`);
-  }
+  const f = [];          // plain params, ANDed by PostgREST
+  const ors = [];        // groups that need OR inside them
+
+  const q = regSafe($('#regQ').value);
+  if (q) ors.push(['asset_code', 'name_vi', 'name_en', 'barcode']
+                  .map(c => `${c}.ilike.*${q}*`));
+
   if ($('#regDept').value) f.push('dept_code=eq.' + $('#regDept').value);
   if ($('#regCat').value)  f.push('category_code=eq.' + $('#regCat').value);
   if ($('#regKind').value) f.push('asset_kind=eq.' + $('#regKind').value);
   const y = $('#regYear').value.trim();
   if (y) f.push('purchase_year=eq.' + Number(y));
+
+  /* Per-column boxes under the header. Sent to PostgREST rather than applied to
+     the page in hand: filtering only the 200 rows on screen would quietly lie
+     about the other 15,000. */
+  for (const [col, raw] of Object.entries(REG.colq || {})) {
+    const v = regSafe(raw);
+    if (!v) continue;
+    const parts = REG_JOINED[col] || [col];
+    const term = p => REG_NUMERIC.has(p) ? `eq.${Number(v) || 0}` : `ilike.*${v}*`;
+    if (parts.length > 1) ors.push(parts.map(p => `${p}.${term(p)}`));
+    else f.push(`${parts[0]}=${term(parts[0])}`);
+  }
+
+  // A query string cannot carry two `or=` keys, so more than one OR group has
+  // to be nested inside a single `and=`.
+  if (ors.length === 1) f.push(`or=(${ors[0].join(',')})`);
+  else if (ors.length > 1)
+    f.push(`and=(${ors.map(g => `or(${g.join(',')})`).join(',')})`);
   return f;
+}
+
+/* Columns PostgREST will not accept ilike on. */
+const REG_NUMERIC = new Set(['seq', 'purchase_year', 'qty', 'unit_price',
+                             'depreciate_months']);
+
+/* Only real columns may be asked of PostgREST; a joined one expands to its parts. */
+function regSelect() {
+  const real = new Set(['id']);
+  for (const c of REG.cols) (REG_JOINED[c] || [c]).forEach(x => real.add(x));
+  return [...real].join(',');
 }
 
 async function regLoad(resetPage) {
@@ -2139,8 +2330,11 @@ async function regLoad(resetPage) {
   const out = $('#regMsg');
   msg(out, 'info', t('reg.loading'));
   try {
-    const sel = ['id', ...REG.cols].join(',');
-    const q = ['select=' + sel, `order=${REG.sort}.${REG.dir}`,
+    const sel = regSelect();
+    // A joined column cannot be sorted on by name -- sort on its first real
+    // part instead, so clicking "name" orders by name_vi.
+    const sort = REG_JOINED[REG.sort] ? REG_JOINED[REG.sort][0] : REG.sort;
+    const q = ['select=' + sel, `order=${sort}.${REG.dir}`,
                `limit=${REG_SIZE}`, `offset=${REG.page * REG_SIZE}`, ...regFilters()];
     const { body, range } = await SB.call('am_asset?' + q.join('&'),
       { headers: SB.hdr({ Prefer: 'count=exact' }) });
@@ -2155,6 +2349,7 @@ function regRender() {
   const head = $('#regGrid thead'), body = $('#regGrid tbody');
   head.innerHTML = ''; body.innerHTML = '';
   const hr = el('tr');
+  hr.append(el('th', { className: 'num idx', textContent: '#' }));
   for (const c of REG.cols) {
     // The header carries the same alignment as its cells, so a money column
     // reads as one right-ranged block instead of a left title over right digits.
@@ -2171,18 +2366,41 @@ function regRender() {
   }
   head.append(hr);
 
-  for (const r of REG.rows) {
+  /* A filter box per column, applied on the server so it searches the whole
+     register and not just the page on screen. */
+  const fr = el('tr', { className: 'colf' });
+  fr.append(el('th', {}, el('button', { className: 'xbtn', textContent: '✕',
+                                        title: t('reg.colqClear'),
+                                        onclick: () => { REG.colq = {}; regLoad(true); } })));
+  for (const c of REG.cols) {
+    const box = el('input', { value: REG.colq?.[c] ?? '', placeholder: t('reg.colqPh'),
+                              spellcheck: false });
+    box.onchange = () => {
+      REG.colq = REG.colq || {};
+      const v = box.value.trim();
+      if (v) REG.colq[c] = v; else delete REG.colq[c];
+      regLoad(true);
+    };
+    box.onkeydown = ev => { if (ev.key === 'Enter') box.onchange(); };
+    fr.append(el('th', {}, box));
+  }
+  head.append(fr);
+
+  const from = REG.page * REG_SIZE;
+  REG.rows.forEach((r, i) => {
     const tr = el('tr');
+    // Numbered across the whole filtered set, not restarted on every page.
+    tr.append(el('td', { className: 'num idx', textContent: fmtInt(from + i + 1) }));
     for (const c of REG.cols) {
       tr.append(el('td', {
         className: REG_RIGHT.has(c) ? 'num' : '',
-        textContent: regCell(c, r[c])
+        textContent: regCell(c, r[c], r)
       }));
     }
     body.append(tr);
-  }
+  });
   if (!REG.rows.length)
-    body.append(el('tr', {}, el('td', { colSpan: REG.cols.length || 1,
+    body.append(el('tr', {}, el('td', { colSpan: (REG.cols.length || 1) + 1,
       style: 'color:var(--dim);padding:14px', textContent: t('reg.empty') })));
 
   const pages = Math.max(1, Math.ceil(REG.total / REG_SIZE));
@@ -2227,10 +2445,11 @@ function regRenderCols() {
 
 /* Walk the current filter page by page — used by both export paths. */
 async function regFetchAll(onProgress) {
-  const sel = REG.cols.join(',');
+  const sel = regSelect();
+  const sort = REG_JOINED[REG.sort] ? REG_JOINED[REG.sort][0] : REG.sort;
   const all = [];
   for (let off = 0; ; off += 1000) {
-    const q = ['select=' + sel, `order=${REG.sort}.${REG.dir}`,
+    const q = ['select=' + sel, `order=${sort}.${REG.dir}`,
                `limit=1000`, `offset=${off}`, ...regFilters()];
     const page = await SB.select('am_asset', q.join('&'));
     all.push(...page);
@@ -2245,8 +2464,13 @@ async function regXlsx() {
   try {
     msg(out, 'info', t('reg.exporting'));
     const rows = await regFetchAll(n => msg(out, 'info', t('reg.exporting') + ' ' + fmtInt(n)));
-    // Reorder each object so the sheet columns follow the chosen order.
-    const shaped = rows.map(r => Object.fromEntries(REG.cols.map(c => [c, r[c]])));
+    // Reorder each object so the sheet columns follow the chosen order, and add
+    // the running number. A joined column has no raw value, so it is built here
+    // too -- otherwise the sheet would carry an empty "name".
+    const shaped = rows.map((r, i) => Object.fromEntries([
+      ['#', i + 1],
+      ...REG.cols.map(c => [c, REG_JOINED[c] ? regCell(c, null, r) : r[c]])
+    ]));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(shaped), 'Assets');
     const file = `phcl-asset-register-${bkStamp()}.xlsx`;
@@ -2278,14 +2502,18 @@ async function regPrint() {
       ])
     ]));
     const tb = el('table', { className: 'doc' });
-    tb.append(el('thead', {}, el('tr', {}, REG.cols.map(c =>
-      el('th', { className: REG_RIGHT.has(c) ? 'r' : '', textContent: c })))));
+    tb.append(el('thead', {}, el('tr', {}, [
+      el('th', { className: 'r', textContent: '#' }),
+      ...REG.cols.map(c =>
+        el('th', { className: REG_RIGHT.has(c) ? 'r' : '', textContent: c }))])));
     const tbody = el('tbody');
-    for (const r of rows)
-      tbody.append(el('tr', {}, REG.cols.map(c => el('td', {
-        className: REG_RIGHT.has(c) ? 'r' : '',
-        textContent: regCell(c, r[c])
-      }))));
+    rows.forEach((r, i) =>
+      tbody.append(el('tr', {}, [
+        el('td', { className: 'r', textContent: fmtInt(i + 1) }),
+        ...REG.cols.map(c => el('td', {
+          className: REG_RIGHT.has(c) ? 'r' : '',
+          textContent: regCell(c, r[c], r)
+        }))])));
     tb.append(tbody);
     root.append(tb);
     msg(out, '', '');

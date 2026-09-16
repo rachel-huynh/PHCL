@@ -12,7 +12,14 @@
     --bg:#f4f5f7; --panel:#fff; --line:#e3e6ea; --line-2:#eef0f3; --head:#f7f8f9;
     --ink:#1b2a41; --dim:#6b7684;
     --blue:#2f6fb5; --red:#d0453e; --green:#2f9e63; --amber:#d9a327; --steel:#2e5c8a;
-    --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+    /* Marker for the open item in the navy sidebar. Gold carries far more
+       contrast against #16253c than the blue did. */
+    --gold:#d2a13a;
+    /* ONE typeface across the whole app. --mono keeps its name for the places
+       that need figures to line up, but it is the same family now — those spots
+       get tabular figures instead, so columns still align without a second
+       typeface fighting the rest of the page. */
+    --mono:system-ui,-apple-system,"Segoe UI",sans-serif;
     --side-w:248px;
   }
   *{box-sizing:border-box}
@@ -42,10 +49,15 @@
   nav .kids{border-left:1px solid rgba(255,255,255,.10);margin-left:22px}
   nav .kids.shut{display:none}
   nav .kids a{padding-left:14px}
+  /* A child entry stays INSIDE its parent instead of levelling with it. */
+  nav .kids a.sub{padding-left:30px;font-size:12.5px}
+  nav .kids a.sub::before{content:'└';flex:none;width:9px;margin-left:-15px;
+                          color:rgba(255,255,255,.3);font-size:11px;line-height:1}
   nav a{display:flex;align-items:center;gap:8px;padding:7px 18px;color:var(--side-ink);
-        font-size:13px;cursor:pointer;border-left:3px solid transparent;text-decoration:none}
+        font-size:13px;cursor:pointer;border-left:4px solid transparent;text-decoration:none}
   nav a:hover{background:rgba(255,255,255,.05);color:#fff}
-  nav a.on{background:var(--navy-2);color:#fff;font-weight:600;border-left-color:var(--blue)}
+  nav a.on{background:var(--navy-2);color:#fff;font-weight:600;border-left-color:var(--gold)}
+  nav a.on::before{color:var(--gold)}
   nav a .tag{margin-left:auto;background:var(--red);color:#fff;border-radius:9px;
              padding:0 6px;font-size:10.5px;font-weight:700;line-height:16px}
   nav a.on .tag{background:rgba(255,255,255,.22)}
@@ -73,7 +85,20 @@
   .seg button:hover{background:var(--head)}
   .seg button.on{background:var(--navy);color:#fff}
   main{padding:18px 20px 40px;flex:1}
-  .lead{color:var(--dim);font-size:12.5px;margin:-4px 0 16px;max-width:96ch}
+  /* Explanatory prose is justified so it fills the page evenly instead of
+     leaving a ragged edge; hyphenation stops the word gaps opening up. */
+  .lead,.card > p,.hint{text-align:justify;hyphens:auto}
+  .lead{color:var(--dim);font-size:12.5px;margin:-4px 0 16px}
+  /* Figures line up by column without a second typeface. */
+  .num,code,.kpi b,.tape .tp-code,textarea{font-variant-numeric:tabular-nums}
+  /* Running number: narrow, quiet, never the thing the eye lands on. */
+  th.idx,td.idx{width:52px;color:var(--dim);font-weight:400}
+  /* Per-column filter row, docked under the header of the register. */
+  /* 4 + 1 border + 4 = the 9px the data cells use, so the filter box sits on
+     the same margin as its column. */
+  tr.colf th{background:var(--panel);padding:4px;position:static;border-top:none}
+  tr.colf input{padding:3px 4px;font-size:11.5px;font-weight:400;
+                text-transform:none;letter-spacing:0}
 
   /* ------------------------------------------------------------ pieces */
   .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;
@@ -85,6 +110,9 @@
   .card > p{margin:0 0 12px;color:var(--dim);font-size:12.5px;max-width:96ch}
   .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}
   .row{display:flex;gap:9px;flex-wrap:wrap;align-items:flex-end}
+  /* A row that holds only actions (no input field) ranges its buttons right,
+     so every card's controls sit on the same edge and are easy to find. */
+  .card .row:not(:has(.fld)){justify-content:flex-end}
   .fld{min-width:150px}
   .fld.grow{flex:1}
   label{display:block;font-size:11px;font-weight:600;letter-spacing:.05em;
@@ -139,16 +167,41 @@
      border-bottom:1px solid var(--line)}
   tbody tr:hover{background:#fafbfc}
   td input,td select{border:1px solid transparent;background:none;padding:2px 4px}
+  /* An input carries its own 1px border + 4px padding INSIDE the cell, which
+     pushed its text 5px past the column heading. Take those 5px off the cell so
+     content and heading share one margin, on both edges. */
+  td:has(> input),td:has(> select){padding-left:4px;padding-right:4px}
+  td.num:has(> input){text-align:right}
+  td.num input{text-align:right}
   td input:focus,td select:focus{background:var(--panel);border-color:var(--blue)}
   td input[type=checkbox]{width:auto;margin:3px 0 0}
   tr.dirty td:first-child{box-shadow:inset 3px 0 0 var(--amber)}
   tr.new td:first-child{box-shadow:inset 3px 0 0 var(--green)}
   .num{text-align:right;font-family:var(--mono)}
-  /* Tree rows inside the editable grid. */
-  tr.grp td{background:var(--head);font-weight:700;font-size:11px;letter-spacing:.3px;
-            color:var(--navy);padding:6px 10px}
-  tr.ctx{opacity:.5}                 /* an ancestor shown only for context */
-  .twig{color:#9aa3b0;margin-right:5px;font-size:11px}
+  /* ---- Outline tree inside the editable grid -------------------------
+     Guide rules + elbows, so a row's branch is readable at a glance; the
+     first level is set like a heading and deeper levels step back.      */
+  tr.grp td{background:var(--head);color:var(--navy);padding:7px 10px;
+            border-top:1px solid #dfe3e9;border-bottom:1px solid #dfe3e9}
+  tr.grp .gt{font-weight:700;font-size:11.5px;letter-spacing:.4px;
+             font-family:var(--mono)}
+  tr.grp .gn{font-size:10.5px;color:var(--dim);margin-left:8px;font-weight:400}
+  tr.ctx{opacity:.45}                /* an ancestor shown only for context */
+
+  td.tcell{white-space:nowrap}
+  .guides{display:inline-flex;vertical-align:middle}
+  .guides .g{width:15px;flex:none;text-align:center;color:#c2c8d2;
+             font-family:var(--mono);font-size:12px;line-height:1;
+             user-select:none}
+  .caret{width:15px;flex:none;border:none;background:none;padding:0;margin-right:2px;
+         color:#7d879a;font-size:10px;line-height:1;cursor:pointer;
+         vertical-align:middle}
+  .caret:hover{color:var(--navy)}
+  .caret.pad{cursor:default;display:inline-block}
+  /* First level reads as a heading, deeper levels recede. */
+  td.lvl0 input{font-weight:700;color:var(--navy)}
+  td.lvl1 input{font-weight:600}
+  td.lvl2 input{color:#4a5262}
   /* Evidence badge beside a suggested category: how many register rows back it. */
   .sug{display:inline-block;margin-left:6px;padding:1px 5px;border-radius:9px;
        font-family:var(--mono);font-size:10.5px;font-weight:700;cursor:help;
@@ -267,7 +320,7 @@
     nav{display:flex;flex-wrap:wrap;padding:6px}
     nav .grp{width:100%;padding:8px 12px 3px}
     nav a{border-left:none;border-bottom:3px solid transparent;padding:6px 12px}
-    nav a.on{border-left:none;border-bottom-color:var(--blue)}
+    nav a.on{border-left:none;border-bottom-color:var(--gold)}
   }
 </style>
 </head>
@@ -629,18 +682,6 @@
       </div>
     </details>
 
-    <div class="card">
-      <h2 data-i18n="leg.h"></h2>
-      <p data-i18n-html="leg.p_html"></p>
-      <div class="row">
-        <div class="fld grow"><label data-i18n="leg.file"></label>
-          <input type="file" id="legFile" accept=".xlsx,.xlsm"></div>
-        <button class="btn" id="btnLegRead" data-i18n="leg.read"></button>
-        <button class="btn pri" id="btnLegImport" disabled data-i18n="leg.import"></button>
-      </div>
-      <div id="legMsg"></div>
-    </div>
-
     <div id="regMsg"></div>
     <div class="wrap"><table id="regGrid"><thead></thead><tbody></tbody></table></div>
     <div class="row" style="margin-top:10px;align-items:center">
@@ -652,7 +693,6 @@
 
   <section id="v-sources">
     <p class="lead" data-i18n-html="src.lead_html"></p>
-    <div id="srcCurrent"></div>
 
     <div class="card">
       <h2 data-i18n="src.h.upload"></h2>
@@ -669,6 +709,41 @@
       </div>
       <div id="srcMsg"></div>
     </div>
+
+    <div class="card">
+      <h2 data-i18n="leg.h"></h2>
+      <p data-i18n-html="leg.p_html"></p>
+      <div class="row">
+        <div class="fld grow"><label data-i18n="leg.file"></label>
+          <input type="file" id="legFile" accept=".xlsx,.xlsm"></div>
+      </div>
+      <div class="row" style="margin-top:11px">
+        <button class="btn" id="btnLegRead" data-i18n="leg.read"></button>
+        <button class="btn pri" id="btnLegImport" disabled data-i18n="leg.import"></button>
+      </div>
+      <div id="legMsg"></div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="tpl.h"></h2>
+      <p data-i18n="tpl.p"></p>
+      <div class="row">
+        <div class="fld grow" style="max-width:320px"><label data-i18n="tpl.pick"></label>
+          <select id="tplPick"></select></div>
+        <div class="fld" style="max-width:150px"><label data-i18n="tpl.rows"></label>
+          <select id="tplRows">
+            <option value="0" data-i18n="tpl.rowsNone"></option>
+            <option value="5" selected>5</option>
+            <option value="25">25</option>
+          </select></div>
+      </div>
+      <div class="row" style="margin-top:11px">
+        <button class="btn pri" id="btnTplGet" data-i18n="tpl.get"></button>
+      </div>
+      <div id="tplMsg"></div>
+    </div>
+
+    <div id="srcCurrent"></div>
 
     <div class="card">
       <h2 data-i18n="src.h.history"></h2>
