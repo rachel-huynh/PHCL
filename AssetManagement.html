@@ -690,13 +690,20 @@
         <div class="fld" style="max-width:190px"><label data-i18n="alr.prep"></label>
           <input id="alPrep" value="Huỳnh Thị Trúc Dịu"></div>
         <div class="fld" style="max-width:190px"><label data-i18n="alr.appr"></label>
-          <input id="alAppr" data-i18n-ph="alr.apprPh"></div>
+          <input id="alAppr" value="Nguyễn Trung Khánh" data-i18n-ph="alr.apprPh"></div>
         <div class="fld" style="max-width:190px"><label data-i18n="alr.recv"></label>
           <input id="alRecv" data-i18n-ph="alr.recvPh"></div>
       </div>
       <div class="fld grow" style="margin-top:11px">
         <label data-i18n="alr.notesLabel"></label>
         <textarea id="alNotes" style="min-height:130px"></textarea>
+      </div>
+      <!-- Free remark for one particular receipt. Left empty it prints nothing
+           at all — not an empty heading — so the standard form stays standard. -->
+      <div class="fld grow" style="margin-top:11px">
+        <label data-i18n="alr.commentLabel"></label>
+        <textarea id="alComment" style="min-height:60px"
+                  data-i18n-ph="alr.commentPh"></textarea>
       </div>
       <div class="hint" data-i18n-html="alr.sinnova_html"></div>
     </div>
@@ -989,7 +996,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260917c"></script>
-<script src="app.js?v=20260917c"></script>
+<script src="i18n.js?v=20260917d"></script>
+<script src="app.js?v=20260917d"></script>
 </body>
 </html>

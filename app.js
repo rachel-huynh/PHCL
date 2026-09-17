@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260917c';
+const APP_VERSION = '20260917d';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -895,16 +895,19 @@ async function doPreview() {
    Location inserted BEFORE the Label column, as agreed.
    The printed form stays bilingual — it is the company's official document. */
 
-const ALR_NOTES = {
-en:
+/* One bilingual block, not one per language. This is the company's official
+   form: it is signed by Vietnamese staff and filed in an English-language
+   system, so both languages print together and the document does not change
+   meaning when someone flips the UI toggle. */
+const ALR_NOTES =
 `1. After receiving the asset labels, the receiving department must attach each label directly to its asset as soon as the handover with the carrier is complete, and take two (2) photographs (one close-up of the attached label and one overall view of the asset showing the label).
+1. Sau khi nhận được tem nhãn tài sản, bộ phận tiếp nhận phải dán ngay từng tem nhãn lên đúng tài sản tương ứng ngay sau khi hoàn tất việc bàn giao với đơn vị vận chuyển. Đồng thời, phải chụp hai (02) hình ảnh cho mỗi tài sản, bao gồm: (i) một ảnh cận cảnh thể hiện rõ tem nhãn đã được dán và (ii) một ảnh toàn cảnh tài sản có nhìn thấy tem nhãn.
+
 2. Both photographs must be uploaded to the Asset Management System under the asset record, printed, and attached to the Asset Handover Form.
-Note: If the two (2) photographs of the asset label are not attached to the Asset Handover Form, the final payment request will not be approved.`,
-vi:
-`1. Sau khi tiếp nhận tem nhãn tài sản, bộ phận nhận bàn giao có trách nhiệm dán tem nhãn trực tiếp lên tài sản khi hoàn tất quá trình giao nhận với đơn vị vận chuyển, đồng thời chụp hai (2) hình ảnh (gồm một (1) hình ảnh chụp cận tem nhãn đã được dán và một (1) ảnh toàn cảnh tài sản có tem nhãn).
-2. Hai (2) hình ảnh đã chụp cần được cập nhật trên Hệ thống Quản lý Tài sản tại mục Thẻ tài sản, đồng thời được in ra và đính kèm vào Biên bản nghiệm thu (Asset Handover Form).
-Lưu ý: Nếu hai (2) hình ảnh về tem nhãn tài sản không được đính kèm vào Biên bản nghiệm thu, yêu cầu hoàn tất thanh toán đợt cuối sẽ không được thông qua.`
-};
+2. Cả hai (02) hình ảnh phải được tải lên Hệ thống Quản lý Tài sản (Asset Management System) theo đúng hồ sơ tài sản, đồng thời được in ra và đính kèm cùng Biên bản Nghiệm thu
+
+Note: If the two (2) photographs of the asset label are not attached to the Asset Handover Form, the final payment request will not be approved.
+Lưu ý: Trường hợp Biên bản Nghiệm thu không đính kèm đầy đủ hai (02) hình ảnh nêu trên, hồ sơ đề nghị thanh toán cuối cùng sẽ không được xem xét hoặc phê duyệt.`;
 
 const ALR = { rows: [], mode: null, demo: false };
 
@@ -1166,6 +1169,14 @@ function buildDoc() {
     el('b', { textContent: t('alr.doc.notesTitle') }),
     document.createTextNode('\n' + $('#alNotes').value)
   ]));
+  /* The remark prints only when there is one. An empty "Comment:" heading on a
+     signed form invites someone to write in it by pen after the fact. */
+  const comment = $('#alComment').value.trim();
+  if (comment)
+    root.append(el('div', { className: 'doc-notes' }, [
+      el('b', { textContent: t('alr.doc.commentTitle') }),
+      document.createTextNode('\n' + comment)
+    ]));
   root.append(el('div', { className: 'doc-sign' }, [
     el('div', {}, [el('b', { textContent: t('alr.doc.prepared') }),
                    el('i', {}), document.createTextNode($('#alPrep').value || '')]),
@@ -1325,6 +1336,7 @@ async function saveAlr() {
       approved_by: $('#alAppr').value.trim() || null,
       received_by: $('#alRecv').value.trim() || null,
       notes_text: $('#alNotes').value,
+      comment_text: $('#alComment').value.trim() || null,
       // These record WHICH filter produced the receipt. With several picked
       // there is no single answer, so only a lone choice is stored.
       shipment_id: msValues('alShip').length === 1 ? msValues('alShip')[0] : null,
@@ -1401,6 +1413,9 @@ async function alrOpen(id) {
     $('#alAppr').value = a.approved_by || '';
     $('#alRecv').value = a.received_by || '';
     if (a.notes_text) $('#alNotes').value = a.notes_text;
+    // Reopening a receipt must not carry the last one's remark, so this is set
+    // unconditionally — empty is a real value here.
+    $('#alComment').value = a.comment_text || '';
 
     const locs = await lookup('am_location').catch(() => []);
     const lmap = new Map(locs.map(l => [l.v, l.t]));
@@ -1450,7 +1465,7 @@ async function fillAlrPickers() {
 }
 
 function initAlr() {
-  $('#alNotes').value = ALR_NOTES[LANG] || ALR_NOTES.en;
+  $('#alNotes').value = ALR_NOTES;
   $('#alDate').value = new Date().toISOString().slice(0, 10);
   const sync = () => { $('#alCode').value = alrCodeFromProject($('#alProject').value); };
   sync();
@@ -1841,11 +1856,8 @@ function switchLang(l) {
   markLang();
   buildNav();
 
-  // The default notes text is only replaced while it is still untouched,
-  // so a hand-edited version survives a language switch.
-  const notes = $('#alNotes');
-  if (notes && Object.values(ALR_NOTES).includes(notes.value.trim()))
-    notes.value = ALR_NOTES[LANG] || ALR_NOTES.en;
+  // The receipt notes are not swapped here any more: the block is bilingual, so
+  // flipping the UI language must not rewrite a document that is already right.
 
   // The multi-select summaries and their option labels are built text, not
   // data-i18n markup, so applyI18n() cannot reach them.

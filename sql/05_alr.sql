@@ -16,9 +16,13 @@ alter table am_alr add column if not exists approved_by    text;
 alter table am_alr add column if not exists received_by    text;
 alter table am_alr add column if not exists received_dept  text references am_org(code);
 alter table am_alr add column if not exists notes_text     text;
+-- Ghi chú riêng của MỘT biên bản, khác notes_text là quy trình chung in cố định.
+alter table am_alr add column if not exists comment_text   text;
 
 comment on column am_alr.project_code is
   'Mã dự án FFE của đợt hàng, vd FFE.KIT.05.2025. Số hiệu biên bản suy ra từ đây.';
+comment on column am_alr.comment_text is
+  'Ghi chú tự do cho riêng biên bản này. Để trống thì KHÔNG in ra — một mục "Ghi chú:" rỗng trên chứng từ đã ký là chỗ mời người ta viết thêm bằng bút sau.';
 comment on column am_alr.notes_text is
   'Phần "Quy trình và lưu ý" in ở cuối biên bản. Lưu theo từng biên bản vì nội dung có thể đổi (bản mẫu 2023 còn nhắc hệ thống Sinnova, nay công ty dùng Beetrack).';
 
