@@ -527,6 +527,9 @@ revoke execute on function pm_import_round(jsonb, jsonb, numeric) from public, a
 grant  execute on function pm_import_round(jsonb, jsonb, numeric) to authenticated;
 revoke execute on function pm_replace_scores(text[], jsonb)       from public, anon;
 grant  execute on function pm_replace_scores(text[], jsonb)       to authenticated;
+-- Lưới an toàn: default privileges của project (dùng chung với app khác) tự cấp
+-- quyền cho anon trên mọi bảng/sequence/hàm mới — tước lại cho đồ của app này.
+select app_lock_anon();
 
 
 -- =====================================================================
@@ -537,7 +540,11 @@ select 'Bảng pm_* có RLS' as "Mục",
        count(*) filter (where rowsecurity)::text || '/' || count(*)::text as "Thực tế",
        '6/6' as "Mong đợi",
        case when count(*) = 6 and bool_and(rowsecurity) then '✔' else '✘ HỎNG' end as "Đạt"
-from   pg_tables where schemaname = 'public' and tablename like 'pm\_%'
+-- Đúng 6 bảng của file này — 19_pm_workflow.sql thêm 5 bảng pm_* nữa, nên
+-- đếm theo tên chứ không theo tiền tố.
+from   pg_tables where schemaname = 'public'
+  and  tablename in ('pm_budget_year', 'pm_budget_round', 'pm_budget_line',
+                     'pm_project', 'pm_vendor', 'pm_vendor_score')
 union all
 select 'Policy pm_* mở cho anon (phải = 0)', count(*)::text, '0',
        case when count(*) = 0 then '✔' else '✘ HỎNG' end

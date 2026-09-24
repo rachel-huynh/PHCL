@@ -631,6 +631,8 @@ grant execute on function pm_entity(text), pm_can_prepare(text, text),
 revoke execute on function pm_doc_log(bigint, text, text, text, int, text), pm_doc_apply(bigint),
                            app_user_role_covers(uuid, text, text)
   from authenticated;
+-- Lưới an toàn cho project dùng chung (xem app_lock_anon trong 17_auth.sql).
+select app_lock_anon();
 
 
 -- =====================================================================

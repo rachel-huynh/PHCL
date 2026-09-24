@@ -1843,7 +1843,10 @@ begin
     select schemaname, tablename, policyname
     from   pg_policies
     where  schemaname = 'public'
-      and  (tablename like 'am\_%' or tablename like 'app\_%')
+      -- KHÔNG dùng 'app_%': Legal Portal cùng project có bảng app_settings.
+      and  (tablename like 'am\_%'
+            or tablename in ('app_module', 'app_role', 'app_permission', 'app_user',
+                             'app_user_role', 'app_audit'))
   loop
     execute format('drop policy %I on %I.%I', p.policyname, p.schemaname, p.tablename);
   end loop;
@@ -2000,59 +2003,122 @@ alter view am_product_term        set (security_invoker = true);
 -- 8. QUYỀN CẤP CHO VAI TRÒ DATABASE
 -- =====================================================================
 
--- anon: không còn gì. Kể cả quyền EXECUTE mà Postgres mặc định cấp cho PUBLIC.
-revoke all on all tables    in schema public from anon;
-revoke all on all sequences in schema public from anon;
-revoke all on all functions in schema public from anon, public;
+/* ⚠ Project Supabase này DÙNG CHUNG với app khác (Công đoàn cd_*, Budget
+   Tracker bt_*, SSP Dashboard dashboard_store, Legal Portal, Đối chiếu hoá đơn
+   hd_*). Vài app trong số đó KHÔNG có đăng nhập và sống nhờ quyền của anon.
+   Vì vậy mọi lệnh ở đây chỉ đụng vào đồ của app này — tên bắt đầu bằng am_ /
+   pm_ / app_ (và riêng 6 bảng app_* bên dưới) — KHÔNG BAO GIỜ "all tables in
+   schema public", và không đổi default privileges của cả schema.
 
--- Supabase mặc định cấp quyền cho anon trên MỌI bảng/hàm tạo mới trong public.
--- Tắt đi, để file SQL viết sau này không vô tình mở lại cửa.
-alter default privileges in schema public revoke all on tables    from anon;
-alter default privileges in schema public revoke all on sequences from anon;
-alter default privileges in schema public revoke all on functions from anon, public;
+   app_lock_anon(): tước mọi quyền của anon (và PUBLIC trên hàm) khỏi đồ của app
+   này. Gọi ở cuối 17, 18, 19 và mọi file sau, vì default privileges của
+   project vẫn tự cấp quyền cho anon trên bảng/hàm mới tạo. */
+create or replace function app_lock_anon()
+returns void
+language plpgsql
+set search_path = public
+as $$
+declare r record;
+begin
+  for r in
+    select c.oid::regclass::text as n, c.relkind
+    from   pg_class c join pg_namespace s on s.oid = c.relnamespace
+    where  s.nspname = 'public' and c.relkind in ('r', 'p', 'v', 'm', 'S')
+      and  (c.relname ~ '^(am|pm)_'
+            or c.relname in ('app_module', 'app_role', 'app_permission', 'app_user',
+                             'app_user_role', 'app_audit'))
+  loop
+    execute format(case when r.relkind = 'S' then 'revoke all on sequence %s from anon'
+                        else 'revoke all on table %s from anon' end, r.n);
+  end loop;
+  for r in
+    select p.oid::regprocedure::text as n
+    from   pg_proc p join pg_namespace s on s.oid = p.pronamespace
+    where  s.nspname = 'public' and p.proname ~ '^(am|app|pm)_'
+      and  p.proowner = (select oid from pg_roles where rolname = current_user)
+  loop
+    execute format('revoke execute on function %s from public, anon', r.n);
+  end loop;
+end $$;
+revoke execute on function app_lock_anon() from public, anon;
 
--- authenticated: gọi được hàm (hàm nào ghi dữ liệu thì tự kiểm tra vai trò),
--- dùng được bảng (RLS lọc dòng).
-grant execute on all functions in schema public to authenticated;
+-- authenticated: gọi được hàm của app (hàm nào ghi dữ liệu thì tự kiểm tra vai
+-- trò), dùng được bảng (RLS lọc dòng). Cấp TRƯỚC khi tước của PUBLIC.
+do $$
+declare r record;
+begin
+  for r in
+    select p.oid::regprocedure::text as n
+    from   pg_proc p join pg_namespace s on s.oid = p.pronamespace
+    where  s.nspname = 'public' and p.proname ~ '^(am|app|pm)_'
+      and  p.proowner = (select oid from pg_roles where rolname = current_user)
+      -- Hàm nội bộ mà 19_pm_workflow.sql cố ý không cho gọi qua API — chạy lại
+      -- file này sau 19 không được mở lại chúng.
+      and  p.proname not in ('pm_doc_log', 'pm_doc_apply', 'app_user_role_covers',
+                             'app_bootstrap_admin', 'app_lock_anon')
+  loop
+    execute format('grant execute on function %s to authenticated', r.n);
+  end loop;
+end $$;
 revoke execute on function app_bootstrap_admin(text) from authenticated;
+revoke execute on function app_lock_anon() from authenticated;
+select app_lock_anon();
 
 grant select, insert, update, delete on app_module, app_role, app_permission,
                                         app_user, app_user_role to authenticated;
 grant select on app_audit to authenticated;
 revoke insert, update, delete on app_audit from authenticated;
 revoke update, delete on am_data_source from authenticated;
-grant usage, select on all sequences in schema public to authenticated;
+do $$
+declare r record;
+begin
+  for r in select c.oid::regclass::text as n
+           from   pg_class c join pg_namespace s on s.oid = c.relnamespace
+           where  s.nspname = 'public' and c.relkind = 'S' and c.relname ~ '^(am|app|pm)_'
+  loop
+    execute format('grant usage, select on sequence %s to authenticated', r.n);
+  end loop;
+end $$;
 
 
 -- =====================================================================
 -- 9. KIỂM CHỨNG — Supabase SQL Editor chỉ hiện kết quả câu lệnh CUỐI.
 -- =====================================================================
 
-select 'Bảng chưa bật RLS (phải = 0)' as "Mục",
+-- Chỉ đếm đồ của app này (am_* / pm_* / 6 bảng app_*). Bảng của app khác trong
+-- cùng project có luật riêng của chúng — không phải việc của file này.
+select 'Bảng của app chưa bật RLS (phải = 0)' as "Mục",
        count(*)::text as "Thực tế", '0' as "Mong đợi",
        case when count(*) = 0 then '✔' else '✘ HỎNG' end as "Đạt"
 from   pg_tables
 where  schemaname = 'public' and not rowsecurity
+  and  (tablename ~ '^(am|pm)_' or tablename in ('app_module', 'app_role', 'app_permission',
+                                                 'app_user', 'app_user_role', 'app_audit'))
 union all
-select 'Policy còn mở cho anon (phải = 0)', count(*)::text, '0',
+select 'Policy của app mở cho anon (phải = 0)', count(*)::text, '0',
        case when count(*) = 0 then '✔' else '✘ HỎNG' end
 from   pg_policies
 where  schemaname = 'public' and 'anon' = any (roles)
+  and  (tablename ~ '^(am|pm)_' or tablename in ('app_module', 'app_role', 'app_permission',
+                                                 'app_user', 'app_user_role', 'app_audit'))
 union all
-select 'Bảng anon còn quyền (phải = 0)', count(distinct table_name)::text, '0',
+select 'Bảng của app anon còn quyền (phải = 0)', count(distinct table_name)::text, '0',
        case when count(*) = 0 then '✔' else '✘ HỎNG' end
 from   information_schema.role_table_grants
 where  grantee = 'anon' and table_schema = 'public'
+  and  (table_name ~ '^(am|pm)_' or table_name in ('app_module', 'app_role', 'app_permission',
+                                                   'app_user', 'app_user_role', 'app_audit'))
 union all
-select 'Hàm anon còn gọi được (phải = 0)', count(*)::text, '0',
+select 'Hàm của app anon còn gọi được (phải = 0)', count(*)::text, '0',
        case when count(*) = 0 then '✔' else '✘ HỎNG' end
 from   pg_proc p join pg_namespace n on n.oid = p.pronamespace
-where  n.nspname = 'public' and has_function_privilege('anon', p.oid, 'execute')
+where  n.nspname = 'public' and p.proname ~ '^(am|app|pm)_'
+  and  has_function_privilege('anon', p.oid, 'execute')
 union all
-select 'View bỏ qua RLS (phải = 0)', count(*)::text, '0',
+select 'View của app bỏ qua RLS (phải = 0)', count(*)::text, '0',
        case when count(*) = 0 then '✔' else '✘ HỎNG' end
 from   pg_class c join pg_namespace n on n.oid = c.relnamespace
-where  n.nspname = 'public' and c.relkind = 'v'
+where  n.nspname = 'public' and c.relkind = 'v' and c.relname ~ '^(am|pm)_'
   and  not coalesce(c.reloptions @> array['security_invoker=true'], false)
 union all
 select 'Vai trò', count(*)::text, '14',
