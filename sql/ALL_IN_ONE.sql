@@ -1,11 +1,10 @@
 -- =====================================================================
--- asset-intake — TẤT CẢ TRONG MỘT FILE
--- Sinh tự động từ các file 01..05 trong cùng thư mục. Đừng sửa file này,
--- sửa file gốc rồi chạy scripts/build-sql.ps1.
---
--- Dán TOÀN BỘ vào Supabase SQL Editor rồi bấm Run. Chạy lại nhiều lần
--- vô hại: mọi lệnh đều if not exists / on conflict do update.
--- Sau đó chạy 00_verify.sql để kiểm chứng.
+-- asset-intake — TẤT CẢ TRONG MỘT FILE — dùng cho database MỚI.
+-- Dán TOÀN BỘ vào Supabase SQL Editor rồi bấm Run.
+-- ⚠ Database đang chạy thật: dùng MIGRATE_17.sql, KHÔNG dùng file này —
+--   seed ở đây ghi đè master data đã sửa trong app.
+-- Sinh tự động bởi scripts/build-sql.ps1. Đừng sửa file này — sửa file
+-- gốc trong sql/ rồi chạy lại script.
 -- =====================================================================
 
 
@@ -1826,6 +1825,7 @@ as $$
 declare
   v_first int;
 begin
+  perform app_require('assets', 'create');   -- quyền theo người đăng nhập — xem 17_auth.sql
   if p_count < 1 then
     raise exception 'p_count phải >= 1';
   end if;
@@ -1873,6 +1873,7 @@ declare
   v_first bigint;
   v_max   bigint;
 begin
+  perform app_require('assets', 'create');   -- quyền theo người đăng nhập — xem 17_auth.sql
   if p_count < 1 then
     raise exception 'p_count phải >= 1';
   end if;
@@ -1910,6 +1911,7 @@ as $$
 declare
   v int;
 begin
+  perform app_require('assets', 'create');   -- quyền theo người đăng nhập — xem 17_auth.sql
   insert into am_alr_seq (singleton, next_val) values (true, 1)
   on conflict (singleton) do nothing;
 
@@ -1935,6 +1937,7 @@ as $$
 declare
   v int;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
   p_dept    := upper(trim(p_dept));
   p_letters := am_letters(p_letters);
 
@@ -1958,6 +1961,7 @@ as $$
 declare
   v bigint;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
   update am_barcode_seq
      set next_val   = greatest(next_val, p_max_seen + 1),
          updated_at = now()
@@ -1983,6 +1987,7 @@ as $$
 declare
   r record;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
   -- 1) Mã Tài Sản: <DEPT>.<C2xxx>.<LLL>.<YYYY>.<NNNNN>
   for r in
     select  m[1] as dept, m[3] as letters, max(m[5]::int) as mx
@@ -2208,14 +2213,18 @@ $$;
 -- ####################################################################
 
 -- =====================================================================
--- asset-intake — RLS & quyền
--- Bối cảnh: app tĩnh trên GitHub Pages PUBLIC, anon key phát qua link
--- #sbcfg (không nhúng trong file). Vì key có thể lọt ra ngoài, thiết kế
--- theo hướng "hỏng thì cũng không mất sổ tài sản":
---   * Bảng bộ đếm: KHÔNG cấp quyền ghi trực tiếp — chỉ qua hàm định sẵn.
---   * am_asset / am_counter_log: KHÔNG cho DELETE.
---   * Master data: đọc thoải mái, sửa được (công cụ nội bộ).
--- Chạy SAU 03_functions.sql.
+-- 04_rls.sql — BẬT RLS + QUYỀN NỀN
+--
+-- Từ 17_auth.sql trở đi app BẮT BUỘC ĐĂNG NHẬP. File này chỉ còn làm ba việc:
+--   * bật RLS trên mọi bảng (chưa có policy = không ai đọc được, trừ postgres),
+--   * cấp quyền bảng cho vai `authenticated` — RLS quyết định DÒNG nào,
+--   * khoá ghi trực tiếp vào bảng bộ đếm (chỉ qua hàm SECURITY DEFINER).
+--
+-- Mọi POLICY nằm ở 17_auth.sql. File này KHÔNG cấp gì cho `anon`, nên chạy
+-- lại nó sau 17 không mở lại hệ thống. (Bản cũ cấp "for all to anon using
+-- (true)" cho gần như mọi bảng — ai có link là đọc/sửa được hết.)
+--
+-- Chạy SAU 03_functions.sql. Chạy lại nhiều lần vô hại.
 -- =====================================================================
 
 do $$
@@ -2233,77 +2242,62 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------
--- 1. Master data + dữ liệu nghiệp vụ: đọc/ghi được, KHÔNG xóa được sổ tài sản
+-- 1. Quyền bảng cho người đã đăng nhập. RLS (17_auth.sql) lọc tiếp theo
+--    vai trò và phạm vi phòng ban.
 -- ---------------------------------------------------------------------
 do $$
 declare t text;
 begin
-  -- Nhóm cho phép đầy đủ (kể cả xóa): master data và dữ liệu nháp
   foreach t in array array[
     'am_setting','am_org','am_org_alias','am_category_group','am_category',
     'am_unit','am_origin','am_origin_alias','am_origin_rejected','am_location',
     'am_product','am_shipment','am_shipment_line','am_alr','am_alr_line',
     'am_xls_template','am_xls_column'
   ] loop
-    execute format('drop policy if exists %I on %I', t || '_all', t);
-    execute format(
-      'create policy %I on %I for all to anon, authenticated using (true) with check (true)',
-      t || '_all', t);
-    execute format('grant select, insert, update, delete on %I to anon, authenticated', t);
+    execute format('grant select, insert, update, delete on %I to authenticated', t);
   end loop;
 end $$;
 
--- ---------------------------------------------------------------------
--- 2. Sổ tài sản: thêm & sửa được, KHÔNG xóa (tránh mất mã đã cấp)
---    Muốn loại bỏ một tài sản thì dùng trạng thái/thanh lý, không DELETE.
--- ---------------------------------------------------------------------
-drop policy if exists am_asset_read   on am_asset;
-drop policy if exists am_asset_write  on am_asset;
-drop policy if exists am_asset_modify on am_asset;
-
-create policy am_asset_read   on am_asset for select to anon, authenticated using (true);
-create policy am_asset_write  on am_asset for insert to anon, authenticated with check (true);
-create policy am_asset_modify on am_asset for update to anon, authenticated using (true) with check (true);
--- cố tình KHÔNG có policy for delete
-grant select, insert, update on am_asset to anon, authenticated;
+-- Sổ tài sản: KHÔNG có DELETE. Xoá chỉ qua am_undo_intake / am_bulk_delete,
+-- là những hàm có luật đi kèm (giữ dòng đã nằm trên biên bản, v.v.).
+grant select, insert, update on am_asset to authenticated;
 
 -- Mọi bảng bigserial cần quyền dùng sequence thì INSERT mới chạy được.
 -- Bộ đếm nghiệp vụ (am_asset_seq / am_barcode_seq / am_alr_seq) KHÔNG phải
 -- sequence của Postgres nên không bị ảnh hưởng bởi lệnh này.
-grant usage, select on all sequences in schema public to anon, authenticated;
+grant usage, select on all sequences in schema public to authenticated;
 
 -- ---------------------------------------------------------------------
--- 3. Bộ đếm: chỉ đọc. Mọi thay đổi phải đi qua hàm SECURITY DEFINER.
+-- 2. Bộ đếm: chỉ đọc. Mọi thay đổi phải đi qua hàm SECURITY DEFINER.
 --    Đây là lý do bộ đếm không thể bị "reset" từ trình duyệt.
 -- ---------------------------------------------------------------------
 do $$
 declare t text;
 begin
   foreach t in array array['am_asset_seq','am_barcode_seq','am_counter_log','am_alr_seq'] loop
-    execute format('drop policy if exists %I on %I', t || '_read', t);
-    execute format('create policy %I on %I for select to anon, authenticated using (true)', t || '_read', t);
     execute format('revoke insert, update, delete on %I from anon, authenticated', t);
-    execute format('grant select on %I to anon, authenticated', t);
+    execute format('grant select on %I to authenticated', t);
   end loop;
 end $$;
 
 -- ---------------------------------------------------------------------
--- 4. Quyền gọi hàm
+-- 3. Quyền gọi hàm — chỉ người đã đăng nhập. Hàm nào ghi dữ liệu thì tự
+--    kiểm tra vai trò bên trong bằng app_require() (17_auth.sql).
 -- ---------------------------------------------------------------------
-grant execute on function am_norm(text)                                   to anon, authenticated;
-grant execute on function am_letters(text)                                to anon, authenticated;
-grant execute on function am_format_barcode(text, bigint)                 to anon, authenticated;
-grant execute on function am_parse_barcode(text)                          to anon, authenticated;
-grant execute on function am_build_asset_code(text, text, text, int, int) to anon, authenticated;
-grant execute on function am_alloc_asset_seq(text, text, int, bigint, text) to anon, authenticated;
-grant execute on function am_alloc_barcode(text, int, bigint, text)       to anon, authenticated;
-grant execute on function am_alloc_alr_code()                             to anon, authenticated;
-grant execute on function am_seed_asset_seq(text, text, int)              to anon, authenticated;
-grant execute on function am_seed_barcode(text, bigint)                   to anon, authenticated;
-grant execute on function am_seed_from_codes(text[])                      to anon, authenticated;
-grant execute on function am_audit_counters()                             to anon, authenticated;
-grant execute on function am_classify(numeric, text, boolean)             to anon, authenticated;
-grant execute on function am_resolve_origin(text)                         to anon, authenticated;
+grant execute on function am_norm(text)                                   to authenticated;
+grant execute on function am_letters(text)                                to authenticated;
+grant execute on function am_format_barcode(text, bigint)                 to authenticated;
+grant execute on function am_parse_barcode(text)                          to authenticated;
+grant execute on function am_build_asset_code(text, text, text, int, int) to authenticated;
+grant execute on function am_alloc_asset_seq(text, text, int, bigint, text) to authenticated;
+grant execute on function am_alloc_barcode(text, int, bigint, text)       to authenticated;
+grant execute on function am_alloc_alr_code()                             to authenticated;
+grant execute on function am_seed_asset_seq(text, text, int)              to authenticated;
+grant execute on function am_seed_barcode(text, bigint)                   to authenticated;
+grant execute on function am_seed_from_codes(text[])                      to authenticated;
+grant execute on function am_audit_counters()                             to authenticated;
+grant execute on function am_classify(numeric, text, boolean)             to authenticated;
+grant execute on function am_resolve_origin(text)                         to authenticated;
 
 -- Các hàm cấp phát phải thuộc sở hữu của vai trò vượt được RLS
 alter function am_alloc_asset_seq(text, text, int, bigint, text) owner to postgres;
@@ -2364,7 +2358,7 @@ $$;
 comment on function am_alr_code_from_project(text) is
   'FFE.CP.28.2023 -> AL.CP.28.2023. Bỏ đúng đoạn đầu tiên, giữ nguyên phần còn lại.';
 
-grant execute on function am_alr_code_from_project(text) to anon, authenticated;
+grant execute on function am_alr_code_from_project(text) to authenticated;
 
 -- ---------------------------------------------------------------------
 -- Dòng tài sản của biên bản, kèm đủ trường để in thẳng ra 8 cột
@@ -2372,7 +2366,7 @@ grant execute on function am_alr_code_from_project(text) to anon, authenticated;
 --   Stt | Mã tài sản | Tên tài sản | Số lượng | Thông số kỹ thuật
 --       | Đơn giá | Vị trí | Tem nhãn
 -- ---------------------------------------------------------------------
-create or replace view am_alr_print as
+create or replace view am_alr_print with (security_invoker = true) as
 select
   l.alr_id,
   l.line_no,
@@ -2409,7 +2403,7 @@ join   am_asset    a   on a.id = l.asset_id
 left join am_location loc on loc.code = a.location_code
 order by l.alr_id, l.line_no;
 
-grant select on am_alr_print to anon, authenticated;
+grant select on am_alr_print to authenticated;
 
 comment on view am_alr_print is
   'Nguồn in biên bản ALR. spec_summary là bản gom ngắn của các cột spec chi tiết — dùng cho ô "Thông số kỹ thuật cơ bản".';
@@ -2885,25 +2879,19 @@ create index if not exists am_data_source_latest_idx
   on am_data_source (table_name, loaded_at desc);
 
 -- Most recent import per table — what the Data sources screen reads.
-create or replace view am_data_source_current as
+create or replace view am_data_source_current with (security_invoker = true) as
 select distinct on (table_name)
        table_name, source_file, source_kind, rows_loaded, loaded_at, loaded_by, note
 from   am_data_source
 order  by table_name, loaded_at desc;
 
 alter table am_data_source enable row level security;
-
-drop policy if exists am_data_source_read  on am_data_source;
-drop policy if exists am_data_source_write on am_data_source;
-create policy am_data_source_read  on am_data_source
-  for select to anon, authenticated using (true);
-create policy am_data_source_write on am_data_source
-  for insert to anon, authenticated with check (true);
--- No update and no delete policy: the provenance log is append-only.
-
-grant select, insert on am_data_source to anon, authenticated;
-grant select on am_data_source_current to anon, authenticated;
-grant usage, select on sequence am_data_source_id_seq to anon, authenticated;
+-- Policies live in 17_auth.sql with every other table's, so that re-running
+-- this file can never put back the old open-to-anyone policies. The log stays
+-- append-only: 17 grants select + insert, never update or delete.
+grant select, insert on am_data_source to authenticated;
+grant select on am_data_source_current to authenticated;
+grant usage, select on sequence am_data_source_id_seq to authenticated;
 
 -- Record what the SQL seed files themselves loaded, so a fresh install does
 -- not show "never loaded" for data that is plainly there.
@@ -3232,8 +3220,8 @@ as $$
   limit 20;
 $$;
 
-grant execute on function am_suggest_lines(text[]) to anon, authenticated;
-grant execute on function am_suggest_detail(text)  to anon, authenticated;
+grant execute on function am_suggest_lines(text[]) to authenticated;
+grant execute on function am_suggest_detail(text)  to authenticated;
 
 
 -- ####################################################################
@@ -3268,7 +3256,7 @@ grant execute on function am_suggest_detail(text)  to anon, authenticated;
 -- đầu. So khớp bằng LIKE trên dạng đó cho đúng ngữ nghĩa "ranh giới từ" mà
 -- không phải escape ký tự đặc biệt của regex nằm trong chính tên sản phẩm —
 -- am_norm KHÔNG bỏ dấu câu, nên tên thật đầy dấu phẩy, ngoặc và gạch chéo.
-create or replace view am_product_term as
+create or replace view am_product_term with (security_invoker = true) as
   select p.id,
          am_norm(trim(x)) as term,
          ' ' || trim(regexp_replace(am_norm(trim(x)), '[^a-z0-9]+', ' ', 'g')) || ' '
@@ -3382,8 +3370,8 @@ $$;
 comment on function am_suggest_lines(text[]) is
   'Gợi ý tên chuẩn / danh mục / đơn vị cho từng tên hàng. Ưu tiên am_product khớp đúng, rồi sổ tài sản, rồi TỪ KHOÁ theo ranh giới từ. Trả kèm nguồn, từ đã khớp và mức tin cậy.';
 
-grant execute on function am_suggest_lines(text[]) to anon, authenticated;
-grant select on am_product_term to anon, authenticated;
+grant execute on function am_suggest_lines(text[]) to authenticated;
+grant select on am_product_term to authenticated;
 
 -- ---------------------------------------------------------------------
 -- Ghi nhớ một dòng người dùng đã sửa tay, để lần sau tự điền.
@@ -3400,6 +3388,7 @@ set search_path = public
 as $$
 declare v text;
 begin
+  perform app_require('assets', 'create');   -- quyền theo người đăng nhập — xem 17_auth.sql
   if coalesce(trim(p_raw_name), '') = '' then
     raise exception 'tên hàng rỗng';
   end if;
@@ -3419,7 +3408,7 @@ begin
 end $$;
 
 grant execute on function am_remember_product(text, text, text, text, text)
-  to anon, authenticated;
+  to authenticated;
 
 
 -- ####################################################################
@@ -3474,6 +3463,8 @@ declare
   v_printed int := 0;
   r         record;
 begin
+  perform app_require('assets', 'create');   -- quyền theo người đăng nhập — xem 17_auth.sql
+  p_ids := app_scope_ids(p_ids);            -- chỉ những dòng trong phạm vi của người gọi
   if p_ids is null or array_length(p_ids, 1) is null then
     return query select 0, 0, 0, 0, 0, 0;
     return;
@@ -3559,7 +3550,7 @@ end $$;
 comment on function am_undo_intake(bigint[]) is
   'Xoá các tài sản vừa ghi bởi một đợt nhập và lùi bộ đếm về nếu an toàn. Giữ lại dòng lịch sử và dòng đã nằm trên biên bản đã lưu. Chỉ lùi bộ đếm khi nó vẫn đứng đúng chỗ đợt này để lại VÀ chưa dòng nào được đánh dấu đã in tem.';
 
-grant execute on function am_undo_intake(bigint[]) to anon, authenticated;
+grant execute on function am_undo_intake(bigint[]) to authenticated;
 
 
 -- ####################################################################
@@ -3614,6 +3605,8 @@ declare
   r         record;
   v_first   int;
 begin
+  perform app_require('assets', 'edit');   -- quyền theo người đăng nhập — xem 17_auth.sql
+  p_ids := app_scope_ids(p_ids);            -- chỉ những dòng trong phạm vi của người gọi
   if p_ids is null or array_length(p_ids, 1) is null then
     return query select 0, 0, 0, 0; return;
   end if;
@@ -3629,6 +3622,9 @@ begin
     p_dept := upper(trim(p_dept));
     if not exists (select 1 from am_org where code = p_dept and is_department) then
       raise exception 'Mã phòng ban % không có trong danh mục', p_dept;
+    end if;
+    if p_dept not in (select app_scope_orgs()) then
+      raise exception 'Phòng ban % nằm ngoài phạm vi của bạn.', p_dept using errcode = '42501';
     end if;
   end if;
 
@@ -3720,6 +3716,8 @@ declare
   v_del  int := 0;
   v_keep int := 0;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
+  p_ids := app_scope_ids(p_ids);            -- chỉ những dòng trong phạm vi của người gọi
   if p_ids is null or array_length(p_ids, 1) is null then
     return query select 0, 0; return;
   end if;
@@ -3741,8 +3739,8 @@ end $$;
 comment on function am_bulk_delete(bigint[]) is
   'Xoá nhiều tài sản cùng lúc. Giữ lại dòng đã nằm trên biên bản tem nhãn đã lưu. KHÔNG lùi bộ đếm — số đã cấp coi như đã tiêu.';
 
-grant execute on function am_bulk_update(bigint[], text, text, text) to anon, authenticated;
-grant execute on function am_bulk_delete(bigint[]) to anon, authenticated;
+grant execute on function am_bulk_update(bigint[], text, text, text) to authenticated;
+grant execute on function am_bulk_delete(bigint[]) to authenticated;
 
 
 -- ####################################################################
@@ -3788,6 +3786,7 @@ declare
   v_old   int;
   v_floor int;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
   p_dept    := upper(trim(p_dept));
   p_letters := am_letters(p_letters);
 
@@ -3855,6 +3854,7 @@ set search_path = public
 as $$
 declare r record;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
   create temp table if not exists _reseed (
     scope text, old_next int, new_next int, moved text
   ) on commit drop;
@@ -3910,6 +3910,1975 @@ end $$;
 comment on function am_reseed_counters(boolean) is
   'Nạp lại toàn bộ khoá bộ đếm mã tài sản từ am_asset. p_allow_lower=true cho phép KÉO XUỐNG đúng bằng max(seq)+1 sau khi xoá hàng loạt — chỉ dùng khi chắc chắn không có mã nào đã in tem rồi bị xoá.';
 
-grant execute on function am_set_asset_seq(text, text, int) to anon, authenticated;
-grant execute on function am_reseed_counters(boolean) to anon, authenticated;
+grant execute on function am_set_asset_seq(text, text, int) to authenticated;
+grant execute on function am_reseed_counters(boolean) to authenticated;
+
+
+-- ####################################################################
+-- ##  17_auth.sql
+-- ####################################################################
+
+-- =====================================================================
+-- 17_auth.sql — ĐĂNG NHẬP, VAI TRÒ, MA TRẬN QUYỀN, NHẬT KÝ THAY ĐỔI
+--
+-- Từ file này trở đi app BẮT BUỘC ĐĂNG NHẬP (Supabase Auth, email + mật khẩu).
+-- Người chưa đăng nhập (vai `anon`) không đọc, không ghi, không gọi được gì.
+--
+-- Mô hình:
+--   app_user       một dòng cho mỗi tài khoản Auth (tự tạo bằng trigger)
+--   app_role       14 vai trò cố định theo pháp nhân SSP / CP / JVC / SYS
+--   app_user_role  người × vai trò × PHẠM VI (một nút trong am_org). Một người
+--                  giữ được nhiều vai trò, mỗi vai trò một phạm vi riêng.
+--   app_module     các khu chức năng của app
+--   app_permission vai trò × khu chức năng × 5 quyền, SỬA ĐƯỢC TRONG APP
+--   app_audit      mọi thay đổi dữ liệu: ai, lúc nào, bảng nào, trước/sau
+--
+-- Phạm vi: người dùng thấy các phòng ban nằm DƯỚI nút phạm vi của mình trong
+-- cây am_org. Cây giữ nguyên theo cấu trúc pháp lý (PHCL → CP / JVC / SOF);
+-- việc JVC quản lý SOF và CP thể hiện bằng phạm vi (vai trò JVC → PHCL),
+-- không phải bằng cách dời nút trong cây.
+--
+-- Kết nối trực tiếp vào database (SQL Editor, migration) luôn được tin cậy —
+-- muốn vào đó phải có mật khẩu database. Đó cũng là đường thoát nếu lỡ khoá
+-- hết mọi người: không bao giờ có chuyện bị nhốt ngoài dữ liệu của chính mình.
+--
+-- ⚠ TRIỂN KHAI — đúng thứ tự, không thì app đứng:
+--   1. Supabase → Authentication → Users → Add user → Create new user:
+--      email công ty + mật khẩu, TICK "Auto Confirm User". Làm cho chính mình
+--      trước.
+--   2. Chạy file này (và các file 03, 04, 05, 07, 13, 14, 15, 16 đã sửa — hoặc
+--      chạy một file gộp MIGRATE_17.sql là đủ).
+--   3. Chạy:  select app_bootstrap_admin('email-cua-ban@jvcplaza.vn');
+--      → tài khoản đó thành System Admin + AM Coordinator, phạm vi PHCL.
+--   4. Commit + push bản app có màn hình đăng nhập. Bản app CŨ (dùng anon key)
+--      sẽ không đọc được gì nữa sau bước 2 — nên bước 2 và 4 làm liền nhau.
+--   5. Authentication → Sign In / Providers: TẮT "Allow new users to sign up".
+--      Tài khoản chỉ do quản trị tạo ở bước 1.
+--   6. Authentication → URL Configuration → Site URL:
+--      https://rachel-huynh.github.io/PHCL/AssetManagement.html
+--      (để link "quên mật khẩu" trong email quay về đúng app).
+--
+-- Chạy lại nhiều lần vô hại. Ma trận quyền đã sửa trong app KHÔNG bị ghi đè.
+-- =====================================================================
+
+
+-- =====================================================================
+-- 1. BẢNG
+-- =====================================================================
+
+create table if not exists app_module (
+  code     text primary key,
+  name_en  text not null,
+  name_vi  text not null,
+  sort     int  not null default 0
+);
+comment on table app_module is
+  'Khu chức năng của app. Ma trận quyền là vai trò × khu chức năng.';
+
+create table if not exists app_role (
+  code          text primary key,
+  entity        text not null check (entity in ('SSP', 'CP', 'JVC', 'SYS')),
+  name_en       text not null,
+  name_vi       text not null,
+  prepares      boolean not null default false,
+  default_scope text references am_org(code) on update cascade,
+  sort          int  not null default 0
+);
+comment on column app_role.prepares is
+  'Vai trò LẬP chứng từ. Người lập không bao giờ tự duyệt chứng từ của chính mình.';
+comment on column app_role.default_scope is
+  'Phạm vi gợi ý khi gán vai trò. Để trống = phải chọn phòng ban cụ thể (vd nhân viên / trưởng bộ phận).';
+
+create table if not exists app_permission (
+  role_code   text not null references app_role(code)   on delete cascade on update cascade,
+  module_code text not null references app_module(code) on delete cascade on update cascade,
+  can_view    boolean not null default false,
+  can_create  boolean not null default false,
+  can_edit    boolean not null default false,
+  can_approve boolean not null default false,
+  can_admin   boolean not null default false,
+  primary key (role_code, module_code)
+);
+
+create table if not exists app_user (
+  id         uuid primary key references auth.users(id) on delete cascade,
+  email      text not null unique,
+  full_name  text,
+  active     boolean not null default true,
+  created_at timestamptz not null default now()
+);
+comment on table app_user is
+  'Một dòng cho mỗi tài khoản Supabase Auth, tạo tự động. active = false là khoá tài khoản mà không xoá lịch sử của người đó.';
+
+create table if not exists app_user_role (
+  user_id   uuid not null references app_user(id) on delete cascade,
+  role_code text not null references app_role(code) on update cascade,
+  scope_org text not null references am_org(code) on update cascade,
+  primary key (user_id, role_code, scope_org)
+);
+comment on column app_user_role.scope_org is
+  'Người này thấy mọi phòng ban nằm dưới nút này trong cây am_org (tính cả chính nút đó).';
+
+create table if not exists app_audit (
+  id       bigserial primary key,
+  at       timestamptz not null default now(),
+  user_id  uuid,
+  email    text,
+  tbl      text not null,
+  op       text not null check (op in ('INSERT', 'UPDATE', 'DELETE')),
+  pk       text,
+  old_data jsonb,
+  new_data jsonb
+);
+comment on table app_audit is
+  'Nhật ký thay đổi. UPDATE chỉ lưu các cột thực sự đổi (old_data/new_data cùng tập khoá). email bắt đầu bằng "sql:" = thay đổi chạy thẳng từ SQL Editor.';
+create index if not exists app_audit_at_idx  on app_audit (at desc);
+create index if not exists app_audit_tbl_idx on app_audit (tbl, at desc);
+
+
+-- =====================================================================
+-- 2. DỮ LIỆU GỐC
+-- =====================================================================
+
+insert into app_module (code, name_en, name_vi, sort) values
+  ('assets',   'Assets',                'Tài sản',                  10),
+  ('master',   'Master data',           'Danh mục',                 20),
+  ('system',   'System',                'Hệ thống',                 30),
+  ('security', 'Users & permissions',   'Người dùng & phân quyền',  40),
+  -- Các khu của module Quản lý dự án (giai đoạn 2–5). Có sẵn từ bây giờ để
+  -- ma trận quyền cấu hình trước được.
+  ('budget',   'Budget',                'Ngân sách',                50),
+  ('project',  'Projects',              'Dự án',                    60),
+  ('approval', 'Approvals',             'Phê duyệt',                70),
+  ('payment',  'Payments',              'Thanh toán',               80),
+  ('report',   'Reports',               'Báo cáo',                  90)
+on conflict (code) do update
+  set name_en = excluded.name_en, name_vi = excluded.name_vi, sort = excluded.sort;
+
+insert into app_role (code, entity, name_en, name_vi, prepares, default_scope, sort) values
+  ('DEPT_STAFF', 'SSP', 'Dept Staff',              'Nhân viên bộ phận',           true,  null,   10),
+  ('DEPT_HEAD',  'SSP', 'Dept Head',               'Trưởng bộ phận',              false, null,   20),
+  ('DOF',        'SSP', 'Director of Finance',     'Trưởng bộ phận tài chính',    false, 'SOF',  30),
+  ('HOTEL_GM',   'SSP', 'Hotel GM',                'GM khách sạn',                false, 'SOF',  40),
+  ('PURCHASING', 'SSP', 'Purchasing',              'Thu mua',                     true,  'SOF',  50),
+  ('CP_ADMIN',   'CP',  'Office Building Admin',   'Admin cao ốc văn phòng',      true,  'CP',   60),
+  ('CP_MAINT',   'CP',  'Maintenance Manager',     'Quản lý bảo trì',             false, 'CP',   70),
+  ('CP_HEAD',    'CP',  'Head of Office Building', 'Trưởng cao ốc văn phòng',     false, 'CP',   80),
+  ('JVC_ADMIN',  'JVC', 'JVC Admin',               'Admin văn phòng JVC',         true,  'PHCL', 90),
+  ('AM_COORD',   'JVC', 'AM Coordinator',          'Điều phối quản lý tài sản',   true,  'PHCL', 100),
+  ('AM_EXEC',    'JVC', 'AM Executive',            'Chuyên viên quản lý tài sản', false, 'PHCL', 110),
+  ('CHIEF_ACC',  'JVC', 'Chief Accountant',        'Kế toán trưởng',              false, 'PHCL', 120),
+  ('JVC_GM',     'JVC', 'JVC GM',                  'GM văn phòng JVC',            false, 'PHCL', 130),
+  ('SYS_ADMIN',  'SYS', 'System Admin',            'Quản trị hệ thống',           false, 'PHCL', 900)
+on conflict (code) do update
+  set entity = excluded.entity, name_en = excluded.name_en, name_vi = excluded.name_vi,
+      prepares = excluded.prepares, default_scope = excluded.default_scope, sort = excluded.sort;
+
+/* Ma trận quyền MẶC ĐỊNH. Mỗi chữ là một quyền:
+     V xem · C tạo · E sửa · A duyệt · M quản trị (thao tác phá huỷ: xoá hàng
+     loạt, đặt lại bộ đếm, sửa quyền...)
+   "on conflict do nothing": chạy lại file này KHÔNG ghi đè những gì quản trị
+   đã chỉnh trong app. Chỉ thêm ô còn thiếu. */
+with grp(role_code, g) as (values
+  ('DEPT_STAFF','prep'), ('PURCHASING','prep'), ('CP_ADMIN','prep'), ('JVC_ADMIN','prep'),
+  ('DEPT_HEAD','appr'),  ('DOF','appr'),        ('HOTEL_GM','appr'),
+  ('CP_MAINT','appr'),   ('CP_HEAD','appr'),    ('CHIEF_ACC','appr'), ('JVC_GM','appr'),
+  ('AM_COORD','am'),     ('AM_EXEC','amx')
+),
+def(g, module_code, f) as (values
+  -- Người lập đề xuất
+  ('prep','assets','V'),   ('prep','master','V'),   ('prep','budget','VCE'),
+  ('prep','project','VCE'),('prep','approval','V'), ('prep','payment','V'),  ('prep','report','V'),
+  -- Người duyệt
+  ('appr','assets','V'),   ('appr','master','V'),   ('appr','budget','VA'),
+  ('appr','project','VA'), ('appr','approval','VA'),('appr','payment','V'),  ('appr','report','V'),
+  -- AM Coordinator: vận hành sổ tài sản hằng ngày, lập PA/MC, là bước duyệt
+  -- đầu tiên phía JVC, nạp file kế toán
+  ('am','assets','VCEM'),  ('am','master','VCE'),   ('am','system','VCE'),
+  ('am','budget','VCEA'),  ('am','project','VCEA'), ('am','approval','VA'),
+  ('am','payment','VCE'),  ('am','report','V'),
+  -- AM Executive: đánh giá và duyệt, sửa được sổ tài sản
+  ('amx','assets','VCE'),  ('amx','master','VCE'),  ('amx','system','V'),
+  ('amx','budget','VA'),   ('amx','project','VA'),  ('amx','approval','VA'),
+  ('amx','payment','V'),   ('amx','report','V')
+)
+insert into app_permission (role_code, module_code, can_view, can_create, can_edit, can_approve, can_admin)
+select grp.role_code, def.module_code,
+       def.f like '%V%', def.f like '%C%', def.f like '%E%', def.f like '%A%', def.f like '%M%'
+from   grp join def using (g)
+on conflict (role_code, module_code) do nothing;
+
+-- System Admin: mọi quyền trên mọi khu.
+insert into app_permission (role_code, module_code, can_view, can_create, can_edit, can_approve, can_admin)
+select 'SYS_ADMIN', m.code, true, true, true, true, true from app_module m
+on conflict (role_code, module_code) do nothing;
+
+
+-- =====================================================================
+-- 3. HÀM KIỂM TRA QUYỀN
+-- =====================================================================
+
+-- Claims của JWT trong request hiện tại; {} khi không có (SQL Editor).
+-- nullif vì biến có thể là chuỗi rỗng, mà ''::jsonb là lỗi.
+create or replace function app_claims()
+returns jsonb
+language sql
+stable
+as $$
+  select coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb)
+$$;
+
+/* Được tin cậy tuyệt đối khi:
+     * kết nối thẳng vào database (SQL Editor, migration): mọi request qua
+       API đều đăng nhập bằng vai `authenticator`, nên session_user khác nó
+       nghĩa là có người cầm mật khẩu database;
+     * hoặc request mang service key (chỉ dùng phía server, không bao giờ ở
+       trình duyệt).
+   session_user KHÔNG đổi bên trong hàm SECURITY DEFINER — current_user mới
+   đổi — nên kiểm tra này đúng ở mọi chỗ gọi. */
+create or replace function app_trusted()
+returns boolean
+language sql
+stable
+as $$
+  select session_user <> 'authenticator'
+      or app_claims() ->> 'role' = 'service_role'
+$$;
+
+-- Tài khoản đang hoạt động và có ít nhất một vai trò.
+create or replace function app_is_member()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select app_trusted()
+      or exists (select 1
+                 from   app_user u
+                 join   app_user_role ur on ur.user_id = u.id
+                 where  u.id = auth.uid() and u.active)
+$$;
+
+-- Có quyền p_action trên khu p_module qua BẤT KỲ vai trò nào không.
+create or replace function app_can(p_module text, p_action text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select app_trusted()
+      or exists (
+           select 1
+           from   app_user u
+           join   app_user_role ur on ur.user_id = u.id
+           join   app_permission p on p.role_code = ur.role_code
+                                  and p.module_code = p_module
+           where  u.id = auth.uid()
+             and  u.active
+             and  case p_action
+                    when 'view'    then p.can_view
+                    when 'create'  then p.can_create
+                    when 'edit'    then p.can_edit
+                    when 'approve' then p.can_approve
+                    when 'admin'   then p.can_admin
+                    else false
+                  end)
+$$;
+
+-- Dòng đầu tiên của mọi hàm SECURITY DEFINER có ghi dữ liệu.
+create or replace function app_require(p_module text, p_action text)
+returns void
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if not app_can(p_module, p_action) then
+    raise exception 'Không có quyền "%" trên "%". / Permission "%" on "%" is required.',
+      p_action, p_module, p_action, p_module
+      using errcode = '42501';
+  end if;
+end $$;
+
+/* Mọi mã phòng ban/đơn vị nằm trong phạm vi của người dùng: các nút phạm vi
+   của mọi vai trò, cộng toàn bộ con cháu của chúng trong am_org. */
+create or replace function app_scope_orgs()
+returns setof text
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  with recursive s(code) as (
+    select o.code from am_org o where app_trusted()
+    union
+    select ur.scope_org
+    from   app_user_role ur
+    join   app_user u on u.id = ur.user_id
+    where  u.id = auth.uid() and u.active
+    union
+    select o.code from am_org o join s on o.parent_code = s.code
+  )
+  select code from s
+$$;
+
+/* Lọc một danh sách id tài sản về những dòng nằm trong phạm vi. Các hàm
+   SECURITY DEFINER (sửa/xoá hàng loạt, hoàn tác) chạy vượt RLS, nên phải tự
+   lọc — nếu không, người có quyền sửa ở phòng KIT sẽ sửa được tài sản của
+   phòng khác chỉ bằng cách gửi id của nó. */
+create or replace function app_scope_ids(p_ids bigint[])
+returns bigint[]
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(array_agg(a.id), '{}'::bigint[])
+  from   am_asset a
+  where  a.id = any(p_ids)
+    and  a.dept_code in (select app_scope_orgs())
+$$;
+
+-- Mọi thứ app cần biết về người đang đăng nhập, trong một lần gọi.
+create or replace function app_me()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select jsonb_build_object(
+    'id',        u.id,
+    'email',     u.email,
+    'full_name', u.full_name,
+    'active',    u.active,
+    'roles', coalesce((
+        select jsonb_agg(jsonb_build_object(
+                 'role', ur.role_code, 'scope', ur.scope_org,
+                 'name_en', r.name_en, 'name_vi', r.name_vi, 'entity', r.entity)
+               order by r.sort, ur.scope_org)
+        from   app_user_role ur join app_role r on r.code = ur.role_code
+        where  ur.user_id = u.id), '[]'::jsonb),
+    'perms', coalesce((
+        select jsonb_object_agg(x.module_code, x.a)
+        from (select p.module_code,
+                     jsonb_build_object(
+                       'view',    bool_or(p.can_view),
+                       'create',  bool_or(p.can_create),
+                       'edit',    bool_or(p.can_edit),
+                       'approve', bool_or(p.can_approve),
+                       'admin',   bool_or(p.can_admin)) as a
+              from   app_user_role ur
+              join   app_permission p on p.role_code = ur.role_code
+              where  ur.user_id = u.id and u.active
+              group  by p.module_code) x), '{}'::jsonb))
+  from app_user u
+  where u.id = auth.uid()
+$$;
+
+/* Cấp quyền quản trị cho TÀI KHOẢN ĐẦU TIÊN. Chỉ chạy được từ SQL Editor —
+   không ai gọi được qua API, kể cả người đã đăng nhập. */
+create or replace function app_bootstrap_admin(p_email text)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_id uuid;
+begin
+  if session_user = 'authenticator' then
+    raise exception 'Chỉ chạy được từ SQL Editor của Supabase.' using errcode = '42501';
+  end if;
+  select id into v_id from auth.users where lower(email) = lower(trim(p_email));
+  if v_id is null then
+    raise exception 'Chưa có tài khoản %. Tạo trước ở Authentication → Users → Add user (tick Auto Confirm User).', p_email;
+  end if;
+
+  insert into app_user (id, email, full_name)
+  values (v_id, lower(trim(p_email)), split_part(lower(trim(p_email)), '@', 1))
+  on conflict (id) do update set active = true;
+
+  insert into app_user_role (user_id, role_code, scope_org) values
+    (v_id, 'SYS_ADMIN', 'PHCL'),
+    (v_id, 'AM_COORD',  'PHCL')
+  on conflict do nothing;
+
+  return 'OK: ' || lower(trim(p_email)) || ' = System Admin + AM Coordinator, phạm vi PHCL';
+end $$;
+
+
+-- =====================================================================
+-- 4. TÀI KHOẢN AUTH → app_user
+-- =====================================================================
+
+create or replace function app_on_auth_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  -- Không có email (vd đăng nhập bằng số điện thoại) thì bỏ qua: nếu để lệnh
+  -- insert dưới đây lỗi thì chính việc TẠO TÀI KHOẢN trong Auth cũng hỏng theo.
+  if new.email is null then
+    return new;
+  end if;
+  insert into app_user (id, email, full_name)
+  values (new.id, lower(new.email),
+          coalesce(nullif(new.raw_user_meta_data ->> 'full_name', ''),
+                   split_part(lower(new.email), '@', 1)))
+  on conflict (id) do update set email = excluded.email;
+  return new;
+end $$;
+
+drop trigger if exists app_on_auth_user on auth.users;
+create trigger app_on_auth_user
+  after insert or update of email on auth.users
+  for each row execute function app_on_auth_user();
+
+-- Tài khoản đã tạo TRƯỚC khi có trigger.
+insert into app_user (id, email, full_name)
+select id, lower(email), split_part(lower(email), '@', 1)
+from   auth.users
+where  email is not null
+on conflict (id) do nothing;
+
+
+-- =====================================================================
+-- 5. NHẬT KÝ THAY ĐỔI
+-- =====================================================================
+
+create or replace function app_audit_row()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  o jsonb;
+  n jsonb;
+  r jsonb;
+begin
+  if tg_op = 'INSERT' then
+    n := to_jsonb(new);
+    r := n;
+  elsif tg_op = 'DELETE' then
+    o := to_jsonb(old);
+    r := o;
+  else
+    r := to_jsonb(new);
+    o := to_jsonb(old);
+    -- Chỉ giữ các cột thực sự đổi. Một lần nạp lại sổ cũ đụng 16.000 dòng mà
+    -- phần lớn không đổi gì — những dòng đó không để lại dấu vết nào.
+    select jsonb_object_agg(e.key, e.value) into n
+    from   jsonb_each(r) e
+    where  o -> e.key is distinct from e.value;
+    if n is null then
+      return null;
+    end if;
+    select jsonb_object_agg(k, o -> k) into o from jsonb_object_keys(n) k;
+  end if;
+
+  insert into app_audit (user_id, email, tbl, op, pk, old_data, new_data)
+  values (auth.uid(),
+          coalesce(app_claims() ->> 'email',
+                   case when app_trusted() then 'sql:' || session_user end),
+          tg_table_name,
+          tg_op,
+          coalesce(r ->> 'id', r ->> 'code', r ->> 'iso2', r ->> 'alias_norm',
+                   r ->> 'raw_norm', r ->> 'alias', r ->> 'key',
+                   nullif(concat_ws('|', r ->> 'dept_code', r ->> 'letters', r ->> 'kind',
+                                         r ->> 'user_id', r ->> 'role_code',
+                                         r ->> 'module_code', r ->> 'scope_org'), '')),
+          o, n);
+  return null;
+end $$;
+
+/* Bảng bộ đếm KHÔNG gắn: mỗi lần cấp số đã ghi vào am_counter_log rồi, gắn
+   thêm chỉ nhân đôi. am_data_source cũng vậy — bản thân nó đã là nhật ký. */
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'am_setting','am_org','am_org_alias','am_category_group','am_category',
+    'am_unit','am_origin','am_origin_alias','am_origin_rejected','am_location',
+    'am_product','am_shipment','am_shipment_line','am_asset','am_alr','am_alr_line',
+    'am_xls_template','am_xls_column',
+    'app_module','app_role','app_permission','app_user','app_user_role'
+  ] loop
+    execute format('drop trigger if exists app_audit on %I', t);
+    execute format('create trigger app_audit after insert or update or delete on %I '
+                   'for each row execute function app_audit_row()', t);
+  end loop;
+end $$;
+
+
+-- =====================================================================
+-- 6. RLS — XOÁ SẠCH POLICY CŨ, DỰNG LẠI TỪ ĐẦU
+--
+-- Xoá TẤT CẢ policy hiện có trên bảng am_* / app_* thay vì xoá theo tên:
+-- chỉ cần sót một policy "for all to anon using (true)" của bản cũ là cả hệ
+-- thống mở, vì các policy được OR với nhau.
+--
+-- Lệnh gọi hàm được bọc trong (select ...) để Postgres tính MỘT lần cho cả
+-- câu truy vấn, không phải một lần cho mỗi dòng trong 16.000 dòng.
+-- =====================================================================
+
+do $$
+declare p record;
+begin
+  for p in
+    select schemaname, tablename, policyname
+    from   pg_policies
+    where  schemaname = 'public'
+      and  (tablename like 'am\_%' or tablename like 'app\_%')
+  loop
+    execute format('drop policy %I on %I.%I', p.policyname, p.schemaname, p.tablename);
+  end loop;
+end $$;
+
+do $$
+declare t text;
+begin
+  -- Bật RLS trên mọi bảng của app (04 đã bật cho am_*; đây là lưới an toàn).
+  foreach t in array array[
+    'am_setting','am_org','am_org_alias','am_category_group','am_category',
+    'am_unit','am_origin','am_origin_alias','am_origin_rejected','am_location',
+    'am_product','am_asset_seq','am_barcode_seq','am_counter_log','am_shipment',
+    'am_shipment_line','am_asset','am_alr','am_alr_line','am_alr_seq',
+    'am_xls_template','am_xls_column','am_data_source',
+    'app_module','app_role','app_permission','app_user','app_user_role','app_audit'
+  ] loop
+    execute format('alter table %I enable row level security', t);
+  end loop;
+
+  -- Danh mục: mọi thành viên đọc được (form nào cũng cần), sửa cần quyền master.
+  foreach t in array array[
+    'am_org','am_org_alias','am_category_group','am_category','am_unit',
+    'am_origin','am_origin_alias','am_origin_rejected','am_location','am_product'
+  ] loop
+    execute format('create policy %I on %I for select to authenticated using ((select app_is_member()))',
+                   t || '_read', t);
+    execute format('create policy %I on %I for all to authenticated '
+                   'using ((select app_can(''master'', ''edit''))) '
+                   'with check ((select app_can(''master'', ''edit'')))',
+                   t || '_write', t);
+  end loop;
+
+  -- Cấu hình hệ thống: đọc được, sửa cần quyền system.
+  foreach t in array array['am_setting','am_xls_template','am_xls_column'] loop
+    execute format('create policy %I on %I for select to authenticated using ((select app_is_member()))',
+                   t || '_read', t);
+    execute format('create policy %I on %I for all to authenticated '
+                   'using ((select app_can(''system'', ''edit''))) '
+                   'with check ((select app_can(''system'', ''edit'')))',
+                   t || '_write', t);
+  end loop;
+
+  -- Bộ đếm: chỉ đọc. Ghi chỉ qua hàm SECURITY DEFINER.
+  foreach t in array array['am_asset_seq','am_barcode_seq','am_counter_log','am_alr_seq'] loop
+    execute format('create policy %I on %I for select to authenticated '
+                   'using ((select app_can(''assets'', ''view'')))',
+                   t || '_read', t);
+  end loop;
+
+  -- Vai trò, khu chức năng, ma trận quyền: ai cũng đọc được (app cần để vẽ
+  -- menu), chỉ quản trị sửa.
+  foreach t in array array['app_module','app_role','app_permission'] loop
+    execute format('create policy %I on %I for select to authenticated using ((select app_is_member()))',
+                   t || '_read', t);
+    execute format('create policy %I on %I for all to authenticated '
+                   'using ((select app_can(''security'', ''admin''))) '
+                   'with check ((select app_can(''security'', ''admin'')))',
+                   t || '_write', t);
+  end loop;
+end $$;
+
+-- Nguồn dữ liệu: nhật ký chỉ-thêm của các lần nạp master data.
+create policy am_data_source_read on am_data_source
+  for select to authenticated using ((select app_is_member()));
+create policy am_data_source_add on am_data_source
+  for insert to authenticated
+  with check ((select app_can('master', 'edit')) or (select app_can('system', 'edit')));
+
+-- Sổ tài sản: theo quyền VÀ theo phạm vi phòng ban. Không có policy DELETE —
+-- xoá chỉ qua am_undo_intake / am_bulk_delete.
+create policy am_asset_read on am_asset
+  for select to authenticated
+  using ((select app_can('assets', 'view'))
+         and dept_code in (select app_scope_orgs()));
+create policy am_asset_add on am_asset
+  for insert to authenticated
+  with check ((select app_can('assets', 'create'))
+              and dept_code in (select app_scope_orgs()));
+create policy am_asset_edit on am_asset
+  for update to authenticated
+  using      ((select app_can('assets', 'edit')) and dept_code in (select app_scope_orgs()))
+  with check ((select app_can('assets', 'edit')) and dept_code in (select app_scope_orgs()));
+
+-- Đợt giao hàng và biên bản tem nhãn: phòng ban để trống = đợt nhiều phòng,
+-- ai có quyền xem tài sản đều thấy.
+create policy am_shipment_read on am_shipment
+  for select to authenticated
+  using ((select app_can('assets', 'view'))
+         and (dept_code is null or dept_code in (select app_scope_orgs())));
+create policy am_shipment_write on am_shipment
+  for all to authenticated
+  using ((select app_can('assets', 'create'))) with check ((select app_can('assets', 'create')));
+
+create policy am_shipment_line_read on am_shipment_line
+  for select to authenticated
+  using ((select app_can('assets', 'view'))
+         and exists (select 1 from am_shipment s where s.id = shipment_id));
+create policy am_shipment_line_write on am_shipment_line
+  for all to authenticated
+  using ((select app_can('assets', 'create'))) with check ((select app_can('assets', 'create')));
+
+create policy am_alr_read on am_alr
+  for select to authenticated
+  using ((select app_can('assets', 'view'))
+         and (dept_code is null or dept_code in (select app_scope_orgs())));
+create policy am_alr_write on am_alr
+  for all to authenticated
+  using ((select app_can('assets', 'create'))) with check ((select app_can('assets', 'create')));
+
+create policy am_alr_line_read on am_alr_line
+  for select to authenticated
+  using ((select app_can('assets', 'view'))
+         and exists (select 1 from am_alr a where a.id = alr_id));
+create policy am_alr_line_write on am_alr_line
+  for all to authenticated
+  using ((select app_can('assets', 'create'))) with check ((select app_can('assets', 'create')));
+
+-- Người dùng: mỗi người thấy chính mình; quản trị thấy và sửa tất cả.
+create policy app_user_read on app_user
+  for select to authenticated
+  using (id = auth.uid() or (select app_can('security', 'view')));
+create policy app_user_write on app_user
+  for all to authenticated
+  using ((select app_can('security', 'admin'))) with check ((select app_can('security', 'admin')));
+
+create policy app_user_role_read on app_user_role
+  for select to authenticated
+  using (user_id = auth.uid() or (select app_can('security', 'view')));
+create policy app_user_role_write on app_user_role
+  for all to authenticated
+  using ((select app_can('security', 'admin'))) with check ((select app_can('security', 'admin')));
+
+-- Nhật ký: chỉ đọc, chỉ người có quyền xem khu phân quyền. Trigger ghi vào
+-- bằng quyền của chủ sở hữu nên không cần policy INSERT.
+create policy app_audit_read on app_audit
+  for select to authenticated using ((select app_can('security', 'view')));
+
+
+-- =====================================================================
+-- 7. VIEW CHẠY BẰNG QUYỀN NGƯỜI GỌI
+--
+-- Mặc định view chạy bằng quyền CHỦ SỞ HỮU (postgres) và bỏ qua RLS — tức là
+-- mọi policy ở trên sẽ vô nghĩa với ai đọc qua view. Các file 05, 07, 13 cũng
+-- đã khai báo sẵn tuỳ chọn này, để chạy lại chúng không xoá mất nó.
+-- =====================================================================
+
+alter view am_alr_print           set (security_invoker = true);
+alter view am_data_source_current set (security_invoker = true);
+alter view am_product_term        set (security_invoker = true);
+
+
+-- =====================================================================
+-- 8. QUYỀN CẤP CHO VAI TRÒ DATABASE
+-- =====================================================================
+
+-- anon: không còn gì. Kể cả quyền EXECUTE mà Postgres mặc định cấp cho PUBLIC.
+revoke all on all tables    in schema public from anon;
+revoke all on all sequences in schema public from anon;
+revoke all on all functions in schema public from anon, public;
+
+-- Supabase mặc định cấp quyền cho anon trên MỌI bảng/hàm tạo mới trong public.
+-- Tắt đi, để file SQL viết sau này không vô tình mở lại cửa.
+alter default privileges in schema public revoke all on tables    from anon;
+alter default privileges in schema public revoke all on sequences from anon;
+alter default privileges in schema public revoke all on functions from anon, public;
+
+-- authenticated: gọi được hàm (hàm nào ghi dữ liệu thì tự kiểm tra vai trò),
+-- dùng được bảng (RLS lọc dòng).
+grant execute on all functions in schema public to authenticated;
+revoke execute on function app_bootstrap_admin(text) from authenticated;
+
+grant select, insert, update, delete on app_module, app_role, app_permission,
+                                        app_user, app_user_role to authenticated;
+grant select on app_audit to authenticated;
+revoke insert, update, delete on app_audit from authenticated;
+revoke update, delete on am_data_source from authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+
+
+-- =====================================================================
+-- 9. KIỂM CHỨNG — Supabase SQL Editor chỉ hiện kết quả câu lệnh CUỐI.
+-- =====================================================================
+
+select 'Bảng chưa bật RLS (phải = 0)' as "Mục",
+       count(*)::text as "Thực tế", '0' as "Mong đợi",
+       case when count(*) = 0 then '✔' else '✘ HỎNG' end as "Đạt"
+from   pg_tables
+where  schemaname = 'public' and not rowsecurity
+union all
+select 'Policy còn mở cho anon (phải = 0)', count(*)::text, '0',
+       case when count(*) = 0 then '✔' else '✘ HỎNG' end
+from   pg_policies
+where  schemaname = 'public' and 'anon' = any (roles)
+union all
+select 'Bảng anon còn quyền (phải = 0)', count(distinct table_name)::text, '0',
+       case when count(*) = 0 then '✔' else '✘ HỎNG' end
+from   information_schema.role_table_grants
+where  grantee = 'anon' and table_schema = 'public'
+union all
+select 'Hàm anon còn gọi được (phải = 0)', count(*)::text, '0',
+       case when count(*) = 0 then '✔' else '✘ HỎNG' end
+from   pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where  n.nspname = 'public' and has_function_privilege('anon', p.oid, 'execute')
+union all
+select 'View bỏ qua RLS (phải = 0)', count(*)::text, '0',
+       case when count(*) = 0 then '✔' else '✘ HỎNG' end
+from   pg_class c join pg_namespace n on n.oid = c.relnamespace
+where  n.nspname = 'public' and c.relkind = 'v'
+  and  not coalesce(c.reloptions @> array['security_invoker=true'], false)
+union all
+select 'Vai trò', count(*)::text, '14',
+       case when count(*) = 14 then '✔' else '✘ HỎNG' end
+from   app_role
+union all
+select 'Ô ma trận quyền', count(*)::text, '> 0',
+       case when count(*) > 0 then '✔' else '✘ HỎNG' end
+from   app_permission
+union all
+select 'Tài khoản đã đồng bộ', count(*)::text, '> 0',
+       case when count(*) > 0 then '✔'
+            else '✘ Tạo tài khoản ở Authentication → Users trước' end
+from   app_user
+union all
+select 'System Admin', count(*)::text, '>= 1',
+       case when count(*) >= 1 then '✔'
+            else '✘ Chạy: select app_bootstrap_admin(''email@jvcplaza.vn'');' end
+from   app_user_role
+where  role_code = 'SYS_ADMIN';
+
+
+-- ####################################################################
+-- ##  18_pm_budget.sql
+-- ####################################################################
+
+-- =====================================================================
+-- 18_pm_budget.sql — QUẢN LÝ DỰ ÁN, GIAI ĐOẠN 2: NGÂN SÁCH + DỰ ÁN
+--
+-- Chạy SAU 17_auth.sql (dùng app_can / app_scope_orgs của nó — chạy trước sẽ
+-- báo lỗi ngay ở phần policy, đó là cố ý).
+--
+--   pm_budget_year   một dòng mỗi năm: tỷ giá cố định, trần SSP, trạng thái
+--   pm_budget_round  mỗi VÒNG NỘP là một bản chụp ("CAPEX 2026 20251031");
+--                    đúng một vòng mỗi năm là is_final = danh sách đã duyệt
+--                    (sheet "Master Data" của file tổng hợp)
+--   pm_budget_line   các dòng của một vòng
+--   pm_project       dự án đang/đã thực hiện, khoá theo mã dự án CON
+--   pm_vendor        nhà cung cấp — khoá bằng MÃ ĐỐI TƯỢNG của kế toán, để
+--                    giai đoạn 5 khớp được với file thu chi ngân hàng
+--   pm_vendor_score  điểm chấm thầu (sheet Vendor Data của hồ sơ)
+--
+-- Pháp nhân KHÔNG lưu: nó suy ra từ mã phòng ban qua cây am_org (phòng khách
+-- sạn → SSP, CEN → CP, JVC → JVC). Lưu thêm một bản thì sớm muộn hai bản sẽ
+-- nói hai chuyện khác nhau.
+--
+-- Chạy lại nhiều lần vô hại.
+-- =====================================================================
+
+
+-- =====================================================================
+-- 1. BẢNG
+-- =====================================================================
+
+create table if not exists pm_budget_year (
+  year        int primary key check (year between 2000 and 2100),
+  fx_rate     numeric(12, 2) not null default 26000 check (fx_rate > 0),
+  reserve_pct numeric(5, 2)  not null default 3,
+  ssp_revenue numeric(18, 0),
+  ssp_cap     numeric(18, 0),
+  cp_revenue  numeric(18, 0),
+  status      text not null default 'draft'
+              check (status in ('draft', 'submitted', 'approved', 'closed')),
+  note        text,
+  updated_at  timestamptz not null default now()
+);
+comment on column pm_budget_year.fx_rate is
+  'VND cho 1 USD, CỐ ĐỊNH cả năm ngân sách — để ngưỡng duyệt tính bằng USD không tự nhảy giữa năm.';
+comment on column pm_budget_year.ssp_cap is
+  'Trần ngân sách SSP như ghi trong file ("Total CAPEX budget - 3% FF&E Reserve"). Để trống thì = ssp_revenue × reserve_pct. CP và JVC không có trần.';
+
+create table if not exists pm_budget_round (
+  id           bigserial primary key,
+  year         int  not null references pm_budget_year(year) on update cascade,
+  label        text not null,
+  round_date   date,
+  is_final     boolean not null default false,
+  source_file  text,
+  source_sheet text,
+  line_count   int not null default 0,
+  total_value  numeric(18, 2) not null default 0,
+  imported_at  timestamptz not null default now(),
+  imported_by  text,
+  unique (year, label)
+);
+comment on table pm_budget_round is
+  'Một vòng nộp ngân sách. Nạp lại cùng (năm, nhãn) thì THAY dòng của vòng đó, không nhân đôi.';
+-- Mỗi năm đúng một danh sách chốt.
+create unique index if not exists pm_budget_round_final_uq
+  on pm_budget_round (year) where is_final;
+
+create table if not exists pm_budget_line (
+  id                   bigserial primary key,
+  round_id             bigint not null references pm_budget_round(id) on delete cascade,
+  line_no              int  not null,
+  project_code         text not null,
+  current_code         text,
+  category             text,
+  -- Mã phòng ban để dạng chữ, KHÔNG ràng buộc vào am_org: file cũ có mã sai
+  -- chính tả, và từ chối cả dòng vì một mã sai là mất dữ liệu ngân sách thật.
+  -- Màn hình đánh dấu mã không có trong danh mục.
+  dept_code            text,
+  dept_name            text,
+  request_date         date,
+  investment_type      text,
+  reason               text,
+  name                 text,
+  estimated_value      numeric(18, 2),
+  gm_approved          numeric(18, 2),
+  possibility          numeric(4, 1),
+  impact               numeric(4, 1),
+  assessment           numeric(6, 1),
+  risk_level           text,
+  start_date           date,
+  end_date             date,
+  duration_days        int,
+  asset_item           text,
+  location             text,
+  rationale            text,
+  tech_standard        text,
+  quantity             numeric(18, 3),
+  unit_price           numeric(18, 2),
+  amount               numeric(18, 2),
+  reference            text,
+  previous_code        text,
+  supplier             text,
+  details              text,
+  project_category     text,
+  area_category        text,
+  color_status         text,
+  purchasing_in_charge text,
+  owner_note           text,
+  dept_response        text,
+  note                 text,
+  -- Phân bổ theo tháng (cột "Expected delivery in month..."). Cột số thay vì
+  -- jsonb để cộng dồn theo tháng/quý bằng SQL thẳng.
+  m01 numeric(18, 2), m02 numeric(18, 2), m03 numeric(18, 2), m04 numeric(18, 2),
+  m05 numeric(18, 2), m06 numeric(18, 2), m07 numeric(18, 2), m08 numeric(18, 2),
+  m09 numeric(18, 2), m10 numeric(18, 2), m11 numeric(18, 2), m12 numeric(18, 2),
+  unique (round_id, line_no)
+);
+create index if not exists pm_budget_line_code_idx on pm_budget_line (project_code);
+create index if not exists pm_budget_line_dept_idx on pm_budget_line (dept_code);
+comment on column pm_budget_line.owner_note is
+  'Câu hỏi / nhận xét của chủ đầu tư ở vòng nộp (cột ngay sau phần phân bổ tháng).';
+comment on column pm_budget_line.dept_response is
+  'Bộ phận trả lời câu hỏi của chủ đầu tư.';
+
+create table if not exists pm_vendor (
+  code     text primary key,
+  name     text not null,
+  tax_code text unique,
+  aliases  text,
+  note     text,
+  active   boolean not null default true
+);
+comment on column pm_vendor.code is
+  'Mã đối tượng của kế toán (cột "Mã đối tượng" trong file thu chi tiền gửi), vd CLS, SHIJI.';
+comment on column pm_vendor.aliases is
+  'Các cách viết khác đã gặp trong hồ sơ ("STAR QUALITY", "Chất Lượng Sao"...), cách nhau bằng dấu phẩy. Dùng để khớp tên nhà thầu trong hồ sơ về đúng mã.';
+
+create table if not exists pm_project (
+  code              text primary key,
+  main_code         text not null,
+  year              int  not null,
+  dept_code         text not null,
+  name              text,
+  category          text default 'FFE',
+  budgeted          boolean not null default true,
+  investment_type   text,
+  project_type      text,
+  procurement_type  text,
+  share_pct         numeric(7, 4),
+  estimated_value   numeric(18, 2),
+  possibility       numeric(4, 1),
+  impact            numeric(4, 1),
+  assessment        numeric(6, 1),
+  risk_level        text,
+  risk_category     text,
+  project_category  text,
+  area_category     text,
+  asset_item        text,
+  location          text,
+  reason            text,
+  rationale         text,
+  tech_standard     text,
+  reference         text,
+  previous_code     text,
+  proposed_supplier text,
+  planned_start     date,
+  planned_end       date,
+  request_date      date,
+  assess_date       date,
+  approve_date      date,
+  purchase_date     date,
+  handover_date     date,
+  contract_value    numeric(18, 2),
+  contract_volume   numeric(18, 3),
+  chosen_vendor     text,
+  vendor_code       text references pm_vendor(code) on update cascade on delete set null,
+  evaluation        text,
+  comment           text,
+  status_override   text check (status_override in ('pending', 'in_progress', 'completed', 'cancelled')),
+  /* Trạng thái suy từ các mốc ngày, trừ khi có người chốt tay. "Hoàn thành"
+     đòi ngày nghiệm thu KHÔNG sớm hơn các mốc trước nó: hồ sơ mẫu hay còn sót
+     ngày nghiệm thu của file gốc (15/03/2025 trên một dự án đề xuất 2026), và
+     tin mù ngày đó là báo hoàn thành một dự án chưa mua. */
+  status text generated always as (
+    coalesce(status_override,
+      case
+        when handover_date is not null
+             and handover_date >= coalesce(purchase_date, approve_date, request_date, handover_date)
+          then 'completed'
+        when purchase_date is not null or approve_date is not null then 'in_progress'
+        else 'pending'
+      end)) stored,
+  source            text not null default 'app' check (source in ('app', 'dossier', 'budget')),
+  source_file       text,
+  source_modified   timestamptz,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+create index if not exists pm_project_year_idx on pm_project (year);
+create index if not exists pm_project_dept_idx on pm_project (dept_code);
+create index if not exists pm_project_main_idx on pm_project (main_code);
+comment on column pm_project.code is
+  'Mã dự án CON (FFE.ENG.19.2026.01). Dự án không chia nhỏ thì bằng mã dự án chính.';
+comment on column pm_project.share_pct is
+  'Tỷ lệ của dự án con trong dự án chính (1 = toàn bộ). Cột "Completion" trong sheet Capex Data của hồ sơ thực ra là số này, không phải tiến độ.';
+
+create table if not exists pm_vendor_score (
+  id           bigserial primary key,
+  project_code text not null references pm_project(code) on delete cascade on update cascade,
+  vendor_name  text not null,
+  check_date   date,
+  total_amount numeric(18, 2),
+  ability      numeric(7, 3),
+  technique    numeric(7, 3),
+  finance      numeric(7, 3),
+  total_score  numeric(7, 3),
+  comment      text,
+  chosen       boolean not null default false
+);
+create index if not exists pm_vendor_score_project_idx on pm_vendor_score (project_code);
+
+
+-- =====================================================================
+-- 2. LUẬT MÃ DỰ ÁN
+-- =====================================================================
+
+/* Mã chính và năm suy từ mã con, và luật cứng duy nhất của đề bài: dự án
+   NGOÀI ngân sách không bao giờ được dùng lại mã của một dự án TRONG ngân
+   sách đã duyệt. SECURITY DEFINER để nhìn thấy mọi dòng ngân sách, kể cả
+   dòng nằm ngoài phạm vi của người đang lưu. */
+create or replace function pm_project_rules()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  new.code := upper(trim(new.code));
+  new.main_code := coalesce(
+    nullif(upper(trim(new.main_code)), ''),
+    substring(new.code from '^(.*\.(?:19|20)[0-9]{2})(?:\.[0-9]{1,2})?$'),
+    new.code);
+  if new.year is null then
+    new.year := substring(new.main_code from '\.((?:19|20)[0-9]{2})$')::int;
+  end if;
+  if new.year is null then
+    raise exception 'Mã dự án % không có năm ở cuối (dạng FFE.PHÒNG.SỐ.NĂM).', new.code;
+  end if;
+
+  if not new.budgeted and exists (
+       select 1
+       from   pm_budget_line l
+       join   pm_budget_round r on r.id = l.round_id
+       where  r.is_final
+         and  new.main_code in (upper(trim(l.project_code)), upper(trim(coalesce(l.current_code, ''))))
+     ) then
+    raise exception 'Mã % đã là một dự án TRONG ngân sách được duyệt — dự án ngoài ngân sách phải dùng mã khác.',
+      new.main_code using errcode = '23505';
+  end if;
+
+  new.updated_at := now();
+  return new;
+end $$;
+
+drop trigger if exists pm_project_rules on pm_project;
+create trigger pm_project_rules
+  before insert or update on pm_project
+  for each row execute function pm_project_rules();
+
+
+-- =====================================================================
+-- 2b. NẠP MỘT VÒNG NGÂN SÁCH — TRONG MỘT GIAO DỊCH
+--
+-- "Nạp lại thì thay thế" nghĩa là xoá dòng cũ rồi ghi dòng mới. Làm bằng hai
+-- request từ trình duyệt thì mạng rớt ở giữa là vòng đó mất sạch dòng cho tới
+-- khi có người nạp lại. Trong một hàm, hoặc xong hết, hoặc không đổi gì.
+-- =====================================================================
+
+create or replace function pm_import_round(p_round jsonb, p_lines jsonb, p_cap numeric default null)
+returns bigint
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_id    bigint;
+  v_year  int  := (p_round ->> 'year')::int;
+  v_label text := p_round ->> 'label';
+  v_bad   text;
+begin
+  perform app_require('budget', 'create');
+  -- Hàm chạy vượt RLS, nên tự giữ luật phạm vi: ai không có phạm vi gốc chỉ
+  -- nạp được dòng của phòng ban mình.
+  if not app_scope_root() then
+    select string_agg(distinct e ->> 'dept_code', ', ') into v_bad
+    from   jsonb_array_elements(p_lines) e
+    where  coalesce(e ->> 'dept_code', '') not in (select app_scope_orgs());
+    if v_bad is not null then
+      raise exception 'Dòng của phòng ban % nằm ngoài phạm vi của bạn.', v_bad using errcode = '42501';
+    end if;
+  end if;
+
+  -- Trần trong file chỉ được điền vào chỗ còn trống — con số người quản trị
+  -- đã sửa tay không bị file ghi đè.
+  insert into pm_budget_year (year, ssp_cap) values (v_year, p_cap)
+  on conflict (year) do update
+    set ssp_cap = coalesce(pm_budget_year.ssp_cap, excluded.ssp_cap);
+
+  select id into v_id from pm_budget_round where year = v_year and label = v_label;
+  if v_id is null then
+    insert into pm_budget_round (year, label) values (v_year, v_label) returning id into v_id;
+  else
+    delete from pm_budget_line where round_id = v_id;
+  end if;
+
+  update pm_budget_round
+     set round_date   = nullif(p_round ->> 'round_date', '')::date,
+         source_file  = p_round ->> 'source_file',
+         source_sheet = p_round ->> 'source_sheet',
+         line_count   = jsonb_array_length(p_lines),
+         total_value  = coalesce((select sum((e ->> 'estimated_value')::numeric)
+                                  from jsonb_array_elements(p_lines) e), 0),
+         imported_at  = now(),
+         imported_by  = coalesce(app_claims() ->> 'email', 'sql:' || session_user)
+   where id = v_id;
+
+  if coalesce((p_round ->> 'is_final')::boolean, false) then
+    update pm_budget_round set is_final = false where year = v_year and is_final and id <> v_id;
+    update pm_budget_round set is_final = true  where id = v_id;
+  end if;
+
+  -- Dựng từng dòng theo đúng kiểu hàng của bảng: khoá JSON trùng tên cột, cột
+  -- thiếu thành null, id lấy số mới, round_id là vòng này. Hàm đặt trong
+  -- LATERAL để chạy MỘT lần mỗi dòng — viết (f(x)).* thì Postgres gọi f một lần
+  -- cho mỗi cột, và nextval bị tiêu ~60 số cho mỗi dòng.
+  insert into pm_budget_line
+  select r.*
+  from   jsonb_array_elements(p_lines) e
+  cross  join lateral jsonb_populate_record(null::pm_budget_line,
+           e || jsonb_build_object('id', nextval(pg_get_serial_sequence('pm_budget_line', 'id')),
+                                   'round_id', v_id)) r;
+
+  return v_id;
+end $$;
+
+/* Điểm chấm thầu của các dự án vừa nạp: xoá của dự án đó rồi ghi lại, cùng
+   một giao dịch, cùng lý do như trên. */
+create or replace function pm_replace_scores(p_codes text[], p_scores jsonb)
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare v_n int;
+begin
+  perform app_require('project', 'edit');
+  if not app_scope_root() and exists (
+       select 1 from pm_project p
+       where p.code = any(p_codes) and p.dept_code not in (select app_scope_orgs())) then
+    raise exception 'Có dự án nằm ngoài phạm vi của bạn.' using errcode = '42501';
+  end if;
+  delete from pm_vendor_score where project_code = any(p_codes);
+  insert into pm_vendor_score
+  select r.*
+  from   jsonb_array_elements(p_scores) e
+  cross  join lateral jsonb_populate_record(null::pm_vendor_score,
+           e || jsonb_build_object('id', nextval(pg_get_serial_sequence('pm_vendor_score', 'id')))) r
+  where  e ->> 'project_code' = any(p_codes);
+  get diagnostics v_n = row_count;
+  return v_n;
+end $$;
+
+
+-- =====================================================================
+-- 3. PHẠM VI GỐC
+--
+-- Dòng ngân sách có thể mang mã phòng ban không có trong am_org (file cũ viết
+-- sai). app_scope_orgs() chỉ trả mã có thật, nên những dòng đó sẽ vô hình với
+-- MỌI người — kể cả JVC, là người phải sửa chúng. Ai có phạm vi là một gốc
+-- của cây (PHCL) thì thấy tất cả.
+-- =====================================================================
+
+create or replace function app_scope_root()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select app_trusted()
+      or exists (select 1
+                 from   app_user_role ur
+                 join   app_user u on u.id = ur.user_id
+                 join   am_org o   on o.code = ur.scope_org
+                 where  u.id = auth.uid() and u.active and o.parent_code is null)
+$$;
+
+
+-- =====================================================================
+-- 4. RLS
+-- =====================================================================
+
+do $$
+declare p record;
+begin
+  for p in select policyname, tablename from pg_policies
+           where schemaname = 'public' and tablename like 'pm\_%'
+  loop
+    execute format('drop policy %I on public.%I', p.policyname, p.tablename);
+  end loop;
+end $$;
+
+alter table pm_budget_year  enable row level security;
+alter table pm_budget_round enable row level security;
+alter table pm_budget_line  enable row level security;
+alter table pm_project      enable row level security;
+alter table pm_vendor       enable row level security;
+alter table pm_vendor_score enable row level security;
+
+-- Năm ngân sách: ai cũng đọc (tỷ giá dùng khắp nơi). TẠO năm mới đi kèm việc
+-- nạp file ngân sách, nên chỉ cần quyền tạo; còn SỬA tỷ giá, trần, trạng thái
+-- — những con số cả năm dựa vào — thì cần quyền quản trị ngân sách.
+create policy pm_budget_year_read on pm_budget_year
+  for select to authenticated using ((select app_is_member()));
+create policy pm_budget_year_add on pm_budget_year
+  for insert to authenticated with check ((select app_can('budget', 'create')));
+create policy pm_budget_year_edit on pm_budget_year
+  for update to authenticated
+  using ((select app_can('budget', 'admin'))) with check ((select app_can('budget', 'admin')));
+create policy pm_budget_year_del on pm_budget_year
+  for delete to authenticated using ((select app_can('budget', 'admin')));
+
+-- Vòng nộp: nạp (tạo) cần quyền tạo ngân sách; xoá cả vòng cần quyền quản trị.
+create policy pm_budget_round_read on pm_budget_round
+  for select to authenticated using ((select app_can('budget', 'view')));
+create policy pm_budget_round_add on pm_budget_round
+  for insert to authenticated with check ((select app_can('budget', 'create')));
+create policy pm_budget_round_edit on pm_budget_round
+  for update to authenticated
+  using ((select app_can('budget', 'create'))) with check ((select app_can('budget', 'create')));
+create policy pm_budget_round_del on pm_budget_round
+  for delete to authenticated using ((select app_can('budget', 'admin')));
+
+-- Dòng ngân sách: theo phạm vi phòng ban. Nạp lại một vòng = xoá dòng cũ của
+-- vòng đó rồi thêm lại, nên quyền tạo đi kèm quyền xoá dòng.
+create policy pm_budget_line_read on pm_budget_line
+  for select to authenticated
+  using ((select app_can('budget', 'view'))
+         and ((select app_scope_root()) or dept_code in (select app_scope_orgs())));
+create policy pm_budget_line_add on pm_budget_line
+  for insert to authenticated
+  with check ((select app_can('budget', 'create'))
+              and ((select app_scope_root()) or dept_code in (select app_scope_orgs())));
+create policy pm_budget_line_edit on pm_budget_line
+  for update to authenticated
+  using      ((select app_can('budget', 'edit'))
+              and ((select app_scope_root()) or dept_code in (select app_scope_orgs())))
+  with check ((select app_can('budget', 'edit'))
+              and ((select app_scope_root()) or dept_code in (select app_scope_orgs())));
+create policy pm_budget_line_del on pm_budget_line
+  for delete to authenticated
+  using ((select app_can('budget', 'create'))
+         and ((select app_scope_root()) or dept_code in (select app_scope_orgs())));
+
+-- Dự án: theo quyền và phạm vi.
+create policy pm_project_read on pm_project
+  for select to authenticated
+  using ((select app_can('project', 'view'))
+         and ((select app_scope_root()) or dept_code in (select app_scope_orgs())));
+create policy pm_project_add on pm_project
+  for insert to authenticated
+  with check ((select app_can('project', 'create'))
+              and ((select app_scope_root()) or dept_code in (select app_scope_orgs())));
+create policy pm_project_edit on pm_project
+  for update to authenticated
+  using      ((select app_can('project', 'edit'))
+              and ((select app_scope_root()) or dept_code in (select app_scope_orgs())))
+  with check ((select app_can('project', 'edit'))
+              and ((select app_scope_root()) or dept_code in (select app_scope_orgs())));
+create policy pm_project_del on pm_project
+  for delete to authenticated using ((select app_can('project', 'admin')));
+
+-- Nhà cung cấp: danh mục dùng chung.
+create policy pm_vendor_read on pm_vendor
+  for select to authenticated using ((select app_is_member()));
+create policy pm_vendor_write on pm_vendor
+  for all to authenticated
+  using ((select app_can('project', 'edit'))) with check ((select app_can('project', 'edit')));
+
+-- Điểm chấm thầu: thấy được khi thấy được dự án.
+create policy pm_vendor_score_read on pm_vendor_score
+  for select to authenticated
+  using ((select app_can('project', 'view'))
+         and exists (select 1 from pm_project p where p.code = project_code));
+create policy pm_vendor_score_write on pm_vendor_score
+  for all to authenticated
+  using ((select app_can('project', 'edit'))) with check ((select app_can('project', 'edit')));
+
+
+-- =====================================================================
+-- 5. NHẬT KÝ THAY ĐỔI (cùng trigger của 17_auth.sql)
+-- =====================================================================
+
+do $$
+declare t text;
+begin
+  foreach t in array array['pm_budget_year', 'pm_budget_round', 'pm_budget_line',
+                           'pm_project', 'pm_vendor', 'pm_vendor_score'] loop
+    execute format('drop trigger if exists app_audit on %I', t);
+    execute format('create trigger app_audit after insert or update or delete on %I '
+                   'for each row execute function app_audit_row()', t);
+  end loop;
+end $$;
+
+
+-- =====================================================================
+-- 6. QUYỀN
+-- =====================================================================
+
+revoke all on pm_budget_year, pm_budget_round, pm_budget_line,
+              pm_project, pm_vendor, pm_vendor_score from anon;
+grant select, insert, update, delete on pm_budget_year, pm_budget_round, pm_budget_line,
+                                        pm_project, pm_vendor, pm_vendor_score to authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+revoke execute on function pm_project_rules() from public, anon;
+revoke execute on function app_scope_root()   from public, anon;
+grant  execute on function app_scope_root()   to authenticated;
+revoke execute on function pm_import_round(jsonb, jsonb, numeric) from public, anon;
+grant  execute on function pm_import_round(jsonb, jsonb, numeric) to authenticated;
+revoke execute on function pm_replace_scores(text[], jsonb)       from public, anon;
+grant  execute on function pm_replace_scores(text[], jsonb)       to authenticated;
+
+
+-- =====================================================================
+-- 7. KIỂM CHỨNG
+-- =====================================================================
+
+select 'Bảng pm_* có RLS' as "Mục",
+       count(*) filter (where rowsecurity)::text || '/' || count(*)::text as "Thực tế",
+       '6/6' as "Mong đợi",
+       case when count(*) = 6 and bool_and(rowsecurity) then '✔' else '✘ HỎNG' end as "Đạt"
+from   pg_tables where schemaname = 'public' and tablename like 'pm\_%'
+union all
+select 'Policy pm_* mở cho anon (phải = 0)', count(*)::text, '0',
+       case when count(*) = 0 then '✔' else '✘ HỎNG' end
+from   pg_policies where schemaname = 'public' and tablename like 'pm\_%' and 'anon' = any (roles)
+union all
+select 'Trigger luật mã dự án', count(*)::text, '1',
+       case when count(*) = 1 then '✔' else '✘ HỎNG' end
+from   pg_trigger where tgname = 'pm_project_rules' and not tgisinternal;
+
+
+-- ####################################################################
+-- ##  19_pm_workflow.sql
+-- ####################################################################
+
+-- =====================================================================
+-- 19_pm_workflow.sql — QUẢN LÝ DỰ ÁN, GIAI ĐOẠN 3: LUỒNG DUYỆT CHỨNG TỪ
+--
+-- Chạy SAU 18_pm_budget.sql.
+--
+--   pm_doc_type   tám loại chứng từ theo đúng thứ tự của tài liệu FFE:
+--                 PR → RR → PA → QC → MC → PO → CT (hợp đồng) → AH
+--   pm_chain      chuỗi duyệt theo PHÁP NHÂN × LOẠI CHỨNG TỪ. Bước 0 là vai trò
+--                 được LẬP; bước 1..n là người duyệt theo thứ tự. Sửa trong app.
+--   pm_doc        một chứng từ: số hiệu, trạng thái, nội dung (jsonb)
+--   pm_doc_step   chuỗi duyệt của MỘT lần gửi — dựng lại mỗi lần gửi lại
+--   pm_doc_event  lịch sử: ai làm gì, lúc nào, ý kiến gì
+--
+-- Trình duyệt KHÔNG ghi thẳng vào ba bảng chứng từ. Tạo, lưu, gửi, duyệt, trả
+-- về, từ chối, huỷ đều đi qua hàm dưới đây, và hàm giữ các luật:
+--   * đúng thứ tự: chứng từ trước phải được duyệt xong mới lập được chứng từ
+--     sau (RR chỉ bắt buộc khi loại đầu tư là Replacement; hợp đồng không bắt
+--     buộc — mua nhỏ đi thẳng PO → AH);
+--   * đúng người: vai trò của bước hiện tại, phạm vi bao được phòng ban của
+--     dự án, và có quyền "duyệt" trong ma trận quyền;
+--   * người lập KHÔNG BAO GIỜ tự duyệt chứng từ của chính mình;
+--   * trả về / từ chối bắt buộc có lý do.
+-- Duyệt xong bước cuối thì các mốc của dự án tự cập nhật (ngày đánh giá, ngày
+-- mua, giá trị hợp đồng, ngày nghiệm thu...), nên báo cáo giai đoạn 2 chạy theo.
+--
+-- Chạy lại nhiều lần vô hại. Chuỗi duyệt đã sửa trong app KHÔNG bị ghi đè.
+-- =====================================================================
+
+
+-- =====================================================================
+-- 1. BẢNG
+-- =====================================================================
+
+create table if not exists pm_doc_type (
+  code       text primary key,
+  prefix     text not null,
+  side       text not null check (side in ('operator', 'owner')),
+  seq        int  not null,
+  required   boolean not null default true,
+  repeatable boolean not null default false,
+  name_en    text not null,
+  name_vi    text not null
+);
+comment on column pm_doc_type.repeatable is
+  'Lập được nhiều lần trong một dự án — chỉ AH (nghiệm thu từng phần rồi toàn bộ).';
+
+insert into pm_doc_type (code, prefix, side, seq, required, repeatable, name_en, name_vi) values
+  ('PR', 'PR', 'operator', 10, true,  false, 'Purchase Request',    'Yêu cầu mua sắm'),
+  ('RR', 'RR', 'operator', 20, false, false, 'Replacement Request', 'Yêu cầu thay thế / cải tạo / nâng cấp'),
+  ('PA', 'PA', 'owner',    30, true,  false, 'Project Assessment',  'Đánh giá dự án'),
+  ('QC', 'QC', 'operator', 40, true,  false, 'Scoring Tender Form', 'Bảng so sánh đánh giá nhà thầu'),
+  ('MC', 'MC', 'owner',    50, true,  false, 'Market Check',        'Kiểm tra giá thị trường'),
+  ('PO', 'PO', 'operator', 60, true,  false, 'Purchase Order',      'Đơn đặt hàng'),
+  ('CT', 'CT', 'operator', 70, false, false, 'Contract',            'Hợp đồng'),
+  ('AH', 'AH', 'operator', 80, true,  true,  'Asset Handover',      'Biên bản nghiệm thu')
+on conflict (code) do update
+  set prefix = excluded.prefix, side = excluded.side, seq = excluded.seq, required = excluded.required,
+      repeatable = excluded.repeatable, name_en = excluded.name_en, name_vi = excluded.name_vi;
+
+create table if not exists pm_chain (
+  entity    text not null check (entity in ('SSP', 'CP', 'JVC')),
+  doc_type  text not null references pm_doc_type(code) on update cascade on delete cascade,
+  step      int  not null check (step >= 0),
+  role_code text not null references app_role(code) on update cascade,
+  primary key (entity, doc_type, step)
+);
+comment on column pm_chain.step is '0 = vai trò được LẬP chứng từ; 1..n = người duyệt theo thứ tự.';
+
+create table if not exists pm_doc (
+  id           bigserial primary key,
+  project_code text not null references pm_project(code) on update cascade on delete cascade,
+  doc_type     text not null references pm_doc_type(code),
+  doc_no       text not null,
+  version      int  not null default 0,
+  status       text not null default 'draft'
+               check (status in ('draft', 'in_review', 'returned', 'rejected', 'approved', 'cancelled')),
+  current_step int,
+  data         jsonb not null default '{}'::jsonb,
+  total_value  numeric(18, 2),
+  created_by   uuid,
+  created_email text,
+  created_at   timestamptz not null default now(),
+  submitted_at timestamptz,
+  decided_at   timestamptz,
+  updated_at   timestamptz not null default now()
+);
+create index if not exists pm_doc_project_idx on pm_doc (project_code);
+create index if not exists pm_doc_status_idx  on pm_doc (status);
+comment on column pm_doc.version is 'Số lần đã gửi duyệt. Mỗi lần bị trả về rồi gửi lại tăng 1.';
+
+create table if not exists pm_doc_step (
+  id          bigserial primary key,
+  doc_id      bigint not null references pm_doc(id) on delete cascade,
+  step        int  not null,
+  role_code   text not null,
+  status      text not null default 'pending'
+              check (status in ('pending', 'approved', 'returned', 'rejected')),
+  acted_by    uuid,
+  acted_email text,
+  acted_at    timestamptz,
+  comment     text,
+  signature   jsonb,
+  unique (doc_id, step)
+);
+comment on column pm_doc_step.signature is 'Chữ ký tay trên iPad (giai đoạn 4). Để trống ở giai đoạn 3.';
+
+create table if not exists pm_doc_event (
+  id          bigserial primary key,
+  doc_id      bigint not null references pm_doc(id) on delete cascade,
+  at          timestamptz not null default now(),
+  actor       uuid,
+  actor_email text,
+  action      text not null,
+  from_status text,
+  to_status   text,
+  step        int,
+  comment     text
+);
+create index if not exists pm_doc_event_doc_idx on pm_doc_event (doc_id, at);
+
+
+-- =====================================================================
+-- 2. CHUỖI DUYỆT MẶC ĐỊNH (theo quyết định 24/09/2026)
+--   [JVC] = AM Coordinator → AM Executive → Chief Accountant → JVC GM
+--   SSP: Dept Staff lập (QC, PO, CT: Purchasing lập) → Dept Head → DOF → Hotel GM → [JVC]
+--   CP : Office Building Admin lập → Maintenance Manager → Head of Office Building → [JVC]
+--   JVC: JVC Admin lập → [JVC]
+--   PA, MC (chứng từ của chủ đầu tư), mọi pháp nhân:
+--        AM Coordinator lập → AM Executive → Chief Accountant → JVC GM
+-- "on conflict do nothing": chuỗi đã sửa trong app không bị ghi đè.
+-- =====================================================================
+
+with chains(entity, doc_type, roles) as (
+  select e, d,
+    case
+      when d in ('PA', 'MC') then array['AM_COORD', 'AM_EXEC', 'CHIEF_ACC', 'JVC_GM']
+      when e = 'SSP' then array[case when d in ('QC', 'PO', 'CT') then 'PURCHASING' else 'DEPT_STAFF' end,
+                                'DEPT_HEAD', 'DOF', 'HOTEL_GM', 'AM_COORD', 'AM_EXEC', 'CHIEF_ACC', 'JVC_GM']
+      when e = 'CP'  then array['CP_ADMIN', 'CP_MAINT', 'CP_HEAD', 'AM_COORD', 'AM_EXEC', 'CHIEF_ACC', 'JVC_GM']
+      else                array['JVC_ADMIN', 'AM_COORD', 'AM_EXEC', 'CHIEF_ACC', 'JVC_GM']
+    end
+  from unnest(array['SSP', 'CP', 'JVC']) e, unnest(array['PR', 'RR', 'PA', 'QC', 'MC', 'PO', 'CT', 'AH']) d
+)
+insert into pm_chain (entity, doc_type, step, role_code)
+select c.entity, c.doc_type, r.ord - 1, r.role
+from   chains c, unnest(c.roles) with ordinality r(role, ord)
+on conflict (entity, doc_type, step) do nothing;
+
+
+-- =====================================================================
+-- 3. HÀM PHỤ
+-- =====================================================================
+
+-- Pháp nhân của một phòng ban: đi ngược cây am_org tới SOF / CP / JVC.
+create or replace function pm_entity(p_dept text)
+returns text
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  with recursive up(code, parent_code, depth) as (
+    select o.code, o.parent_code, 0 from am_org o where o.code = p_dept
+    union all
+    select o.code, o.parent_code, u.depth + 1
+    from   am_org o join up u on o.code = u.parent_code
+    where  u.depth < 12
+  )
+  select case (select code from up where code in ('SOF', 'CP', 'JVC') order by depth limit 1)
+           when 'SOF' then 'SSP' when 'CP' then 'CP' when 'JVC' then 'JVC' end
+$$;
+
+/* Người p_uid có giữ vai trò p_role với phạm vi bao được phòng ban p_dept
+   không. Phạm vi là một gốc của cây (PHCL) thì bao mọi thứ, kể cả mã phòng
+   ban không có trong danh mục. */
+create or replace function app_user_role_covers(p_uid uuid, p_role text, p_dept text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  with recursive s(code) as (
+    select ur.scope_org
+    from   app_user_role ur join app_user u on u.id = ur.user_id
+    where  ur.user_id = p_uid and u.active and ur.role_code = p_role
+    union
+    select o.code from am_org o join s on o.parent_code = s.code
+  )
+  select exists (select 1 from s where code = p_dept)
+      or exists (select 1
+                 from   app_user_role ur
+                 join   app_user u on u.id = ur.user_id
+                 join   am_org o   on o.code = ur.scope_org
+                 where  ur.user_id = p_uid and u.active and ur.role_code = p_role
+                   and  o.parent_code is null)
+$$;
+
+create or replace function pm_doc_log(p_doc bigint, p_action text, p_from text, p_to text,
+                                      p_step int default null, p_comment text default null)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  insert into pm_doc_event (doc_id, actor, actor_email, action, from_status, to_status, step, comment)
+  values (p_doc, auth.uid(), coalesce(app_claims() ->> 'email', 'sql:' || session_user),
+          p_action, p_from, p_to, p_step, p_comment)
+$$;
+
+-- Người dùng hiện tại có được LẬP loại chứng từ này cho dự án này không.
+create or replace function pm_can_prepare(p_type text, p_dept text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select app_trusted()
+      or (app_can('project', 'create')
+          and exists (select 1 from pm_chain c
+                      where c.entity = pm_entity(p_dept) and c.doc_type = p_type and c.step = 0
+                        and app_user_role_covers(auth.uid(), c.role_code, p_dept)))
+$$;
+
+
+-- =====================================================================
+-- 4. VÒNG ĐỜI CHỨNG TỪ
+-- =====================================================================
+
+/* Lập chứng từ. Số hiệu = tiền tố loại + phần sau đoạn đầu của mã dự án:
+   FFE.KIT.02.2025 → PR.KIT.02.2025. AH lập nhiều lần thì thêm /2, /3... */
+create or replace function pm_doc_create(p_project text, p_type text, p_data jsonb default '{}'::jsonb)
+returns bigint
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  p      pm_project;
+  t      pm_doc_type;
+  v_miss text;
+  v_no   text;
+  v_n    int;
+  v_id   bigint;
+begin
+  select * into p from pm_project where code = p_project;
+  if p.code is null then raise exception 'Không có dự án %', p_project; end if;
+  select * into t from pm_doc_type where code = p_type;
+  if t.code is null then raise exception 'Không có loại chứng từ %', p_type; end if;
+
+  if not pm_can_prepare(p_type, p.dept_code) then
+    raise exception 'Bạn không phải người lập % của pháp nhân % (xem chuỗi duyệt).', p_type, pm_entity(p.dept_code)
+      using errcode = '42501';
+  end if;
+
+  -- Thứ tự: mọi loại đứng trước và bắt buộc phải có một bản đã duyệt.
+  select string_agg(pt.code, ', ' order by pt.seq) into v_miss
+  from   pm_doc_type pt
+  where  pt.seq < t.seq
+    and  (pt.required or (pt.code = 'RR' and p.investment_type ilike '%replace%'))
+    and  not exists (select 1 from pm_doc d
+                     where d.project_code = p.code and d.doc_type = pt.code and d.status = 'approved');
+  if v_miss is not null then
+    raise exception 'Chưa lập được %: các chứng từ % phải được duyệt xong trước.', p_type, v_miss;
+  end if;
+
+  -- Bước tuỳ chọn (RR, CT) không chen vào được khi dự án đã có chứng từ của bước sau.
+  select string_agg(distinct d.doc_type, ', ') into v_miss
+  from   pm_doc d join pm_doc_type x on x.code = d.doc_type
+  where  d.project_code = p.code and x.seq > t.seq and d.status not in ('rejected', 'cancelled');
+  if v_miss is not null then
+    raise exception 'Không lập % được nữa: dự án đã có %.', p_type, v_miss;
+  end if;
+
+  -- Một bản đang hiệu lực cho mỗi loại, trừ AH (lập nhiều lần cho tới bản cuối).
+  if not t.repeatable and exists (select 1 from pm_doc d
+       where d.project_code = p.code and d.doc_type = p_type and d.status not in ('rejected', 'cancelled')) then
+    raise exception 'Dự án % đã có một % đang hiệu lực.', p.code, p_type;
+  end if;
+  if t.repeatable and exists (select 1 from pm_doc d
+       where d.project_code = p.code and d.doc_type = p_type and d.status = 'approved'
+         and coalesce((d.data ->> 'final')::boolean, false)) then
+    raise exception 'Dự án % đã có biên bản nghiệm thu cuối cùng.', p.code;
+  end if;
+
+  v_no := t.prefix || substring(p.code from position('.' in p.code));
+  select count(*) into v_n from pm_doc d
+  where d.project_code = p.code and d.doc_type = p_type and d.status not in ('cancelled');
+  if t.repeatable and v_n > 0 then v_no := v_no || '/' || (v_n + 1); end if;
+
+  insert into pm_doc (project_code, doc_type, doc_no, data, total_value, created_by, created_email)
+  values (p.code, p_type, v_no, coalesce(p_data, '{}'::jsonb), nullif(p_data ->> 'total', '')::numeric,
+          auth.uid(), coalesce(app_claims() ->> 'email', 'sql:' || session_user))
+  returning id into v_id;
+  perform pm_doc_log(v_id, 'create', null, 'draft');
+  return v_id;
+end $$;
+
+-- Lưu nội dung. Chỉ khi còn nháp hoặc bị trả về, và chỉ người lập (hoặc
+-- người cùng vai trò lập trong phạm vi).
+create or replace function pm_doc_save(p_id bigint, p_data jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare d pm_doc; v_dept text;
+begin
+  select * into d from pm_doc where id = p_id for update;
+  if d.id is null then raise exception 'Không có chứng từ %', p_id; end if;
+  select dept_code into v_dept from pm_project where code = d.project_code;
+  if d.status not in ('draft', 'returned') then
+    raise exception 'Chứng từ % đang ở trạng thái "%" — không sửa được.', d.doc_no, d.status;
+  end if;
+  if not (d.created_by = auth.uid() or pm_can_prepare(d.doc_type, v_dept)) then
+    raise exception 'Chỉ người lập mới sửa được %.', d.doc_no using errcode = '42501';
+  end if;
+  update pm_doc
+     set data = coalesce(p_data, '{}'::jsonb),
+         total_value = nullif(p_data ->> 'total', '')::numeric,
+         updated_at = now()
+   where id = p_id;
+end $$;
+
+-- Gửi duyệt: dựng chuỗi duyệt từ pm_chain tại thời điểm gửi.
+create or replace function pm_doc_submit(p_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare d pm_doc; p pm_project; v_first int; v_from text;
+begin
+  select * into d from pm_doc where id = p_id for update;
+  if d.id is null then raise exception 'Không có chứng từ %', p_id; end if;
+  select * into p from pm_project where code = d.project_code;
+  if d.status not in ('draft', 'returned') then
+    raise exception 'Chứng từ % đang ở trạng thái "%" — không gửi được.', d.doc_no, d.status;
+  end if;
+  if not (d.created_by = auth.uid() or pm_can_prepare(d.doc_type, p.dept_code)) then
+    raise exception 'Chỉ người lập mới gửi được %.', d.doc_no using errcode = '42501';
+  end if;
+
+  delete from pm_doc_step where doc_id = p_id;
+  insert into pm_doc_step (doc_id, step, role_code)
+  select p_id, c.step, c.role_code from pm_chain c
+  where  c.entity = pm_entity(p.dept_code) and c.doc_type = d.doc_type and c.step > 0;
+  select min(step) into v_first from pm_doc_step where doc_id = p_id;
+  if v_first is null then
+    raise exception 'Chưa có chuỗi duyệt cho % của pháp nhân %.', d.doc_type, coalesce(pm_entity(p.dept_code), '?');
+  end if;
+
+  v_from := d.status;
+  update pm_doc
+     set status = 'in_review', current_step = v_first, version = version + 1,
+         submitted_at = now(), decided_at = null, updated_at = now()
+   where id = p_id;
+  -- Ngày đề xuất của dự án = lần đầu PR được gửi đi.
+  if d.doc_type = 'PR' then
+    update pm_project set request_date = coalesce(request_date, current_date) where code = p.code;
+  end if;
+  perform pm_doc_log(p_id, case when v_from = 'returned' then 'resubmit' else 'submit' end, v_from, 'in_review', v_first);
+end $$;
+
+/* Duyệt / trả về / từ chối bước hiện tại. */
+create or replace function pm_doc_act(p_id bigint, p_action text, p_comment text default null,
+                                      p_signature jsonb default null)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  d      pm_doc;
+  p      pm_project;
+  s      pm_doc_step;
+  v_next int;
+  v_to   text;
+begin
+  select * into d from pm_doc where id = p_id for update;
+  if d.id is null then raise exception 'Không có chứng từ %', p_id; end if;
+  if d.status <> 'in_review' then
+    raise exception 'Chứng từ % không ở trạng thái chờ duyệt.', d.doc_no;
+  end if;
+  select * into p from pm_project where code = d.project_code;
+  select * into s from pm_doc_step where doc_id = p_id and step = d.current_step;
+
+  if p_action not in ('approve', 'return', 'reject') then
+    raise exception 'Thao tác không hợp lệ: %', p_action;
+  end if;
+  if not app_trusted() then
+    if not app_can('approval', 'approve') then
+      raise exception 'Bạn không có quyền duyệt.' using errcode = '42501';
+    end if;
+    if not app_user_role_covers(auth.uid(), s.role_code, p.dept_code) then
+      raise exception 'Bước này cần vai trò % cho phòng ban %.', s.role_code, p.dept_code using errcode = '42501';
+    end if;
+    if d.created_by = auth.uid() then
+      raise exception 'Người lập không được tự duyệt chứng từ của mình.' using errcode = '42501';
+    end if;
+  end if;
+  if p_action in ('return', 'reject') and coalesce(trim(p_comment), '') = '' then
+    raise exception 'Trả về hoặc từ chối phải ghi lý do.';
+  end if;
+
+  update pm_doc_step
+     set status = case p_action when 'approve' then 'approved' when 'return' then 'returned' else 'rejected' end,
+         acted_by = auth.uid(), acted_email = coalesce(app_claims() ->> 'email', 'sql:' || session_user),
+         acted_at = now(), comment = nullif(trim(p_comment), ''), signature = p_signature
+   where id = s.id;
+
+  if p_action = 'approve' then
+    select min(step) into v_next from pm_doc_step where doc_id = p_id and step > s.step and status = 'pending';
+    if v_next is not null then
+      v_to := 'in_review';
+      update pm_doc set current_step = v_next, updated_at = now() where id = p_id;
+    else
+      v_to := 'approved';
+      update pm_doc set status = 'approved', current_step = null, decided_at = now(), updated_at = now()
+       where id = p_id;
+      perform pm_doc_apply(p_id);
+    end if;
+  elsif p_action = 'return' then
+    v_to := 'returned';
+    update pm_doc set status = 'returned', current_step = null, updated_at = now() where id = p_id;
+  else
+    v_to := 'rejected';
+    update pm_doc set status = 'rejected', current_step = null, decided_at = now(), updated_at = now() where id = p_id;
+  end if;
+
+  perform pm_doc_log(p_id, p_action, 'in_review', v_to, s.step, p_comment);
+  return v_to;
+end $$;
+
+/* Duyệt xong: đẩy các mốc sang dự án, để báo cáo và trạng thái dự án đi theo
+   chứng từ thay vì chờ ai đó gõ tay. */
+create or replace function pm_doc_apply(p_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare d pm_doc; v jsonb;
+begin
+  select * into d from pm_doc where id = p_id;
+  if d.doc_type = 'PA' then
+    update pm_project set assess_date = current_date where code = d.project_code;
+  elsif d.doc_type = 'MC' then
+    update pm_project set approve_date = current_date where code = d.project_code;
+  elsif d.doc_type = 'QC' then
+    update pm_project
+       set chosen_vendor = coalesce(nullif(d.data ->> 'chosen_vendor', ''), chosen_vendor),
+           procurement_type = coalesce(nullif(d.data ->> 'procurement_type', ''), procurement_type)
+     where code = d.project_code;
+    delete from pm_vendor_score where project_code = d.project_code;
+    for v in select * from jsonb_array_elements(coalesce(d.data -> 'vendors', '[]'::jsonb)) loop
+      insert into pm_vendor_score (project_code, vendor_name, check_date, total_amount,
+                                   ability, technique, finance, total_score, comment, chosen)
+      values (d.project_code, v ->> 'name', current_date, nullif(v ->> 'amount', '')::numeric,
+              nullif(v ->> 'ability', '')::numeric, nullif(v ->> 'technique', '')::numeric,
+              nullif(v ->> 'finance', '')::numeric, nullif(v ->> 'total', '')::numeric,
+              nullif(v ->> 'comment', ''), (v ->> 'name') = (d.data ->> 'chosen_vendor'));
+    end loop;
+  elsif d.doc_type = 'PO' then
+    update pm_project
+       set purchase_date = current_date,
+           -- Giá trị PO là giá trị cam kết cho tới khi có hợp đồng được duyệt.
+           contract_value = case when exists (select 1 from pm_doc c where c.project_code = d.project_code
+                                                and c.doc_type = 'CT' and c.status = 'approved')
+                                 then contract_value else coalesce(d.total_value, contract_value) end,
+           chosen_vendor = coalesce(nullif(d.data ->> 'supplier', ''), chosen_vendor)
+     where code = d.project_code;
+  elsif d.doc_type = 'CT' then
+    update pm_project set contract_value = coalesce(nullif(d.data ->> 'value', '')::numeric, contract_value)
+     where code = d.project_code;
+  elsif d.doc_type = 'AH' and coalesce((d.data ->> 'final')::boolean, false) then
+    update pm_project
+       set handover_date = coalesce(nullif(d.data ->> 'handover_date', '')::date, current_date),
+           evaluation = coalesce(nullif(d.data ->> 'evaluation', ''), evaluation)
+     where code = d.project_code;
+  end if;
+end $$;
+
+-- Huỷ: người lập huỷ nháp của mình; quản trị dự án huỷ được mọi chứng từ chưa duyệt.
+create or replace function pm_doc_cancel(p_id bigint, p_comment text default null)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare d pm_doc;
+begin
+  select * into d from pm_doc where id = p_id for update;
+  if d.id is null then raise exception 'Không có chứng từ %', p_id; end if;
+  if d.status in ('approved', 'cancelled') then
+    raise exception 'Chứng từ % đã % — không huỷ được.', d.doc_no, d.status;
+  end if;
+  if not (app_trusted() or app_can('project', 'admin') or (d.created_by = auth.uid() and d.status in ('draft', 'returned'))) then
+    raise exception 'Chỉ người lập (khi còn nháp) hoặc quản trị dự án mới huỷ được.' using errcode = '42501';
+  end if;
+  update pm_doc set status = 'cancelled', current_step = null, updated_at = now() where id = p_id;
+  perform pm_doc_log(p_id, 'cancel', d.status, 'cancelled', null, p_comment);
+end $$;
+
+
+-- =====================================================================
+-- 5. HỘP "CHỜ TÔI"
+-- =====================================================================
+
+/* Việc của người đang đăng nhập: chứng từ đang chờ đúng vai trò của họ (và
+   không do chính họ lập), cộng chứng từ của họ bị trả về cần sửa. */
+create or replace function pm_inbox()
+returns table (doc_id bigint, doc_no text, doc_type text, project_code text, project_name text,
+               dept_code text, total_value numeric, submitted_at timestamptz, step int,
+               role_code text, kind text)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select d.id, d.doc_no, d.doc_type, d.project_code, p.name, p.dept_code, d.total_value,
+         d.submitted_at, s.step, s.role_code, 'approve'
+  from   pm_doc d
+  join   pm_project p  on p.code = d.project_code
+  join   pm_doc_step s on s.doc_id = d.id and s.step = d.current_step
+  where  d.status = 'in_review'
+    and  d.created_by is distinct from auth.uid()
+    and  app_can('approval', 'approve')
+    and  app_user_role_covers(auth.uid(), s.role_code, p.dept_code)
+  union all
+  select d.id, d.doc_no, d.doc_type, d.project_code, p.name, p.dept_code, d.total_value,
+         d.submitted_at, null, null, 'returned'
+  from   pm_doc d join pm_project p on p.code = d.project_code
+  where  d.status = 'returned' and d.created_by = auth.uid()
+  order  by 8 nulls last
+$$;
+
+-- Ai có thể duyệt bước hiện tại — để màn hình nói "đang chờ ai".
+create or replace function pm_next_actors(p_id bigint)
+returns table (email text, full_name text)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select u.email, u.full_name
+  from   pm_doc d
+  join   pm_project p  on p.code = d.project_code
+  join   pm_doc_step s on s.doc_id = d.id and s.step = d.current_step
+  join   app_user u    on u.active and u.id is distinct from d.created_by
+  where  d.id = p_id and d.status = 'in_review'
+    and  app_user_role_covers(u.id, s.role_code, p.dept_code)
+    -- Hàm chạy vượt RLS, nên tự kiểm tra: chỉ trả lời người thấy được dự án.
+    and  app_can('project', 'view')
+    and  (app_scope_root() or p.dept_code in (select app_scope_orgs()))
+  order  by u.full_name nulls last, u.email
+$$;
+
+
+-- =====================================================================
+-- 6. RLS — chỉ đọc; mọi thay đổi qua hàm ở trên
+-- =====================================================================
+
+do $$
+declare p record;
+begin
+  for p in select policyname, tablename from pg_policies
+           where schemaname = 'public'
+             and tablename in ('pm_doc_type', 'pm_chain', 'pm_doc', 'pm_doc_step', 'pm_doc_event')
+  loop
+    execute format('drop policy %I on public.%I', p.policyname, p.tablename);
+  end loop;
+end $$;
+
+alter table pm_doc_type  enable row level security;
+alter table pm_chain     enable row level security;
+alter table pm_doc       enable row level security;
+alter table pm_doc_step  enable row level security;
+alter table pm_doc_event enable row level security;
+
+create policy pm_doc_type_read on pm_doc_type
+  for select to authenticated using ((select app_is_member()));
+create policy pm_doc_type_write on pm_doc_type
+  for all to authenticated
+  using ((select app_can('security', 'admin'))) with check ((select app_can('security', 'admin')));
+
+create policy pm_chain_read on pm_chain
+  for select to authenticated using ((select app_is_member()));
+create policy pm_chain_write on pm_chain
+  for all to authenticated
+  using ((select app_can('approval', 'admin'))) with check ((select app_can('approval', 'admin')));
+
+-- Thấy chứng từ khi thấy được dự án của nó (RLS của pm_project áp trong câu con).
+create policy pm_doc_read on pm_doc
+  for select to authenticated
+  using (exists (select 1 from pm_project p where p.code = project_code));
+create policy pm_doc_step_read on pm_doc_step
+  for select to authenticated using (exists (select 1 from pm_doc d where d.id = doc_id));
+create policy pm_doc_event_read on pm_doc_event
+  for select to authenticated using (exists (select 1 from pm_doc d where d.id = doc_id));
+
+do $$
+declare t text;
+begin
+  foreach t in array array['pm_doc_type', 'pm_chain', 'pm_doc', 'pm_doc_step'] loop
+    execute format('drop trigger if exists app_audit on %I', t);
+    execute format('create trigger app_audit after insert or update or delete on %I '
+                   'for each row execute function app_audit_row()', t);
+  end loop;
+end $$;
+
+revoke all on pm_doc_type, pm_chain, pm_doc, pm_doc_step, pm_doc_event from anon;
+grant select on pm_doc, pm_doc_step, pm_doc_event to authenticated;
+grant select, insert, update, delete on pm_doc_type, pm_chain to authenticated;
+revoke insert, update, delete on pm_doc, pm_doc_step, pm_doc_event from authenticated;
+
+revoke execute on function pm_entity(text), app_user_role_covers(uuid, text, text),
+                           pm_doc_log(bigint, text, text, text, int, text), pm_can_prepare(text, text),
+                           pm_doc_create(text, text, jsonb), pm_doc_save(bigint, jsonb),
+                           pm_doc_submit(bigint), pm_doc_act(bigint, text, text, jsonb),
+                           pm_doc_apply(bigint), pm_doc_cancel(bigint, text),
+                           pm_inbox(), pm_next_actors(bigint)
+  from public, anon;
+grant execute on function pm_entity(text), pm_can_prepare(text, text),
+                          pm_doc_create(text, text, jsonb), pm_doc_save(bigint, jsonb),
+                          pm_doc_submit(bigint), pm_doc_act(bigint, text, text, jsonb),
+                          pm_doc_cancel(bigint, text), pm_inbox(), pm_next_actors(bigint)
+  to authenticated;
+-- Nội bộ: không gọi thẳng qua API (ghi nhật ký giả, hay áp mốc dự án khi chưa duyệt).
+revoke execute on function pm_doc_log(bigint, text, text, text, int, text), pm_doc_apply(bigint),
+                           app_user_role_covers(uuid, text, text)
+  from authenticated;
+
+
+-- =====================================================================
+-- 7. KIỂM CHỨNG
+-- =====================================================================
+
+select 'Loại chứng từ' as "Mục", count(*)::text as "Thực tế", '8' as "Mong đợi",
+       case when count(*) = 8 then '✔' else '✘ HỎNG' end as "Đạt"
+from   pm_doc_type
+union all
+select 'Chuỗi duyệt (pháp nhân × loại)', count(distinct (entity, doc_type))::text, '24',
+       case when count(distinct (entity, doc_type)) = 24 then '✔' else '✘ HỎNG' end
+from   pm_chain
+union all
+select 'Chuỗi có người lập (bước 0)', count(*)::text, '24',
+       case when count(*) = 24 then '✔' else '✘ HỎNG' end
+from   pm_chain where step = 0
+union all
+select 'Trình duyệt ghi thẳng pm_doc (phải = 0)',
+       count(*)::text, '0', case when count(*) = 0 then '✔' else '✘ HỎNG' end
+from   information_schema.role_table_grants
+where  grantee = 'authenticated' and table_name in ('pm_doc', 'pm_doc_step', 'pm_doc_event')
+  and  privilege_type in ('INSERT', 'UPDATE', 'DELETE');
 

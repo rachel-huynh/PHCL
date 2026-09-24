@@ -135,6 +135,7 @@ as $$
 declare
   v_first int;
 begin
+  perform app_require('assets', 'create');   -- quyền theo người đăng nhập — xem 17_auth.sql
   if p_count < 1 then
     raise exception 'p_count phải >= 1';
   end if;
@@ -182,6 +183,7 @@ declare
   v_first bigint;
   v_max   bigint;
 begin
+  perform app_require('assets', 'create');   -- quyền theo người đăng nhập — xem 17_auth.sql
   if p_count < 1 then
     raise exception 'p_count phải >= 1';
   end if;
@@ -219,6 +221,7 @@ as $$
 declare
   v int;
 begin
+  perform app_require('assets', 'create');   -- quyền theo người đăng nhập — xem 17_auth.sql
   insert into am_alr_seq (singleton, next_val) values (true, 1)
   on conflict (singleton) do nothing;
 
@@ -244,6 +247,7 @@ as $$
 declare
   v int;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
   p_dept    := upper(trim(p_dept));
   p_letters := am_letters(p_letters);
 
@@ -267,6 +271,7 @@ as $$
 declare
   v bigint;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
   update am_barcode_seq
      set next_val   = greatest(next_val, p_max_seen + 1),
          updated_at = now()
@@ -292,6 +297,7 @@ as $$
 declare
   r record;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
   -- 1) Mã Tài Sản: <DEPT>.<C2xxx>.<LLL>.<YYYY>.<NNNNN>
   for r in
     select  m[1] as dept, m[3] as letters, max(m[5]::int) as mx

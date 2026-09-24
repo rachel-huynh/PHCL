@@ -46,6 +46,8 @@ declare
   r         record;
   v_first   int;
 begin
+  perform app_require('assets', 'edit');   -- quyền theo người đăng nhập — xem 17_auth.sql
+  p_ids := app_scope_ids(p_ids);            -- chỉ những dòng trong phạm vi của người gọi
   if p_ids is null or array_length(p_ids, 1) is null then
     return query select 0, 0, 0, 0; return;
   end if;
@@ -61,6 +63,9 @@ begin
     p_dept := upper(trim(p_dept));
     if not exists (select 1 from am_org where code = p_dept and is_department) then
       raise exception 'Mã phòng ban % không có trong danh mục', p_dept;
+    end if;
+    if p_dept not in (select app_scope_orgs()) then
+      raise exception 'Phòng ban % nằm ngoài phạm vi của bạn.', p_dept using errcode = '42501';
     end if;
   end if;
 
@@ -152,6 +157,8 @@ declare
   v_del  int := 0;
   v_keep int := 0;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
+  p_ids := app_scope_ids(p_ids);            -- chỉ những dòng trong phạm vi của người gọi
   if p_ids is null or array_length(p_ids, 1) is null then
     return query select 0, 0; return;
   end if;
@@ -173,5 +180,5 @@ end $$;
 comment on function am_bulk_delete(bigint[]) is
   'Xoá nhiều tài sản cùng lúc. Giữ lại dòng đã nằm trên biên bản tem nhãn đã lưu. KHÔNG lùi bộ đếm — số đã cấp coi như đã tiêu.';
 
-grant execute on function am_bulk_update(bigint[], text, text, text) to anon, authenticated;
-grant execute on function am_bulk_delete(bigint[]) to anon, authenticated;
+grant execute on function am_bulk_update(bigint[], text, text, text) to authenticated;
+grant execute on function am_bulk_delete(bigint[]) to authenticated;

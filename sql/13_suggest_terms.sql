@@ -26,7 +26,7 @@
 -- đầu. So khớp bằng LIKE trên dạng đó cho đúng ngữ nghĩa "ranh giới từ" mà
 -- không phải escape ký tự đặc biệt của regex nằm trong chính tên sản phẩm —
 -- am_norm KHÔNG bỏ dấu câu, nên tên thật đầy dấu phẩy, ngoặc và gạch chéo.
-create or replace view am_product_term as
+create or replace view am_product_term with (security_invoker = true) as
   select p.id,
          am_norm(trim(x)) as term,
          ' ' || trim(regexp_replace(am_norm(trim(x)), '[^a-z0-9]+', ' ', 'g')) || ' '
@@ -140,8 +140,8 @@ $$;
 comment on function am_suggest_lines(text[]) is
   'Gợi ý tên chuẩn / danh mục / đơn vị cho từng tên hàng. Ưu tiên am_product khớp đúng, rồi sổ tài sản, rồi TỪ KHOÁ theo ranh giới từ. Trả kèm nguồn, từ đã khớp và mức tin cậy.';
 
-grant execute on function am_suggest_lines(text[]) to anon, authenticated;
-grant select on am_product_term to anon, authenticated;
+grant execute on function am_suggest_lines(text[]) to authenticated;
+grant select on am_product_term to authenticated;
 
 -- ---------------------------------------------------------------------
 -- Ghi nhớ một dòng người dùng đã sửa tay, để lần sau tự điền.
@@ -158,6 +158,7 @@ set search_path = public
 as $$
 declare v text;
 begin
+  perform app_require('assets', 'create');   -- quyền theo người đăng nhập — xem 17_auth.sql
   if coalesce(trim(p_raw_name), '') = '' then
     raise exception 'tên hàng rỗng';
   end if;
@@ -177,4 +178,4 @@ begin
 end $$;
 
 grant execute on function am_remember_product(text, text, text, text, text)
-  to anon, authenticated;
+  to authenticated;

@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260917d';
+const APP_VERSION = '20260924c';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -53,7 +53,9 @@ let CONN = { ok: false, host: '' };
    public and this corner of the screen is in every screenshot and screen-share;
    the host name belongs on the Connection screen, behind the Show button. */
 function setConn(ok, hostOrKey) {
-  CONN = { ok, host: ok ? hostOrKey : '' };
+  // key: the status text to put back after a language switch ("signed out"
+  // must not turn into "not configured" just because the language changed).
+  CONN = { ok, host: ok ? hostOrKey : '', key: ok ? 'conn.ok' : hostOrKey };
   $('#dot').classList.toggle('on', !!ok);
   $('#connTxt').textContent = t(ok ? 'conn.ok' : hostOrKey);
 }
@@ -61,17 +63,27 @@ function setConn(ok, hostOrKey) {
 /* ------------------------------------------------------------------- SB */
 const SB = {
   ready: () => !!(CFG.url && CFG.key),
+  /* The anon key still goes in `apikey` — the Supabase gateway wants it on
+     every request — but it no longer authorises anything by itself. The
+     Authorization header is the signed-in user's token, set in call(). */
   hdr(extra = {}) {
-    return Object.assign({
-      apikey: CFG.key,
-      Authorization: 'Bearer ' + CFG.key,
-      'Content-Type': 'application/json'
-    }, extra);
+    return Object.assign({ apikey: CFG.key, 'Content-Type': 'application/json' }, extra);
   },
-  async call(path, opts = {}) {
+  async call(path, opts = {}, retried = false) {
     if (!SB.ready()) throw new Error(t('err.noConfig'));
-    const res = await fetch(CFG.url + '/rest/v1/' + path, opts);
+    const tok = await authToken();
+    if (!tok) { authExpired(); throw new Error(t('auth.needSignIn')); }
+    const headers = Object.assign({}, opts.headers || SB.hdr(),
+                                  { Authorization: 'Bearer ' + tok });
+    const res = await fetch(CFG.url + '/rest/v1/' + path, Object.assign({}, opts, { headers }));
     const raw = await res.text();
+    /* A token can be rejected before the clock says it expired (the server's
+       clock and this PC's disagree). Refresh once and try again rather than
+       throwing the user out mid-task. */
+    if (res.status === 401 && !retried && /jwt|token/i.test(raw)) {
+      if (await authRefresh(true)) return SB.call(path, opts, true);
+      authExpired();
+    }
     let body = null;
     if (raw) { try { body = JSON.parse(raw); } catch { body = raw; } }
     if (!res.ok) {
@@ -111,6 +123,220 @@ const SB = {
       { method: 'POST', headers: SB.hdr(), body: JSON.stringify(args) })).body;
   }
 };
+
+/* ------------------------------------------------------------------ auth
+   Supabase Auth over plain REST — no supabase-js, because there is no build
+   step and one more CDN script is one more thing that can fail to load.
+
+   The session lives in localStorage, so it survives a reload and every tab
+   shares it. That sharing matters: Supabase ROTATES refresh tokens, each good
+   for exactly one refresh. Two tabs refreshing with the same token would log
+   the slower one out — so a refresh first re-reads storage in case another
+   tab already did it, and only one refresh per tab is ever in flight. */
+const SESS_KEY = 'asset-intake.session';
+let SESS = null;   // { access_token, refresh_token, expires_at (ms), email }
+let ME = null;     // app_me(): profile, roles with their scopes, merged rights
+
+function authLoad() {
+  try { SESS = JSON.parse(localStorage.getItem(SESS_KEY) || 'null'); } catch { SESS = null; }
+}
+function authStore(s) {
+  SESS = s;
+  try { s ? localStorage.setItem(SESS_KEY, JSON.stringify(s)) : localStorage.removeItem(SESS_KEY); }
+  catch {}
+}
+
+async function authReq(method, path, body, token) {
+  const res = await fetch(CFG.url + '/auth/v1/' + path, {
+    method,
+    headers: Object.assign({ apikey: CFG.key, 'Content-Type': 'application/json' },
+                           token ? { Authorization: 'Bearer ' + token } : {}),
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  const raw = await res.text();
+  let j = null;
+  try { j = raw ? JSON.parse(raw) : null; } catch { j = raw; }
+  if (!res.ok) {
+    const m = (j && typeof j === 'object'
+               && (j.error_description || j.msg || j.message || j.error)) || res.statusText;
+    const e = new Error(String(m));
+    e.status = res.status;
+    e.code = j && typeof j === 'object' ? (j.error_code || j.error || '') : '';
+    throw e;
+  }
+  return j;
+}
+
+const sessFrom = j => ({
+  access_token: j.access_token,
+  refresh_token: j.refresh_token,
+  expires_at: Date.now() + (Number(j.expires_in) || 3600) * 1000,
+  email: (j.user && j.user.email) || (SESS && SESS.email) || ''
+});
+
+async function authSignIn(email, password) {
+  authStore(sessFrom(await authReq('POST', 'token?grant_type=password', { email, password })));
+}
+
+let REFRESHING = null;
+function authRefresh(force) {
+  if (REFRESHING) return REFRESHING;
+  REFRESHING = (async () => {
+    authLoad();
+    if (!SESS || !SESS.refresh_token) return null;
+    if (!force && SESS.expires_at - Date.now() > 60000) return SESS.access_token;
+    try {
+      authStore(sessFrom(await authReq('POST', 'token?grant_type=refresh_token',
+                                       { refresh_token: SESS.refresh_token })));
+      return SESS.access_token;
+    } catch {
+      // Lost the race to another tab, which stored a fresh session a moment ago?
+      authLoad();
+      if (SESS && SESS.expires_at - Date.now() > 60000) return SESS.access_token;
+      authStore(null);
+      return null;
+    }
+  })().finally(() => { REFRESHING = null; });
+  return REFRESHING;
+}
+
+/* A token that is good for at least another minute, or null. */
+async function authToken() {
+  if (!SESS) authLoad();
+  if (!SESS) return null;
+  if (SESS.expires_at - Date.now() > 60000) return SESS.access_token;
+  return authRefresh(false);
+}
+
+/* Signing out reloads the page: whatever the last person had on screen — a
+   register page, an intake draft — must not still be there for the next one. */
+async function authSignOut() {
+  const tok = SESS && SESS.access_token;
+  authStore(null);
+  ME = null;
+  if (tok) { try { await authReq('POST', 'logout', {}, tok); } catch {} }
+  location.replace(location.pathname + location.search);
+}
+
+/* The session ran out mid-work. Put the sign-in box over the screen but leave
+   the screen itself alone, so signing back in as the same person carries on
+   where they were — an intake half typed in is not thrown away. */
+function authExpired() {
+  if (!$('#login').hidden) return;
+  authStore(null);
+  loginShow('in', t('auth.expired'), 'warn');
+}
+
+/* Coming back from the password-reset e-mail: Supabase puts the session in the
+   address bar fragment. Read it, then wipe it from the bar at once. */
+function authFromHash() {
+  const h = location.hash.replace(/^#/, '');
+  if (!/(^|&)(access_token|error)=/.test(h)) return null;
+  const p = new URLSearchParams(h);
+  history.replaceState(null, '', location.pathname + location.search);
+  if (p.get('error')) return { error: p.get('error_description') || p.get('error') };
+  authStore({
+    access_token: p.get('access_token'),
+    refresh_token: p.get('refresh_token'),
+    expires_at: Date.now() + (Number(p.get('expires_in')) || 3600) * 1000,
+    email: ''
+  });
+  return { type: p.get('type') || '' };
+}
+
+const authErrText = e => {
+  const m = String((e && e.message) || e);
+  if (/invalid login credentials|invalid_grant/i.test(m + (e && e.code))) return t('auth.badCreds');
+  if (/email not confirmed/i.test(m)) return t('auth.notConfirmed');
+  if (/failed to fetch|networkerror|load failed/i.test(m)) return t('auth.network');
+  if (e && e.status === 429) return t('auth.tooMany');
+  return m;
+};
+
+/* The signed-in user's rights, merged across every role they hold. The UI
+   only uses these to hide what cannot be done; the database checks again. */
+const can = (module, action = 'view') => !!(ME && ME.perms && ME.perms[module]
+                                            && ME.perms[module][action]);
+
+async function loadMe() {
+  ME = await SB.rpc('app_me');
+  renderMe();
+  buildNav();
+  applyPerms();
+  return ME;
+}
+
+function renderMe() {
+  const on = !!ME;
+  $('#meName').textContent = on ? (ME.full_name || ME.email) : '';
+  $('#meMail').textContent = on ? ME.email : '';
+  $('#meActs').hidden = !on;
+  const box = $('#meRoles');
+  box.innerHTML = '';
+  for (const r of (on && ME.roles) || [])
+    box.append(el('span', { className: 'rchip',
+      textContent: `${LANG === 'vi' ? r.name_vi : r.name_en} · ${r.scope}` }));
+}
+
+/* Buttons that write carry data-perm="module:action". Without the right they
+   stay on screen but greyed, and the capture listener in init() swallows the
+   click before the button's own handler ever sees it. */
+function applyPerms() {
+  for (const n of $$('[data-perm]')) {
+    const [m, a] = n.dataset.perm.split(':');
+    const ok = can(m, a);
+    n.classList.toggle('noperm', !ok);
+    if (!ok) {
+      if (n.dataset.t0 === undefined) n.dataset.t0 = n.title || '';
+      n.title = t('auth.noPerm');
+    } else if (n.dataset.t0 !== undefined) {
+      n.title = n.dataset.t0;
+      delete n.dataset.t0;
+    }
+  }
+}
+
+function loginShow(mode, text, kind) {
+  $('#login').hidden = false;
+  $('#loginIn').hidden = mode !== 'in';
+  $('#loginNew').hidden = mode === 'in';
+  $('#btnPwCancel').hidden = mode !== 'change';
+  msg('#loginMsg', kind || (text ? 'err' : ''), text || '');
+  markLang();
+  if (mode === 'in' && !$('#liEmail').value && SESS && SESS.email) $('#liEmail').value = SESS.email;
+  setTimeout(() => {
+    const f = mode === 'in' ? ($('#liEmail').value ? $('#liPw') : $('#liEmail')) : $('#liNew1');
+    f.focus();
+  }, 0);
+}
+function loginHide() {
+  $('#login').hidden = true;
+  msg('#loginMsg', '', '');
+}
+
+/* After a session exists: who is this, and what may they see?
+   resume: the same person signing back in after their session ran out — they
+   stay on the screen they were using instead of being sent to the register. */
+async function enterApp(resume = false) {
+  try { await loadMe(); }
+  catch (e) { return loginShow('in', authErrText(e)); }   // "Failed to fetch" → "cannot reach the server"
+  if (!ME) return loginShow('in', t('auth.noProfile'));
+  if (!ME.active) {
+    authStore(null);
+    ME = null;
+    renderMe();
+    return loginShow('in', t('auth.disabled'));
+  }
+  loginHide();
+  wfBadgeStart();
+  if (resume) { await testConn(true); return; }
+  const ok = await testConn(true);
+  if (!ME.roles.length) {
+    showView('setup');
+    return msg('#setupMsg', 'warn', t('auth.noRoles', { email: ME.email }));
+  }
+  if (ok) { showView(firstView()); fillPickers(); }
+}
 
 /* --------------------------------------------------------- table specs
    Labels and descriptions live in i18n.js under tbl.<table>.label / .sub  */
@@ -189,6 +415,12 @@ const TABLES = {
   am_setting: {
     pk: 'key', order: 'key',
     cols: [T('key', { w: 180 }), T('value', { w: 180 }), T('note', { w: 520 })]
+  },
+  // Keyed by the accounting vendor code, so phase 5 can match the bank export.
+  pm_vendor: {
+    pk: 'code', order: 'name',
+    cols: [T('code', { w: 120 }), T('name', { w: 320 }), T('tax_code', { w: 130 }),
+           T('aliases', { w: 380 }), T('active', { type: 'bool' }), T('note', { w: 260 })]
   }
 };
 
@@ -1512,6 +1744,17 @@ const NAV = [
     ['alr', 'nav.alr'],
     ['counter', 'nav.counter']
   ]],
+  // Budget and projects: the dashboard first, because it is what the people who
+  // approve open this for; import last, because it is done once in a while.
+  ['nav.pm', [
+    ['inbox', 'nav.inbox'],
+    ['pmdash', 'nav.pmdash'],
+    ['budget', 'nav.budget'],
+    ['projects', 'nav.projects'],
+    ['tbl:pm_vendor', null],
+    ['pmimport', 'nav.pmimport'],
+    ['chains', 'nav.chains']
+  ]],
   ['nav.catalog', [
     ['tbl:am_org', null, [['tbl:am_org_alias', null]]],
     ['cat', 'nav.cat'],
@@ -1524,11 +1767,42 @@ const NAV = [
   ]],
   ['nav.system', [
     ['sources', 'nav.sources'], ['tbl:am_setting', null],
-    ['backup', 'nav.backup'], ['setup', 'nav.setup']
+    ['backup', 'nav.backup'],
+    ['users', 'nav.users'], ['perms', 'nav.perms'], ['audit', 'nav.audit'],
+    ['setup', 'nav.setup']
   ]]
 ];
 
 let VIEW = 'setup';
+
+/* Which permission module a screen belongs to. The Connection screen belongs to
+   none: it has to open before anyone can sign in, because a first visit has no
+   project URL yet. */
+function viewModule(v) {
+  if (!v || v === 'setup') return null;
+  if (['register', 'intake', 'alr', 'counter'].includes(v)) return 'assets';
+  if (['users', 'perms', 'audit'].includes(v)) return 'security';
+  if (v === 'pmdash') return 'report';
+  if (v === 'budget' || v === 'pmimport') return 'budget';
+  if (v === 'projects' || v === 'tbl:pm_vendor' || v === 'doc') return 'project';
+  if (v === 'inbox' || v === 'chains') return 'approval';
+  if (['sources', 'backup', 'tbl:am_setting'].includes(v)) return 'system';
+  if (v === 'cat' || v.startsWith('tbl:')) return 'master';
+  return null;
+}
+const canView = v => { const m = viewModule(v); return !m || can(m, 'view'); };
+
+/* Where to land after signing in: the register for anyone allowed to see it,
+   otherwise the first screen the menu offers them. */
+function firstView() {
+  if (canView('register')) return 'register';
+  for (const [, items] of NAV)
+    for (const [id, , ch] of items) {
+      if (id && id !== 'setup' && canView(id)) return id;
+      for (const [cid] of ch || []) if (canView(cid)) return cid;
+    }
+  return 'setup';
+}
 
 /* Asset groups and category codes are one screen with a switch, because the
    28 category codes are meaningless without the 15 parent codes next to them.
@@ -1553,7 +1827,13 @@ const navSaveShut = () => {
 function buildNav() {
   const nav = $('#nav');
   nav.innerHTML = '';
-  for (const [grpKey, items] of NAV) {
+  for (const [grpKey, allItems] of NAV) {
+    // Only what this user may open. A group left with nothing is not drawn at
+    // all, rather than shown as an empty heading.
+    const items = allItems
+      .map(([id, key, ch]) => [id, key, (ch || []).filter(c => canView(c[0]))])
+      .filter(([id, , ch]) => (id ? canView(id) : ch.length > 0));
+    if (!items.length) continue;
     // A group holding the current view is always expanded, so the active item
     // can never be hidden inside a collapsed branch.
     const flat = items.flatMap(([id, , ch]) => [id, ...(ch || []).map(c => c[0])])
@@ -1582,6 +1862,7 @@ function buildNav() {
       if (depth) a.classList.add('sub');
       a.append(el('span', { className: 'lbl',
         textContent: labelKey ? t(labelKey) : tblLabel(id.slice(4)) }));
+      if (id === 'inbox' && WF.badgeN > 0) a.append(el('span', { className: 'tag', textContent: String(WF.badgeN) }));
       a.onclick = ev => { ev.preventDefault(); showView(id); };
       (into || kids).append(a);
       return a;
@@ -1761,6 +2042,10 @@ function buildTools(view) {
     reload.onclick = () => loadTable(table);
     box.append(f, reload);
 
+    /* Editing needs the "edit" right on this table's module. Without it the grid
+       is read-only and the switch is not offered at all — a greyed-out Edit
+       button on every catalogue screen would only be noise. */
+    if (!can(viewModule(view), 'edit')) { EDIT = false; return; }
     const edit = el('button', { className: 'btn' + (EDIT ? ' pri' : ''),
                                 textContent: t(EDIT ? 'tool.editOff' : 'tool.editOn') });
     edit.onclick = () => {
@@ -1794,6 +2079,10 @@ function buildTools(view) {
     const c = el('button', { className: 'btn', textContent: t('bk.count') });
     c.onclick = bkCount;
     box.append(c);
+  } else if (view === 'users' || view === 'perms' || view === 'audit') {
+    const r = el('button', { className: 'btn', textContent: t('tool.reload') });
+    r.onclick = () => (view === 'users' ? usLoad() : view === 'perms' ? pmLoad() : auLoad());
+    box.append(r);
   } else if (view === 'register') {
     const cols = el('button', { className: 'btn', textContent: t('reg.cols') });
     cols.onclick = () => { const d = $('#regColsBox'); d.open = !d.open; };
@@ -1816,10 +2105,15 @@ function addRow() {
 }
 
 function showView(view) {
+  // A screen this user may not open (rights changed, or it was the last screen
+  // of the previous person) falls back to one they may.
+  if (!canView(view)) view = ME ? firstView() : 'setup';
   if (viewTable(VIEW) && view !== VIEW && CUR) {
     const n = CUR.rows.filter(r => r.isNew || r.dirty || r.del).length;
     if (n && !confirm(t('table.confirmLeave', { n }))) return;
   }
+  if (VIEW === 'doc' && view !== 'doc' && WF.dirty && wfEditable() && !confirm(t('wf.leave'))) return;
+  if (view !== 'doc') WF.dirty = false;
   VIEW = view;
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.view === view));
   const table = viewTable(view);
@@ -1842,12 +2136,23 @@ function showView(view) {
     if (view === 'sources' && SB.ready()) srcLoad();
     if (view === 'register' && SB.ready()) { regFillPickers(); regLoad(true); }
     if (view === 'intake' && SB.ready()) inFill();
+    if (view === 'pmdash' && SB.ready()) pdLoad();
+    if (view === 'budget' && SB.ready()) pbLoad();
+    if (view === 'projects' && SB.ready()) ppLoad();
+    if (view === 'pmimport' && SB.ready()) pmLookups().catch(() => {});
+    if (view === 'users' && SB.ready()) usLoad();
+    if (view === 'perms' && SB.ready()) pmLoad();
+    if (view === 'audit' && SB.ready()) auLoad();
+    if (view === 'inbox' && SB.ready()) wfInboxLoad();
+    if (view === 'chains' && SB.ready()) wfChainsLoad();
+    if (view === 'doc' && SB.ready()) wfLoad();
   }
 }
 
 /* ------------------------------------------------------------- language */
 function markLang() {
-  $$('#langSeg button').forEach(b => b.classList.toggle('on', b.dataset.lang === LANG));
+  $$('#langSeg button, #loginLang button')
+    .forEach(b => b.classList.toggle('on', b.dataset.lang === LANG));
 }
 
 function switchLang(l) {
@@ -1867,19 +2172,37 @@ function switchLang(l) {
     else msRender(id);
   }
   regFillBulk();                          // built options, same blind spot
+  renderMe();                             // role names come from the database in both languages
+  applyPerms();                           // the "no permission" tooltip is translated too
 
-  $('#connTxt').textContent = t(CONN.ok ? 'conn.ok' : 'conn.none');
+  $('#connTxt').textContent = t(CONN.ok ? 'conn.ok' : CONN.key || 'conn.none');
   applyHelp();
   renderAlrList();
   if (ALR.mode === 'doc') buildDoc();
   else if (ALR.mode === 'labels') buildLabels();
-  if (SB.ready()) { fillPickers(); fillAlrPickers(); }
+  // Only when signed in: on the sign-in box the language buttons work too, and
+  // there is nothing to fetch yet.
+  if (SB.ready() && ME) { fillPickers(); fillAlrPickers(); }
   showView(VIEW);
 }
 
 /* ------------------------------------------------------------- connect */
 async function testConn(quiet) {
   if (!SB.ready()) { setConn(false, 'conn.none'); return false; }
+  /* Step 1 needs nobody signed in: the auth settings endpoint answers to the
+     anon key alone, so it tells a wrong URL or key apart from "right, but not
+     signed in yet". No table answers to the anon key any more. */
+  try { await authReq('GET', 'settings'); }
+  catch (e) {
+    setConn(false, 'conn.error');
+    if (!quiet) msg('#setupMsg', 'err', authErrText(e) + t('setup.err.suffix'));
+    return false;
+  }
+  if (!(await authToken())) {
+    setConn(false, 'conn.signin');
+    if (!quiet) { msg('#setupMsg', 'ok', t('setup.okSignIn')); loginShow('in'); }
+    return false;
+  }
   try {
     await SB.select('am_setting', 'select=key&limit=1');
     setConn(true, new URL(CFG.url).hostname);
@@ -1954,7 +2277,8 @@ function init() {
     CFG = { url: $('#sbUrl').value.trim().replace(/\/+$/, ''), key: $('#sbKey').value.trim() };
     localStorage.setItem(LS_KEY, JSON.stringify(CFG));
     Object.keys(LOOK).forEach(k => delete LOOK[k]);
-    if (await testConn()) fillPickers();
+    // Not signed in yet: testConn opens the sign-in box itself.
+    if (await testConn()) await enterApp();
   };
   $('#btnLink').onclick = () => {
     if (!SB.ready()) return msg('#setupMsg', 'err', t('setup.needBoth'));
@@ -1964,6 +2288,8 @@ function init() {
     msg('#setupMsg', 'ok', t('setup.linkCopied', { link }));
   };
   $('#btnForget').onclick = () => {
+    // Forgetting the project on this device forgets who was signed in to it too.
+    authStore(null); ME = null; renderMe(); buildNav(); applyPerms();
     localStorage.removeItem(LS_KEY); CFG = { url: '', key: '' };
     $('#sbUrl').value = ''; $('#sbKey').value = '';
     setConn(false, 'conn.none');
@@ -1986,11 +2312,108 @@ function init() {
   initRegister();
   initIntake();
   initLegacy();
+  initAuthUi();
+  initSecurity();
+  initPm();
+  initWf();
+  const back = authFromHash();   // BEFORE loadCfg: both read the address-bar fragment
   loadCfg();
+  authLoad();
+  renderMe();
   showView('setup');
-  testConn(true).then(ok => { if (ok) { showView('tbl:am_org'); fillPickers(); } });
+  boot(back);
 }
 document.addEventListener('DOMContentLoaded', init);
+
+/* Start-up order: a project to talk to → a session → who that is. Each missing
+   piece stops at the screen that supplies it. */
+async function boot(back) {
+  if (!SB.ready()) { setConn(false, 'conn.none'); return; }   // first visit: connection first
+  if (back && back.error) return loginShow('in', back.error);
+  if (back && back.type === 'recovery' && SESS) return loginShow('new', t('auth.recoveryLead'), 'info');
+  if (!(await authToken())) { setConn(false, 'conn.signin'); return loginShow('in'); }
+  await enterApp();
+}
+
+function initAuthUi() {
+  $('#loginForm').onsubmit = async ev => {
+    ev.preventDefault();
+    if ($('#loginIn').hidden) return $('#btnSetPw').click();   // Enter in the new-password box
+    const email = $('#liEmail').value.trim(), pw = $('#liPw').value;
+    if (!email || !pw) return msg('#loginMsg', 'err', t('auth.needBoth'));
+    if (!SB.ready()) return msg('#loginMsg', 'err', t('err.noConfig'));
+    const before = ((ME && ME.email) || '').toLowerCase();
+    const btn = $('#btnSignIn');
+    btn.disabled = true;
+    msg('#loginMsg', 'info', t('auth.signingIn'));
+    try {
+      await authSignIn(email, pw);
+      $('#liPw').value = '';
+      // Someone else took over this browser mid-session: start from a clean page
+      // rather than show them what the previous person had open.
+      if (before && before !== email.toLowerCase()) return location.reload();
+      await enterApp(before === email.toLowerCase());
+    } catch (e) {
+      msg('#loginMsg', 'err', authErrText(e));
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  $('#btnForgot').onclick = async () => {
+    const email = $('#liEmail').value.trim();
+    if (!email) { $('#liEmail').focus(); return msg('#loginMsg', 'err', t('auth.forgotNeedEmail')); }
+    if (!SB.ready()) return msg('#loginMsg', 'err', t('err.noConfig'));
+    try {
+      await authReq('POST', 'recover?redirect_to='
+                    + encodeURIComponent(location.origin + location.pathname), { email });
+      msg('#loginMsg', 'ok', t('auth.forgotSent', { email }));
+    } catch (e) { msg('#loginMsg', 'err', authErrText(e)); }
+  };
+
+  $('#btnLoginSetup').onclick = () => { loginHide(); showView('setup'); };
+
+  $('#btnSetPw').onclick = async () => {
+    const a = $('#liNew1').value, b = $('#liNew2').value;
+    if (a.length < 8) return msg('#loginMsg', 'err', t('auth.pwShort'));
+    if (a !== b) return msg('#loginMsg', 'err', t('auth.pwMismatch'));
+    const btn = $('#btnSetPw');
+    btn.disabled = true;
+    try {
+      const tok = await authToken();
+      if (!tok) return loginShow('in', t('auth.expired'), 'warn');
+      await authReq('PUT', 'user', { password: a }, tok);
+      $('#liNew1').value = ''; $('#liNew2').value = '';
+      // Say it worked before the box goes — a password change that closes
+      // silently leaves people unsure whether it took.
+      msg('#loginMsg', 'ok', t('auth.pwChanged'));
+      setTimeout(() => (ME ? loginHide() : enterApp()), 1300);   // ME: changed from the sidebar
+    } catch (e) {
+      msg('#loginMsg', 'err', authErrText(e));
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  $('#btnPwCancel').onclick = loginHide;
+  $('#btnPw').onclick = () => loginShow('change');
+  $('#btnSignOut').onclick = authSignOut;
+  $$('#loginLang button').forEach(b => { b.onclick = () => switchLang(b.dataset.lang); });
+
+  /* Swallow clicks on anything applyPerms greyed out. Capture phase, so this
+     runs before the button's own onclick and that handler never fires. */
+  document.addEventListener('click', ev => {
+    const n = ev.target.closest && ev.target.closest('.noperm');
+    if (!n) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }, true);
+
+  // Signed out in another tab: this one follows instead of failing request by
+  // request.
+  window.addEventListener('storage', ev => {
+    if (ev.key === SESS_KEY && !ev.newValue && ME) location.reload();
+  });
+}
 
 /* =============================================================== BACKUP
    Pull  = read every table into one JSON file on this computer.
@@ -2007,23 +2430,33 @@ const BK_ALL = [
   'am_unit', 'am_origin', 'am_origin_alias', 'am_origin_rejected',
   'am_location', 'am_product',
   'am_shipment', 'am_shipment_line', 'am_asset', 'am_alr', 'am_alr_line',
-  'am_asset_seq', 'am_barcode_seq', 'am_counter_log'
+  'am_asset_seq', 'am_barcode_seq', 'am_counter_log',
+  'pm_budget_year', 'pm_budget_round', 'pm_budget_line',
+  'pm_vendor', 'pm_project', 'pm_vendor_score'
 ];
 
 // Parents before children. am_org and am_location also need an inner sort,
 // because a row may reference another row of the same table.
+// Budget rounds, their lines and vendor scores are backed up but NOT pushed
+// back, for the same reason as assets: their keys are bigserial. They come
+// back from the budget workbooks and dossiers, which are the originals.
 const BK_PUSH = [
   'am_setting', 'am_org', 'am_org_alias', 'am_category_group', 'am_category',
   'am_unit', 'am_origin', 'am_origin_alias', 'am_origin_rejected',
-  'am_location', 'am_product'
+  'am_location', 'am_product',
+  'pm_budget_year', 'pm_vendor', 'pm_project'
 ];
 const BK_SELF_REF = { am_org: 'parent_code', am_location: 'parent_code' };
 const BK_PK = {
   am_setting: 'key', am_org: 'code', am_org_alias: 'alias',
   am_category_group: 'code', am_category: 'code', am_unit: 'code',
   am_origin: 'iso2', am_origin_alias: 'alias_norm', am_origin_rejected: 'raw_norm',
-  am_location: 'code', am_product: 'raw_name_norm'
+  am_location: 'code', am_product: 'raw_name_norm',
+  pm_budget_year: 'year', pm_vendor: 'code', pm_project: 'code'
 };
+// Columns the database computes. Sending a value back — even the same value —
+// is rejected ("cannot insert a non-DEFAULT value into column").
+const BK_GENERATED = { pm_project: ['status'] };
 
 const BK_PAGE = 1000;   // PostgREST caps a plain select at 1000 rows
 const BK_CHUNK = 400;   // rows per upsert request
@@ -2165,6 +2598,8 @@ async function bkPush() {
       if (!Array.isArray(data) || !data.length) continue;
       data = dedupeBy(data, BK_PK[table]);
       if (BK_SELF_REF[table]) data = bkSortByDepth(data, BK_PK[table], BK_SELF_REF[table]);
+      if (BK_GENERATED[table])
+        data = data.map(r => { const o = { ...r }; for (const c of BK_GENERATED[table]) delete o[c]; return o; });
       for (let i = 0; i < data.length; i += BK_CHUNK) {
         msg(out, 'info', t('bk.pushing', { table, done: i, total: data.length }));
         await SB.call(table, {
@@ -4714,4 +5149,3022 @@ async function legImport() {
 function initLegacy() {
   $('#btnLegRead').onclick = legRead;
   $('#btnLegImport').onclick = legImport;
+}
+
+/* ======================================================= USERS & PERMISSIONS
+   Accounts are created in the Supabase dashboard (Authentication → Users →
+   Add user, "Auto Confirm User" ticked). Creating one from here would need the
+   service key, and that key must never reach a browser. A trigger turns each
+   new account into a row of app_user straight away; this screen hands out the
+   roles and the scope each one applies to. */
+
+const SEC = { users: [], roles: [], mods: [], perms: [], orgs: [], pmMod: 'assets' };
+const PM_ACTS = ['view', 'create', 'edit', 'approve', 'admin'];
+const AUDIT_TABLES = [
+  'am_asset', 'am_alr', 'am_alr_line', 'am_shipment', 'am_shipment_line',
+  'am_org', 'am_org_alias', 'am_category_group', 'am_category', 'am_unit',
+  'am_location', 'am_product', 'am_origin', 'am_origin_alias', 'am_origin_rejected',
+  'am_setting', 'am_xls_template', 'am_xls_column',
+  'app_user', 'app_user_role', 'app_permission', 'app_role', 'app_module'
+];
+
+const roleName = r => (LANG === 'vi' ? r.name_vi : r.name_en) || r.code;
+const modName  = m => (LANG === 'vi' ? m.name_vi : m.name_en) || m.code;
+const orgName  = o => (LANG === 'vi' ? o.name_vi : o.name_en) || o.name_vi || '';
+const isSelf   = u => !!(ME && u.id === ME.id);
+
+async function secLookups() {
+  const [roles, mods, orgs] = await Promise.all([
+    SB.select('app_role', 'select=*&order=sort'),
+    SB.select('app_module', 'select=*&order=sort'),
+    SB.select('am_org', 'select=code,name_vi,name_en,parent_code&order=code')
+  ]);
+  Object.assign(SEC, { roles, mods, orgs });
+}
+
+/* am_org in tree order with a depth, for the scope picker: a scope is a node
+   of that tree, and picking one from a flat alphabetical list hides which
+   departments it covers. */
+function orgTreeOrder() {
+  const kids = new Map();
+  for (const o of SEC.orgs) {
+    const p = o.parent_code || '';
+    if (!kids.has(p)) kids.set(p, []);
+    kids.get(p).push(o);
+  }
+  const out = [];
+  const walk = (p, d) => {
+    for (const o of (kids.get(p) || []).sort((a, b) => a.code.localeCompare(b.code))) {
+      out.push(Object.assign({ depth: d }, o));
+      walk(o.code, d + 1);
+    }
+  };
+  walk('', 0);
+  return out;
+}
+
+/* ---------------------------------------------------------------- users */
+async function usLoad() {
+  const out = $('#usMsg');
+  msg(out, 'info', t('table.loading'));
+  try {
+    await secLookups();
+    const [users, links] = await Promise.all([
+      SB.select('app_user', 'select=*&order=email'),
+      SB.select('app_user_role', 'select=*')
+    ]);
+    SEC.users = users.map(u => Object.assign({}, u, {
+      roles: links.filter(l => l.user_id === u.id)
+                  .sort((a, b) => a.role_code.localeCompare(b.role_code))
+    }));
+    // How to add someone is the first question on this screen, and the answer
+    // is not on this screen — so it is said here, not in a help text that is
+    // hidden by default.
+    msg(out, 'info', t('users.howToAdd'));
+    usRender();
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+function usRender() {
+  const head = $('#usGrid thead'), body = $('#usGrid tbody');
+  const admin = can('security', 'admin');
+  head.innerHTML = ''; body.innerHTML = '';
+  head.append(el('tr', {}, [
+    el('th', { className: 'num idx', textContent: '#' }),
+    el('th', { textContent: t('users.col.email') }),
+    el('th', { textContent: t('users.col.name') }),
+    el('th', { textContent: t('users.col.roles') }),
+    el('th', { textContent: t('users.col.active') })
+  ]));
+  const q = $('#usQ').value.trim().toLowerCase();
+  const showOff = $('#usInactive').checked;
+  const list = SEC.users.filter(u => (showOff || u.active)
+    && (!q || `${u.email} ${u.full_name || ''}`.toLowerCase().includes(q)));
+
+  list.forEach((u, i) => {
+    const tr = el('tr', { className: u.active ? '' : 'off' });
+    tr.append(el('td', { className: 'num idx', textContent: fmtInt(i + 1) }));
+    tr.append(el('td', {}, el('code', { textContent: u.email })));
+
+    const nameTd = el('td');
+    if (admin) {
+      const inp = el('input', { value: u.full_name || '', style: 'width:190px', spellcheck: false });
+      inp.onchange = () => usPatch(u, { full_name: inp.value.trim() || null });
+      nameTd.append(inp);
+    } else nameTd.textContent = u.full_name || '';
+    tr.append(nameTd);
+
+    const box = el('div', { className: 'roles' });
+    for (const l of u.roles) {
+      const r = SEC.roles.find(x => x.code === l.role_code);
+      const chip = el('span', { className: 'role', title: l.role_code }, [
+        el('b', { textContent: r ? roleName(r) : l.role_code }),
+        document.createTextNode(' · ' + l.scope_org)
+      ]);
+      // Your own System Admin role cannot be taken away from here: that is the
+      // one click that would leave nobody able to open this screen.
+      if (admin && !(isSelf(u) && l.role_code === 'SYS_ADMIN')) {
+        const x = el('button', { className: 'x', textContent: '×', title: t('users.removeRole') });
+        x.onclick = () => usRemoveRole(u, l);
+        chip.append(x);
+      }
+      box.append(chip);
+    }
+    if (!u.roles.length)
+      box.append(el('span', { style: 'color:var(--amber);font-size:12px', textContent: t('users.noRole') }));
+    if (admin) box.append(usAddRoleCtl(u));
+    tr.append(el('td', {}, box));
+
+    const cb = el('input', { type: 'checkbox', checked: u.active,
+                             disabled: !admin || isSelf(u),
+                             title: isSelf(u) ? t('users.cannotSelf') : '' });
+    cb.onchange = () => usPatch(u, { active: cb.checked });
+    tr.append(el('td', {}, cb));
+    body.append(tr);
+  });
+  if (!list.length)
+    body.append(el('tr', {}, el('td', { colSpan: 5, style: 'color:var(--dim);padding:14px',
+      textContent: t('users.none') })));
+}
+
+/* Role first, then scope. The scope list starts on the role's usual scope
+   (SOF for the hotel GM, PHCL for JVC) and stays empty for roles that must be
+   tied to one department, so nobody is handed the whole hotel by accident. */
+function usAddRoleCtl(u) {
+  const wrap = el('span', { className: 'addrole' });
+  const rs = el('select');
+  rs.append(el('option', { value: '', textContent: t('users.addRole') }));
+  for (const ent of ['SSP', 'CP', 'JVC', 'SYS']) {
+    const og = el('optgroup', { label: t('perms.ent.' + ent) });
+    for (const r of SEC.roles.filter(x => x.entity === ent))
+      og.append(el('option', { value: r.code, textContent: roleName(r) }));
+    rs.append(og);
+  }
+  const ss = el('select');
+  const ok = el('button', { className: 'btn', textContent: t('users.add') });
+  ss.hidden = true; ok.hidden = true;
+  rs.onchange = () => {
+    const r = SEC.roles.find(x => x.code === rs.value);
+    ss.innerHTML = '';
+    ss.hidden = ok.hidden = !r;
+    if (!r) return;
+    ss.append(el('option', { value: '', textContent: t('users.pickScope') }));
+    for (const o of orgTreeOrder())
+      ss.append(el('option', { value: o.code,
+        textContent: '  '.repeat(o.depth) + o.code + ' — ' + orgName(o) }));
+    ss.value = r.default_scope || '';
+  };
+  ok.onclick = () => {
+    if (!rs.value) return;
+    if (!ss.value) return msg('#usMsg', 'err', t('users.pickScope'));
+    usAddRole(u, rs.value, ss.value);
+  };
+  wrap.append(rs, ss, ok);
+  return wrap;
+}
+
+async function usAddRole(u, role, scope) {
+  try {
+    await SB.insert('app_user_role', [{ user_id: u.id, role_code: role, scope_org: scope }]);
+    await usLoad();
+    msg('#usMsg', 'ok', t('users.roleAdded', { email: u.email, role, scope }));
+    if (isSelf(u)) await loadMe();
+  } catch (e) { msg('#usMsg', 'err', e.message); }
+}
+
+async function usRemoveRole(u, l) {
+  if (!confirm(t('users.confirmRemove', { email: u.email, role: l.role_code, scope: l.scope_org })))
+    return;
+  try {
+    await SB.remove('app_user_role', `user_id=eq.${u.id}`
+      + `&role_code=eq.${encodeURIComponent(l.role_code)}`
+      + `&scope_org=eq.${encodeURIComponent(l.scope_org)}`);
+    await usLoad();
+    msg('#usMsg', 'ok', t('users.roleRemoved', { email: u.email, role: l.role_code, scope: l.scope_org }));
+    if (isSelf(u)) await loadMe();
+  } catch (e) { msg('#usMsg', 'err', e.message); }
+}
+
+async function usPatch(u, patch) {
+  try {
+    await SB.patch('app_user', `id=eq.${u.id}`, patch);
+    Object.assign(u, patch);
+    msg('#usMsg', 'ok', t('users.saved', { email: u.email }));
+  } catch (e) { msg('#usMsg', 'err', e.message); }
+  usRender();
+}
+
+/* ----------------------------------------------------- permission matrix */
+async function pmLoad() {
+  const out = $('#pmMsg');
+  msg(out, 'info', t('table.loading'));
+  try {
+    await secLookups();
+    SEC.perms = await SB.select('app_permission', 'select=*');
+    msg(out, '', '');
+    pmRender();
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+function pmRender() {
+  const tabs = $('#pmTabs');
+  tabs.innerHTML = '';
+  if (!SEC.mods.some(m => m.code === SEC.pmMod)) SEC.pmMod = (SEC.mods[0] || {}).code;
+  for (const m of SEC.mods) {
+    const b = el('button', { textContent: modName(m) });
+    b.classList.toggle('on', m.code === SEC.pmMod);
+    b.onclick = () => { SEC.pmMod = m.code; pmRender(); };
+    tabs.append(b);
+  }
+
+  const admin = can('security', 'admin');
+  const head = $('#pmGrid thead'), body = $('#pmGrid tbody');
+  head.innerHTML = ''; body.innerHTML = '';
+  head.append(el('tr', {}, [
+    el('th', { textContent: t('perms.col.role') }),
+    ...PM_ACTS.map(a => el('th', { className: 'ck', textContent: t('perms.act.' + a) }))
+  ]));
+  let ent = null;
+  for (const r of SEC.roles) {
+    if (r.entity !== ent) {
+      ent = r.entity;
+      body.append(el('tr', { className: 'grp' },
+        el('td', { colSpan: PM_ACTS.length + 1, textContent: t('perms.ent.' + ent) })));
+    }
+    const p = SEC.perms.find(x => x.role_code === r.code && x.module_code === SEC.pmMod) || {};
+    // The System Admin's rights on this very screen cannot be switched off:
+    // doing so would leave nobody able to switch them back on.
+    const locked = r.code === 'SYS_ADMIN' && SEC.pmMod === 'security';
+    const tr = el('tr', {}, el('td', { textContent: roleName(r), title: r.code }));
+    for (const a of PM_ACTS) {
+      const cb = el('input', { type: 'checkbox', checked: !!p['can_' + a],
+                               disabled: !admin || locked,
+                               title: locked ? t('perms.locked') : '' });
+      cb.onchange = () => pmSet(r.code, SEC.pmMod, a, cb.checked, cb);
+      tr.append(el('td', { className: 'ck' }, cb));
+    }
+    body.append(tr);
+  }
+}
+
+/* One click, one write. Any right implies "view" (a screen you cannot open is
+   a right you cannot use), and taking "view" away takes the rest with it. */
+async function pmSet(role, mod, act, on, cb) {
+  const row = SEC.perms.find(x => x.role_code === role && x.module_code === mod);
+  const patch = { ['can_' + act]: on };
+  if (on && act !== 'view') patch.can_view = true;
+  if (!on && act === 'view') for (const a of PM_ACTS) patch['can_' + a] = false;
+  try {
+    if (row) await SB.patch('app_permission',
+      `role_code=eq.${encodeURIComponent(role)}&module_code=eq.${encodeURIComponent(mod)}`, patch);
+    else await SB.insert('app_permission', [Object.assign({ role_code: role, module_code: mod }, patch)]);
+    if (row) Object.assign(row, patch);
+    else SEC.perms.push(Object.assign({ role_code: role, module_code: mod,
+      can_view: false, can_create: false, can_edit: false, can_approve: false, can_admin: false }, patch));
+    pmRender();
+    msg('#pmMsg', 'ok', t('perms.saved', { role, mod, act: t('perms.act.' + act),
+                                          state: t(on ? 'perms.on' : 'perms.off') }));
+    // The signed-in user's own rights may just have changed.
+    if (ME && ME.roles.some(x => x.role === role)) await loadMe();
+  } catch (e) {
+    cb.checked = !on;
+    msg('#pmMsg', 'err', e.message);
+  }
+}
+
+/* --------------------------------------------------------------- audit */
+function auInitPickers() {
+  const sel = $('#auTbl');
+  if (sel.options.length) return;
+  sel.append(el('option', { value: '', textContent: t('audit.allTables') }));
+  for (const n of AUDIT_TABLES) sel.append(el('option', { value: n, textContent: n }));
+}
+
+/* A date typed in the picker is a LOCAL day. The column is timestamptz, so the
+   bounds go over as the UTC instants of local midnight — otherwise the first
+   seven hours of every Vietnamese day would land on the wrong side. */
+const localDayStart = (d, addDays = 0) => {
+  const x = new Date(d + 'T00:00:00');
+  x.setDate(x.getDate() + addDays);
+  return x.toISOString();
+};
+
+const AU_CAP = 300;
+async function auLoad() {
+  auInitPickers();
+  const out = $('#auMsg');
+  msg(out, 'info', t('table.loading'));
+  try {
+    const q = ['select=*', 'order=at.desc', 'limit=' + AU_CAP];
+    const tbl = $('#auTbl').value;
+    if (tbl) q.push('tbl=eq.' + encodeURIComponent(tbl));
+    const who = $('#auUser').value.trim().replace(/[(),*]/g, ' ');
+    if (who) q.push('email=ilike.*' + encodeURIComponent(who) + '*');
+    const f = $('#auFrom').value, to = $('#auTo').value;
+    if (f) q.push('at=gte.' + encodeURIComponent(localDayStart(f)));
+    if (to) q.push('at=lt.' + encodeURIComponent(localDayStart(to, 1)));
+    const rows = await SB.select('app_audit', q.join('&'));
+    msg(out, rows.length >= AU_CAP ? 'warn' : '',
+        rows.length >= AU_CAP ? t('audit.capped', { n: fmtInt(AU_CAP) }) : '');
+    auRender(rows);
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+const auVal = v => {
+  if (v === null || v === undefined || v === '') return '∅';
+  const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+  return s.length > 70 ? s.slice(0, 69) + '…' : s;
+};
+
+/* An UPDATE shows each changed field as before → after. An INSERT or DELETE
+   has no "before" (or no "after"), so it lists the filled fields instead — a
+   few of them; the full row is one hover away. */
+function auChanges(r) {
+  const box = el('div', { className: 'chg' });
+  if (r.op === 'UPDATE') {
+    for (const k of Object.keys(r.new_data || {})) {
+      const line = el('div');
+      line.append(el('b', { textContent: k + ': ' }),
+                  el('s', { textContent: auVal((r.old_data || {})[k]) }),
+                  document.createTextNode(' → '),
+                  el('ins', { textContent: auVal(r.new_data[k]) }));
+      box.append(line);
+    }
+    return box;
+  }
+  const data = (r.op === 'INSERT' ? r.new_data : r.old_data) || {};
+  const keys = Object.keys(data).filter(k => data[k] !== null && data[k] !== '');
+  box.title = JSON.stringify(data, null, 1);
+  for (const k of keys.slice(0, 6)) {
+    const line = el('div');
+    line.append(el('b', { textContent: k + ': ' }), document.createTextNode(auVal(data[k])));
+    box.append(line);
+  }
+  if (keys.length > 6)
+    box.append(el('div', { style: 'color:var(--dim)', textContent: t('audit.more', { n: keys.length - 6 }) }));
+  return box;
+}
+
+function auRender(rows) {
+  const head = $('#auGrid thead'), body = $('#auGrid tbody');
+  head.innerHTML = ''; body.innerHTML = '';
+  head.append(el('tr', {}, ['audit.col.at', 'audit.col.user', 'audit.col.table', 'audit.col.op',
+                            'audit.col.pk', 'audit.col.changes']
+    .map(k => el('th', { textContent: t(k) }))));
+  const fmtAt = s => new Date(s).toLocaleString(LANG === 'vi' ? 'vi-VN' : 'en-GB',
+    { day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  for (const r of rows)
+    body.append(el('tr', {}, [
+      el('td', { textContent: fmtAt(r.at) }),
+      el('td', { textContent: r.email || '' }),
+      el('td', {}, el('code', { textContent: r.tbl })),
+      el('td', { textContent: t('audit.op.' + r.op) }),
+      el('td', {}, el('code', { textContent: r.pk || '' })),
+      el('td', {}, auChanges(r))
+    ]));
+  if (!rows.length)
+    body.append(el('tr', {}, el('td', { colSpan: 6, style: 'color:var(--dim);padding:14px',
+      textContent: t('audit.none') })));
+}
+
+function initSecurity() {
+  $('#usQ').oninput = () => usRender();
+  $('#usInactive').onchange = () => usRender();
+  $('#btnAuLoad').onclick = auLoad;
+  $('#auUser').onkeydown = ev => { if (ev.key === 'Enter') auLoad(); };
+  for (const id of ['#auTbl', '#auFrom', '#auTo']) $(id).onchange = auLoad;
+}
+
+/* ====================================================== PROJECT MANAGEMENT
+   Phase 2: the annual CAPEX budget, the projects that spend it, importing both
+   from the workbooks the team already keeps, and the report the approvers read.
+
+   Two sources, two shapes:
+     * the budget summary ("Capex Budget Summary - PHCL - YYYY.xlsx"): one sheet
+       per submission round plus "Master Data", the approved list. The years do
+       NOT share a column order — 2026 puts Project Code in A, the others in G,
+       and 2023–24 label Impact "Column1" — so every column is found by its
+       HEADER, never by its letter;
+     * the per-project dossier (the FFE procurement workbook): its hidden data
+       sheets Capex Data / Project Data / Vendor Data carry the dates, the
+       contract value and the tender scores. A project usually has several
+       copies ("assessed", "new PR PO", a copy under "reference"); the newest
+       file wins.
+   Entity is never stored: it follows the department up the am_org tree. */
+
+const PM = {
+  orgs: [], orgMap: new Map(), alias: new Map(),
+  bud: { year: null, roundId: null, rounds: [], lines: [], yearRow: null, projByMain: new Map(), pick: null },
+  prj: { rows: [], finalCodes: new Set(), pick: null, vendors: [] },
+  dash: { year: null, lines: [], projects: [], years: [], yearRow: null },
+  impBud: null, impDos: null
+};
+const PM_ENTITIES = ['SSP', 'CP', 'JVC'];
+const PM_STATUS = ['pending', 'in_progress', 'completed', 'cancelled'];
+const PM_RISK = ['Critical', 'High', 'Medium', 'Low'];
+
+/* ------------------------------------------------------------ codes, orgs */
+const pmCode = s => String(s ?? '').normalize('NFC').toUpperCase().replace(/\s+/g, '')
+  .replace(/\.{2,}/g, '.').replace(/^\.+|\.+$/g, '');
+const PM_CODE_OK = /^[A-Z]+(?:\.[A-Z0-9]+)*\.(?:19|20)\d{2}(?:\.\d{1,2})?$/;
+const pmMain = c => { const m = /^(.*\.(?:19|20)\d{2})(?:\.\d{1,2})?$/.exec(c || ''); return m ? m[1] : (c || ''); };
+const pmYear = c => { const m = /\.((?:19|20)\d{2})$/.exec(pmMain(c)); return m ? +m[1] : null; };
+
+async function pmLookups(force) {
+  if (PM.orgs.length && !force) return;
+  const [orgs, alias] = await Promise.all([
+    SB.select('am_org', 'select=code,name_vi,name_en,parent_code,is_department&order=code'),
+    SB.select('am_org_alias', 'select=alias,code')
+  ]);
+  PM.orgs = orgs;
+  PM.orgMap = new Map(orgs.map(o => [o.code, o]));
+  PM.alias = new Map(alias.map(a => [String(a.alias).toUpperCase(), a.code]));
+}
+// The old workbooks spell some departments differently (HKP for HKD, IT for
+// ITD); am_org_alias already knows those spellings.
+const pmDept = raw => {
+  const c = String(raw ?? '').normalize('NFC').trim().toUpperCase();
+  return PM.alias.get(c) || c;
+};
+function pmEntity(dept) {
+  let o = PM.orgMap.get(dept), guard = 0;
+  while (o && guard++ < 12) {
+    if (o.code === 'SOF') return 'SSP';
+    if (o.code === 'CP') return 'CP';
+    if (o.code === 'JVC') return 'JVC';
+    o = PM.orgMap.get(o.parent_code);
+  }
+  return '—';
+}
+const pmDeptKnown = d => PM.orgMap.has(d);
+
+/* Mirrors the generated column in 18_pm_budget.sql, for rows not saved yet. */
+function pmStatus(p) {
+  if (p.status) return p.status;
+  if (p.status_override) return p.status_override;
+  const h = p.handover_date, base = p.purchase_date || p.approve_date || p.request_date || h;
+  if (h && h >= base) return 'completed';
+  if (p.purchase_date || p.approve_date) return 'in_progress';
+  return 'pending';
+}
+const pmDatesOdd = p => {
+  const seq = [p.request_date, p.approve_date, p.purchase_date, p.handover_date].filter(Boolean);
+  for (let i = 1; i < seq.length; i++) if (seq[i] < seq[i - 1]) return true;
+  return false;
+};
+
+/* ---------------------------------------------------------------- format */
+const pmLoc = () => (LANG === 'vi' ? 'vi-VN' : 'en-US');
+// Millions of VND, the unit the budget is argued in ("6,667M").
+const fmtM = v => (v == null || !isFinite(v)) ? '—'
+  : Math.abs(v) >= 1e6 ? fmtInt(Math.round(v / 1e6)) + 'M' : fmtInt(Math.round(v));
+const fmtPct = (v, d = 1) => (v == null || !isFinite(v)) ? '—'
+  : (v * 100).toLocaleString(pmLoc(), { maximumFractionDigits: d, minimumFractionDigits: d }) + '%';
+const pmSum = (rows, f) => rows.reduce((s, r) => s + (Number(typeof f === 'function' ? f(r) : r[f]) || 0), 0);
+const pmStatusChip = s => el('span', { className: 'st ' + s, textContent: t('pm.st.' + s) });
+const pmMonthName = m => new Date(2020, m - 1, 1).toLocaleString(pmLoc(), { month: 'short' });
+
+/* ------------------------------------------------------------ excel cells */
+const hnorm = s => String(s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/đ/g, 'd').replace(/[^a-z0-9]/g, '');
+const xlSerial = (y, m, d) => Date.UTC(y, m - 1, d) / 86400000 + 25569;
+function xlDate(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number' && isFinite(v) && v > 20000 && v < 80000)
+    return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
+  if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10);
+  const s = String(v).trim();
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/.exec(s);          // dd/mm/yyyy — the company's format
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  return null;   // "Glass Washer" in a date column is not a date
+}
+function xlNum(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  const s = String(v).replace(/[\s,]/g, '').replace(/%$/, '');
+  const n = Number(s);
+  return s !== '' && isFinite(n) ? n : null;
+}
+// A formula that found nothing leaves 0 in a text column; that is "empty".
+const xlText = v => {
+  if (v == null || v === 0) return null;
+  const s = String(v).normalize('NFC').trim();
+  return s === '' ? null : s;
+};
+async function pmReadBook(file) {
+  const buf = await file.arrayBuffer();
+  return XLSX.read(buf, { type: 'array', cellDates: false });
+}
+const pmRows = ws => XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: false });
+
+async function pmSelectAll(table, query) {
+  const out = [];
+  for (let off = 0; ; off += 1000) {
+    const page = await SB.select(table, `${query}&limit=1000&offset=${off}`);
+    out.push(...page);
+    if (page.length < 1000) return out;
+  }
+}
+
+/* ======================================================= import: budget */
+const PM_BUD_COLS = {
+  projectcode: 'project_code', currentprojectcode: 'current_code', category: 'category',
+  departmentcode: 'dept_code', departmentname: 'dept_name', requestdate: 'request_date',
+  investmenttype: 'investment_type', reason: 'reason', projectname: 'name',
+  areacategory: 'area_category', areacatergory: 'area_category',
+  estimatedvalue: 'estimated_value', totalestimatedvalue: 'estimated_value',
+  approvedbygm: 'gm_approved', posibility: 'possibility', possibility: 'possibility',
+  // 2023–24 files head the Impact column "Column1" — it sits between
+  // Posibility and Assessment, and Assessment = Posibility × it.
+  impact: 'impact', column1: 'impact',
+  assessment: 'assessment', risklevel: 'risk_level',
+  timetostart: 'start_date', timetocomplete: 'end_date', duration: 'duration_days',
+  assetitem: 'asset_item', location: 'location', rationale: 'rationale',
+  technicalstandard: 'tech_standard', quantity: 'quantity', unitprice: 'unit_price', amount: 'amount',
+  reference: 'reference', previousprojectcode: 'previous_code',
+  previousprojectcodeifapplicable: 'previous_code', supplier: 'supplier',
+  details: 'details', detailsdeliverypaymentetc: 'details',
+  projectcategory: 'project_category', color: 'color_status',
+  purchasingincharge: 'purchasing_in_charge', note: 'note'
+};
+const PM_LINE_TEXT = ['project_code', 'current_code', 'category', 'dept_code', 'dept_name',
+  'investment_type', 'reason', 'name', 'risk_level', 'asset_item', 'location', 'rationale',
+  'tech_standard', 'reference', 'previous_code', 'supplier', 'details', 'project_category',
+  'area_category', 'color_status', 'purchasing_in_charge', 'owner_note', 'dept_response', 'note'];
+const PM_LINE_NUM = ['estimated_value', 'gm_approved', 'possibility', 'impact', 'assessment',
+  'duration_days', 'quantity', 'unit_price', 'amount'];
+const PM_LINE_DATE = ['request_date', 'start_date', 'end_date'];
+const PM_MONTHS = Array.from({ length: 12 }, (_, i) => 'm' + String(i + 1).padStart(2, '0'));
+const pmBlankLine = () => Object.fromEntries(
+  [...PM_LINE_TEXT, ...PM_LINE_NUM, ...PM_LINE_DATE, ...PM_MONTHS].map(k => [k, null]));
+
+function pmParseBudgetSheet(name, ws, hidden, fileYear, fileDate) {
+  const rows = pmRows(ws);
+  let hr = -1;
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const n = (rows[i] || []).map(hnorm);
+    if (n.includes('projectcode')
+        && (n.includes('estimatedvalue') || n.includes('totalestimatedvalue') || n.includes('projectname'))) {
+      hr = i; break;
+    }
+  }
+  if (hr < 0) return null;
+  const head = rows[hr] || [];
+  const col = {};                              // field -> column index (first wins)
+  head.forEach((h, i) => { const f = PM_BUD_COLS[hnorm(h)]; if (f && col[f] === undefined) col[f] = i; });
+  if (col.project_code === undefined) return null;
+
+  const raw = [];
+  for (let i = hr + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const code = pmCode(r[col.project_code]);
+    if (!code || !/(?:19|20)\d{2}/.test(code)) continue;       // blank, subtotal, note rows
+    raw.push({ r, code });
+  }
+  if (!raw.length) return null;
+  // A sheet belongs to the year most of its codes carry ("Capex 2024" sits in
+  // the 2025 workbook and is a 2024 list).
+  const tally = new Map();
+  for (const { code } of raw) { const y = pmYear(code); if (y) tally.set(y, (tally.get(y) || 0) + 1); }
+  const year = [...tally].sort((a, b) => b[1] - a[1])[0]?.[0] || fileYear;
+
+  // Monthly phasing: header cells that are dates inside that year.
+  const phase = {};                            // column index -> 'mNN'
+  const lo = xlSerial(year, 1, 1), hi = xlSerial(year, 12, 31);
+  head.forEach((h, i) => {
+    if (typeof h === 'number' && h >= lo && h <= hi) {
+      const m = new Date(Math.round((h - 25569) * 86400000)).getUTCMonth() + 1;
+      phase[i] = PM_MONTHS[m - 1];
+    }
+  });
+  // The owner's question and the department's answer ride in the unheaded
+  // columns straight after the phasing block (AP / AQ in the 2026 sheet).
+  const phaseCols = Object.keys(phase).map(Number);
+  let noteCols = [];
+  if (phaseCols.length) {
+    const after = Math.max(...phaseCols) + 1;
+    for (let i = after; i < after + 4 && noteCols.length < 2; i++)
+      if (head[i] == null || String(head[i]).trim() === '') noteCols.push(i);
+  }
+  // SSP cap as written: "Total CAPEX budget - 3% FF&E Reserve" + the number beside it.
+  let cap = null;
+  for (let i = 0; i < hr && cap == null; i++) {
+    const r = rows[i] || [];
+    const at = r.findIndex(c => hnorm(c).includes('ffereserve'));
+    if (at >= 0) for (let j = at + 1; j < r.length; j++) { const n = xlNum(r[j]); if (n && n > 1e6) { cap = n; break; } }
+  }
+
+  const unknownDept = new Set();
+  let badCode = 0;
+  const lines = raw.map(({ r, code }) => {
+    const l = pmBlankLine();
+    for (const f of PM_LINE_TEXT) if (col[f] !== undefined) l[f] = xlText(r[col[f]]);
+    for (const f of PM_LINE_NUM) if (col[f] !== undefined) l[f] = xlNum(r[col[f]]);
+    for (const f of PM_LINE_DATE) if (col[f] !== undefined) l[f] = xlDate(r[col[f]]);
+    l.project_code = code;
+    if (l.current_code) l.current_code = pmCode(l.current_code);
+    if (l.previous_code) l.previous_code = pmCode(l.previous_code);
+    if (l.dept_code) { l.dept_code = pmDept(l.dept_code); if (!pmDeptKnown(l.dept_code)) unknownDept.add(l.dept_code); }
+    if (l.duration_days != null) l.duration_days = Math.round(l.duration_days);
+    if (l.estimated_value == null) l.estimated_value = l.amount;
+    if (!PM_CODE_OK.test(code)) badCode++;
+    for (const [ci, m] of Object.entries(phase)) l[m] = xlNum(r[ci]);
+    // A plan marked with 1 / x per month (not amounts) is spread evenly.
+    const marks = PM_MONTHS.filter(m => l[m] != null && l[m] !== 0);
+    if (marks.length && marks.every(m => l[m] > 0 && l[m] <= 1) && l.estimated_value) {
+      for (const m of marks) l[m] = l.estimated_value / marks.length;
+    }
+    if (noteCols[0] !== undefined) l.owner_note = xlText(r[noteCols[0]]);
+    if (noteCols[1] !== undefined) l.dept_response = xlText(r[noteCols[1]]);
+    return l;
+  });
+
+  const dm = /(20\d{2})(\d{2})(\d{2})/.exec(name);
+  const isFinal = hnorm(name) === 'masterdata';
+  return {
+    name, hidden, year, label: name.trim(), is_final: isFinal,
+    round_date: dm ? `${dm[1]}-${dm[2]}-${dm[3]}` : (isFinal ? fileDate : null),
+    lines, cap, headerRow: hr + 1, phased: phaseCols.length > 0,
+    total: pmSum(lines, 'estimated_value'), unknownDept: [...unknownDept], badCode,
+    // Pre-ticked: what the team can see, and the dated submission snapshots.
+    pick: !hidden || !!dm
+  };
+}
+
+async function piBudRead() {
+  const out = $('#piBudOut');
+  const f = $('#piBudFile').files[0];
+  $('#btnPiBudGo').disabled = true;
+  if (!f) return msg(out, 'err', t('pm.imp.pickFile'));
+  msg(out, 'info', t('pm.imp.reading'));
+  try {
+    await pmLookups();
+    const wb = await pmReadBook(f);
+    const fy = +(/(20\d{2})(?!.*20\d{2})/.exec(f.name) || [])[1] || new Date().getFullYear();
+    const fd = new Date(f.lastModified).toISOString().slice(0, 10);
+    const hid = (wb.Workbook && wb.Workbook.Sheets) || [];
+    const found = [];
+    wb.SheetNames.forEach((n, i) => {
+      const c = pmParseBudgetSheet(n, wb.Sheets[n], !!(hid[i] && hid[i].Hidden), fy, fd);
+      if (c) found.push(c);
+    });
+    PM.impBud = { file: f, sheets: found };
+    piBudRender();
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+function piBudRender() {
+  const out = $('#piBudOut');
+  const st = PM.impBud;
+  out.innerHTML = '';
+  if (!st || !st.sheets.length) return msg(out, 'warn', t('pm.imp.noSheets'));
+  out.append(el('div', { className: 'msg info',
+    textContent: t('pm.imp.budFound', { n: st.sheets.length, file: st.file.name }) }));
+  const tb = el('table', { className: 'pmsheets' });
+  tb.append(el('tr', {}, ['', 'pm.imp.col.sheet', 'pm.imp.col.year', 'pm.imp.col.date',
+    'pm.imp.col.lines', 'pm.imp.col.total', 'pm.imp.col.notes']
+    .map((k, i) => el('th', { className: [4, 5].includes(i) ? 'num' : '', textContent: k ? t(k) : '' }))));
+  for (const s of st.sheets) {
+    const cb = el('input', { type: 'checkbox', checked: s.pick });
+    cb.onchange = () => { s.pick = cb.checked; $('#btnPiBudGo').disabled = !st.sheets.some(x => x.pick); };
+    const notes = [];
+    if (s.is_final) notes.push(t('pm.imp.isFinal'));
+    if (s.hidden) notes.push(t('pm.imp.hidden'));
+    if (s.phased) notes.push(t('pm.imp.phased'));
+    if (s.cap) notes.push(t('pm.imp.cap', { v: fmtM(s.cap) }));
+    if (s.unknownDept.length) notes.push(t('pm.imp.unknownDept', { list: s.unknownDept.join(', ') }));
+    if (s.badCode) notes.push(t('pm.imp.badCode', { n: s.badCode }));
+    tb.append(el('tr', {}, [
+      el('td', {}, cb),
+      el('td', {}, el('b', { textContent: s.label })),
+      el('td', { textContent: String(s.year) }),
+      el('td', { textContent: s.round_date ? fmtDate(s.round_date) : '' }),
+      el('td', { className: 'num', textContent: fmtInt(s.lines.length) }),
+      el('td', { className: 'num', textContent: fmtNum(Math.round(s.total)) }),
+      el('td', { style: 'white-space:normal', textContent: notes.join(' · ') })
+    ]));
+  }
+  out.append(el('div', { className: 'wrap', style: 'margin-top:8px' }, tb));
+  $('#btnPiBudGo').disabled = !st.sheets.some(x => x.pick);
+}
+
+/* One round = one call to pm_import_round, which runs as a single transaction:
+   the same (year, label) again REPLACES that round's lines, and a dropped
+   connection halfway leaves the old lines in place instead of none at all.
+   The cap from the file only fills an empty cap, never overwrites one. */
+async function pmWriteRound(s, file) {
+  return SB.rpc('pm_import_round', {
+    p_round: { year: s.year, label: s.label, round_date: s.round_date, is_final: s.is_final,
+               source_file: file.name, source_sheet: s.name },
+    p_lines: s.lines.map((l, i) => Object.assign({}, l, { line_no: i + 1 })),
+    p_cap: s.cap || null
+  });
+}
+
+async function piBudGo() {
+  const out = $('#piBudOut');
+  const st = PM.impBud;
+  const pick = (st && st.sheets.filter(s => s.pick)) || [];
+  if (!pick.length) return;
+  $('#btnPiBudGo').disabled = true;
+  let done = 0;
+  try {
+    for (const s of pick) {
+      msg(out, 'info', t('pm.imp.writing', { sheet: s.label, i: done + 1, n: pick.length }));
+      await pmWriteRound(s, st.file);
+      done++;
+    }
+    msg(out, 'ok', t('pm.imp.budDone', { n: done, lines: fmtInt(pmSum(pick, s => s.lines.length)) }));
+    PM.bud.year = null;                      // the budget screen re-reads on next open
+  } catch (e) {
+    msg(out, 'err', t('pm.imp.failAt', { sheet: (pick[done] || {}).label, err: e.message, n: done }));
+  } finally { $('#btnPiBudGo').disabled = false; }
+}
+
+/* ===================================================== import: dossiers */
+const PM_CD = { category: 'category', departmentcode: 'dept_code', investmenttype: 'investment_type',
+  reason: 'reason', budget: 'budget', projecttype: 'consult', procurementtype: 'procurement_type',
+  projectcode: 'main_code', subprojectcode: 'code', projectname: 'name',
+  // "Completion" in Capex Data is the sub-project's SHARE of the main project
+  // (the PR guide: "sub-project no. and its percentage"), not progress.
+  completion: 'share_pct', estimatedvalue: 'estimated_value',
+  posibility: 'possibility', possibility: 'possibility', impact: 'impact', assessment: 'assessment',
+  risklevel: 'risk_level', riskcategory: 'risk_category', assetitem: 'asset_item', location: 'location',
+  rationale: 'rationale', technicalstandard: 'tech_standard', reference: 'reference',
+  previousprojectcode: 'previous_code', supplier: 'proposed_supplier' };
+const PM_PD = { departmentcode: 'dept_code', projecttype: 'project_type', reason: 'reason',
+  projectcode: 'main_code', subprojectcode: 'code', projectname: 'name', risklevel: 'risk_level',
+  assetitem: 'asset_item', requestdate: 'request_date', assessdate: 'assess_date',
+  approvedate: 'approve_date', purchasedate: 'purchase_date', handoverdate: 'handover_date',
+  location: 'location', contractvalue: 'contract_value', contractvolume: 'contract_volume',
+  chosenvendor: 'chosen_vendor', overallevalution: 'evaluation', overallevaluation: 'evaluation',
+  comment: 'comment' };
+const PM_VD = { checkdate: 'check_date', projectcode: 'main_code', subprojectcode: 'code',
+  vendor: 'vendor_name', totalamount: 'total_amount', abilityexperience: 'ability',
+  techniques: 'technique', finance: 'finance', totalscore: 'total_score', comment: 'comment' };
+// Fields only Project Data knows: they overrule Capex Data.
+const PM_PD_OWN = ['project_type', 'request_date', 'assess_date', 'approve_date', 'purchase_date',
+  'handover_date', 'contract_value', 'contract_volume', 'chosen_vendor', 'evaluation', 'comment'];
+const PM_DATES = ['request_date', 'assess_date', 'approve_date', 'purchase_date', 'handover_date',
+  'check_date', 'planned_start', 'planned_end'];
+const PM_NUMS = ['share_pct', 'estimated_value', 'possibility', 'impact', 'assessment',
+  'contract_value', 'contract_volume', 'total_amount', 'ability', 'technique', 'finance', 'total_score'];
+const PM_PROJ_FIELDS = ['code', 'main_code', 'dept_code', 'name', 'category', 'budgeted',
+  'investment_type', 'project_type', 'procurement_type', 'share_pct', 'estimated_value',
+  'possibility', 'impact', 'assessment', 'risk_level', 'risk_category', 'project_category',
+  'area_category', 'asset_item', 'location', 'reason', 'rationale', 'tech_standard', 'reference',
+  'previous_code', 'proposed_supplier', 'planned_start', 'planned_end', 'request_date',
+  'assess_date', 'approve_date', 'purchase_date', 'handover_date', 'contract_value',
+  'contract_volume', 'chosen_vendor', 'evaluation', 'comment', 'source', 'source_file',
+  'source_modified'];
+
+function pmSheetRecords(ws, map) {
+  if (!ws) return [];
+  const rows = pmRows(ws);
+  let hr = -1;
+  for (let i = 0; i < Math.min(rows.length, 6); i++) {
+    const n = (rows[i] || []).map(hnorm);
+    if (n.includes('subprojectcode') || n.includes('projectcode')) { hr = i; break; }
+  }
+  if (hr < 0) return [];
+  const col = {};
+  (rows[hr] || []).forEach((h, i) => { const f = map[hnorm(h)]; if (f && col[f] === undefined) col[f] = i; });
+  const out = [];
+  for (let i = hr + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const code = pmCode(r[col.code] ?? r[col.main_code]);
+    if (!code || !/(?:19|20)\d{2}/.test(code)) continue;
+    const o = {};
+    for (const [f, ci] of Object.entries(col)) {
+      const v = r[ci];
+      o[f] = PM_DATES.includes(f) ? xlDate(v) : PM_NUMS.includes(f) ? xlNum(v) : xlText(v);
+    }
+    o.code = code;
+    out.push(o);
+  }
+  return out;
+}
+
+async function piDosRead() {
+  const out = $('#piDosOut');
+  const files = [...$('#piDosFile').files];
+  $('#btnPiDosGo').disabled = true;
+  if (!files.length) return msg(out, 'err', t('pm.imp.pickFile'));
+  try {
+    await pmLookups();
+    const byCode = new Map();
+    const skipped = [];
+    for (let fi = 0; fi < files.length; fi++) {
+      const f = files[fi];
+      msg(out, 'info', t('pm.imp.readingN', { i: fi + 1, n: files.length, file: f.name }));
+      let wb;
+      try { wb = await pmReadBook(f); } catch { skipped.push(f.name); continue; }
+      if (!wb.Sheets['Project Data'] && !wb.Sheets['Capex Data']) { skipped.push(f.name); continue; }
+      const cd = pmSheetRecords(wb.Sheets['Capex Data'], PM_CD);
+      const pd = pmSheetRecords(wb.Sheets['Project Data'], PM_PD);
+      const vd = pmSheetRecords(wb.Sheets['Vendor Data'], PM_VD);
+      const codes = new Set([...cd, ...pd].map(r => r.code));
+      for (const code of codes) {
+        const c = cd.find(r => r.code === code) || {};
+        const p = pd.find(r => r.code === code) || {};
+        const rec = Object.assign({}, c);
+        for (const [k, v] of Object.entries(p))
+          if (v != null && (rec[k] == null || PM_PD_OWN.includes(k))) rec[k] = v;
+        rec.code = code;
+        rec.main_code = PM_CODE_OK.test(pmCode(rec.main_code)) ? pmMain(pmCode(rec.main_code)) : pmMain(code);
+        rec.dept_code = pmDept(rec.dept_code || (code.split('.')[1] || ''));
+        rec.budgeted = !/unbudget/i.test(String(c.budget || ''));
+        if (!rec.project_type && c.consult) rec.project_type = c.consult;
+        if (rec.share_pct != null && rec.share_pct > 1) rec.share_pct = rec.share_pct / 100;
+        delete rec.budget; delete rec.consult;
+        const scores = vd.filter(v => v.code === code || (!v.code && v.main_code === rec.main_code));
+        const cand = { rec, scores, file: f.name, modified: f.lastModified, dupes: [] };
+        const prev = byCode.get(code);
+        if (!prev) byCode.set(code, cand);
+        else if (f.lastModified > prev.modified) { cand.dupes = [...prev.dupes, prev.file]; byCode.set(code, cand); }
+        else prev.dupes.push(f.name);
+      }
+    }
+    PM.impDos = { items: [...byCode.values()].sort((a, b) => a.rec.code.localeCompare(b.rec.code)),
+                  files: files.length, skipped };
+    piDosRender();
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+function piDosRender() {
+  const out = $('#piDosOut');
+  const st = PM.impDos;
+  out.innerHTML = '';
+  if (!st || !st.items.length) return msg(out, 'warn', t('pm.imp.noDossier'));
+  const dupes = pmSum(st.items, i => i.dupes.length);
+  out.append(el('div', { className: 'msg info', textContent:
+    t('pm.imp.dosFound', { n: st.items.length, files: st.files, dupes, skipped: st.skipped.length }) }));
+  const tb = el('table');
+  tb.append(el('tr', {}, ['pm.col.code', 'pm.col.name', 'pm.col.dept', 'pm.col.budgeted',
+    'pm.col.contract', 'pm.col.vendor', 'pm.col.status', 'pm.imp.col.file', 'pm.imp.col.notes']
+    .map((k, i) => el('th', { className: i === 4 ? 'num' : '', textContent: t(k) }))));
+  for (const it of st.items) {
+    const r = it.rec, notes = [];
+    if (!PM_CODE_OK.test(r.code)) notes.push(t('pm.flag.code'));
+    if (!pmDeptKnown(r.dept_code)) notes.push(t('pm.flag.dept', { d: r.dept_code }));
+    if (pmDatesOdd(r)) notes.push(t('pm.flag.dates'));
+    if (it.dupes.length) notes.push(t('pm.imp.dupes', { n: it.dupes.length }));
+    tb.append(el('tr', {}, [
+      el('td', {}, el('code', { textContent: r.code })),
+      el('td', { textContent: r.name || '' }),
+      el('td', { textContent: r.dept_code || '' }),
+      el('td', { textContent: r.budgeted ? '✔' : '—' }),
+      el('td', { className: 'num', textContent: r.contract_value != null ? fmtNum(r.contract_value) : '' }),
+      el('td', { textContent: r.chosen_vendor || '' }),
+      el('td', {}, pmStatusChip(pmStatus(r))),
+      el('td', { title: it.dupes.join('\n'), textContent: `${it.file} · ${fmtDate(new Date(it.modified).toISOString().slice(0, 10))}` }),
+      el('td', { style: 'white-space:normal', textContent: notes.join(' · ') })
+    ]));
+  }
+  out.append(el('div', { className: 'wrap', style: 'margin-top:8px' }, tb));
+  $('#btnPiDosGo').disabled = false;
+}
+
+const pmProjRow = (rec, extra) => {
+  const o = {};
+  for (const f of PM_PROJ_FIELDS) o[f] = rec[f] === undefined ? null : rec[f];
+  return Object.assign(o, extra);
+};
+
+async function piDosGo() {
+  const out = $('#piDosOut');
+  const st = PM.impDos;
+  if (!st || !st.items.length) return;
+  $('#btnPiDosGo').disabled = true;
+  const rows = st.items.map(it => pmProjRow(it.rec, {
+    source: 'dossier', source_file: it.file, source_modified: new Date(it.modified).toISOString(),
+    budgeted: it.rec.budgeted
+  }));
+  const failed = [];
+  const upsert = batch => SB.call('pm_project?on_conflict=code', {
+    method: 'POST', headers: SB.hdr({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+    body: JSON.stringify(batch) });
+  try {
+    for (let i = 0; i < rows.length; i += 50) {
+      msg(out, 'info', t('pm.imp.writingN', { i: Math.min(i + 50, rows.length), n: rows.length }));
+      const batch = rows.slice(i, i + 50);
+      // One bad row (an unbudgeted project re-using a budgeted code) would sink
+      // the whole batch; retry row by row so the rest still lands.
+      try { await upsert(batch); }
+      catch { for (const r of batch) { try { await upsert([r]); } catch (e) { failed.push(`${r.code}: ${e.message}`); } } }
+    }
+    const ok = st.items.filter(it => !failed.some(f => f.startsWith(it.rec.code + ':')));
+    // Scores are swapped per batch inside pm_replace_scores, in one transaction,
+    // so an interrupted import never leaves a project with no scores.
+    for (let i = 0; i < ok.length; i += 40) {
+      const part = ok.slice(i, i + 40);
+      const sc = part.flatMap(it => it.scores.filter(s => s.vendor_name).map(s => ({
+        project_code: it.rec.code, vendor_name: s.vendor_name, check_date: s.check_date,
+        total_amount: s.total_amount, ability: s.ability, technique: s.technique,
+        finance: s.finance, total_score: s.total_score, comment: s.comment,
+        chosen: !!it.rec.chosen_vendor && hnorm(s.vendor_name) === hnorm(it.rec.chosen_vendor)
+      })));
+      await SB.rpc('pm_replace_scores', { p_codes: part.map(it => it.rec.code), p_scores: sc });
+    }
+    msg(out, failed.length ? 'warn' : 'ok',
+        t('pm.imp.dosDone', { n: ok.length }) + (failed.length ? '\n' + t('pm.imp.dosFailed', { n: failed.length }) + '\n' + failed.join('\n') : ''));
+  } catch (e) { msg(out, 'err', e.message); }
+  finally { $('#btnPiDosGo').disabled = false; }
+}
+
+/* ============================================================== budget */
+async function pbLoad() {
+  const out = $('#pbMsg');
+  msg(out, 'info', t('table.loading'));
+  try {
+    await pmLookups();
+    const [years, rounds] = await Promise.all([
+      SB.select('pm_budget_year', 'select=*&order=year.desc'),
+      SB.select('pm_budget_round', 'select=*&order=year.desc,is_final.desc,round_date.desc.nullslast')
+    ]);
+    PM.bud.rounds = rounds;
+    PM.bud.years = years;
+    const ys = [...new Set([...years.map(y => y.year), ...rounds.map(r => r.year)])].sort((a, b) => b - a);
+    const ySel = $('#pbYear');
+    ySel.innerHTML = '';
+    for (const y of ys) ySel.append(el('option', { value: y, textContent: y }));
+    if (!ys.length) {
+      msg(out, 'info', t('pm.bud.empty'));
+      $('#pbGrid thead').innerHTML = ''; $('#pbGrid tbody').innerHTML = ''; $('#pbYearBox').innerHTML = '';
+      return;
+    }
+    const want = ys.includes(PM.bud.year) ? PM.bud.year
+      : (rounds.find(r => r.is_final) || {}).year || ys[0];
+    ySel.value = want;
+    await pbYearChanged(true);
+    msg(out, '', '');
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+async function pbYearChanged(keepRound) {
+  const y = +$('#pbYear').value;
+  PM.bud.year = y;
+  PM.bud.yearRow = PM.bud.years.find(r => r.year === y) || { year: y };
+  const rs = PM.bud.rounds.filter(r => r.year === y);
+  const rSel = $('#pbRound');
+  rSel.innerHTML = '';
+  for (const r of rs)
+    rSel.append(el('option', { value: r.id, textContent:
+      `${r.is_final ? '★ ' : ''}${r.label}${r.round_date ? ' · ' + fmtDate(r.round_date) : ''} · ${fmtInt(r.line_count)} · ${fmtM(Number(r.total_value))}` }));
+  const keep = keepRound && rs.some(r => r.id === PM.bud.roundId) ? PM.bud.roundId
+    : (rs.find(r => r.is_final) || rs[0] || {}).id;
+  if (keep) rSel.value = keep;
+  await pbRoundChanged();
+}
+
+async function pbRoundChanged() {
+  const id = +$('#pbRound').value;
+  PM.bud.roundId = id || null;
+  PM.bud.pick = null;
+  $('#pbDetail').innerHTML = '';
+  const [lines, projects] = await Promise.all([
+    id ? pmSelectAll('pm_budget_line', `select=*&round_id=eq.${id}&order=line_no`) : [],
+    pmSelectAll('pm_project', `select=code,main_code,status,contract_value&year=eq.${PM.bud.year}`)
+  ]);
+  PM.bud.lines = lines;
+  // One status per budget line: completed only when every sub-project is.
+  const by = new Map();
+  for (const p of projects) {
+    const a = by.get(p.main_code) || [];
+    a.push(p); by.set(p.main_code, a);
+  }
+  PM.bud.projByMain = new Map([...by].map(([k, ps]) => [k,
+    ps.every(p => p.status === 'completed') ? 'completed'
+    : ps.every(p => p.status === 'cancelled') ? 'cancelled'
+    : ps.some(p => p.status !== 'pending') ? 'in_progress' : 'pending']));
+  const depts = [...new Set(lines.map(l => l.dept_code).filter(Boolean))].sort();
+  msSetup('pbEnt', PM_ENTITIES.map(e => ({ v: e, t: `${e} — ${t('perms.ent.' + e)}` })));
+  msSetup('pbDept', depts.map(d => ({ v: d, t: d })));
+  const risks = [...new Set(lines.map(l => l.risk_level).filter(Boolean))];
+  msSetup('pbRisk', PM_RISK.filter(r => risks.includes(r)).concat(risks.filter(r => !PM_RISK.includes(r)))
+    .map(r => ({ v: r, t: r })));
+  pbRender();
+}
+
+function pbFiltered() {
+  const ent = msValues('pbEnt'), dep = msValues('pbDept'), risk = msValues('pbRisk');
+  const q = hnorm($('#pbQ').value);
+  return PM.bud.lines.filter(l =>
+    (!ent.length || ent.includes(pmEntity(l.dept_code)))
+    && (!dep.length || dep.includes(l.dept_code))
+    && (!risk.length || risk.includes(l.risk_level))
+    && (!q || hnorm(`${l.project_code} ${l.name} ${l.asset_item} ${l.dept_code}`).includes(q)));
+}
+
+function pbYearBox() {
+  const box = $('#pbYearBox');
+  box.innerHTML = '';
+  const y = PM.bud.yearRow || {};
+  const round = PM.bud.rounds.find(r => r.id === PM.bud.roundId);
+  const lines = PM.bud.lines;
+  const byEnt = e => pmSum(lines.filter(l => pmEntity(l.dept_code) === e), 'estimated_value');
+  const cap = y.ssp_cap != null ? Number(y.ssp_cap)
+    : (y.ssp_revenue != null ? Number(y.ssp_revenue) * Number(y.reserve_pct || 3) / 100 : null);
+  const ssp = byEnt('SSP');
+  const stats = el('div', { className: 'stats' });
+  const tile = (label, value, sub, meter) => {
+    const d = el('div', { className: 'stat' }, [
+      el('span', { className: 'sl', textContent: label }),
+      el('span', { className: 'sv', textContent: value })]);
+    if (sub) d.append(el('span', { className: 'sd', textContent: sub }));
+    if (meter != null) {
+      const m = el('div', { className: 'meter' + (meter > 1 ? ' over' : '') },
+                   el('i', { style: `width:${Math.min(100, Math.max(0, meter * 100))}%` }));
+      d.append(m);
+    }
+    return d;
+  };
+  stats.append(tile(t('pm.bud.total'), fmtM(pmSum(lines, 'estimated_value')),
+    t('pm.bud.lines', { n: fmtInt(lines.length) })));
+  stats.append(tile(t('pm.bud.sspVsCap'), fmtM(ssp),
+    cap ? t('pm.bud.ofCap', { cap: fmtM(cap), pct: fmtPct(ssp / cap), left: fmtM(cap - ssp) }) : t('pm.bud.noCap'),
+    cap ? ssp / cap : null));
+  stats.append(tile(t('pm.bud.cp'), fmtM(byEnt('CP')), t('pm.bud.noCapNeedsApproval')));
+  stats.append(tile(t('pm.bud.jvc'), fmtM(byEnt('JVC')), t('pm.bud.noCapNeedsApproval')));
+  box.append(stats);
+
+  // Year settings: FX and cap are what every other number of the year leans on,
+  // so only the budget admin may change them.
+  const admin = can('budget', 'admin');
+  const card = el('div', { className: 'card' });
+  const row = el('div', { className: 'pmyear' });
+  const inp = (key, lbl, val, w) => {
+    const i = el('input', { value: val ?? '', disabled: !admin, style: `width:${w || 140}px`, inputMode: 'decimal' });
+    i.dataset.k = key;
+    return el('div', { className: 'fld' }, [el('label', { textContent: t(lbl) }), i]);
+  };
+  row.append(
+    inp('fx_rate', 'pm.bud.fx', y.fx_rate ?? 26000, 110),
+    inp('reserve_pct', 'pm.bud.reserve', y.reserve_pct ?? 3, 80),
+    inp('ssp_revenue', 'pm.bud.sspRev', y.ssp_revenue != null ? fmtNum(y.ssp_revenue) : '', 170),
+    inp('ssp_cap', 'pm.bud.sspCap', y.ssp_cap != null ? fmtNum(y.ssp_cap) : '', 170),
+    inp('cp_revenue', 'pm.bud.cpRev', y.cp_revenue != null ? fmtNum(y.cp_revenue) : '', 170));
+  const acts = el('div', { className: 'acts' });
+  if (admin) {
+    const save = el('button', { className: 'btn pri', textContent: t('tool.save') });
+    save.onclick = () => pbSaveYear(row);
+    acts.append(save);
+  }
+  if (round && !round.is_final && can('budget', 'create')) {
+    const fin = el('button', { className: 'btn', textContent: t('pm.bud.makeFinal') });
+    fin.onclick = () => pbMakeFinal(round);
+    acts.append(fin);
+  }
+  if (round && can('budget', 'admin')) {
+    const del = el('button', { className: 'btn danger', textContent: t('pm.bud.delRound') });
+    del.onclick = () => pbDeleteRound(round);
+    acts.append(del);
+  }
+  const xl = el('button', { className: 'btn', textContent: t('reg.xlsx') });
+  xl.onclick = pbExport;
+  acts.append(xl);
+  row.append(acts);
+  card.append(row);
+  if (round) card.append(el('div', { className: 'sd', style: 'margin-top:8px;color:var(--dim);font-size:12px',
+    textContent: t('pm.bud.roundInfo', { file: round.source_file || '—', sheet: round.source_sheet || '—',
+      at: (round.imported_at || '').slice(0, 10) ? fmtDate(round.imported_at.slice(0, 10)) : '—',
+      by: round.imported_by || '—' }) }));
+  box.append(card);
+}
+
+async function pbSaveYear(row) {
+  const patch = { year: PM.bud.year };
+  for (const i of row.querySelectorAll('input[data-k]')) {
+    const n = xlNum(i.value);
+    patch[i.dataset.k] = n;
+  }
+  if (!(patch.fx_rate > 0)) return msg('#pbMsg', 'err', t('pm.bud.fxNeeded'));
+  try {
+    await SB.call('pm_budget_year?on_conflict=year', { method: 'POST',
+      headers: SB.hdr({ Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify([patch]) });
+    const y = PM.bud.year;
+    await pbLoad();                                 // clears #pbMsg, so report after it
+    msg('#pbMsg', 'ok', t('pm.bud.yearSaved', { y }));
+  } catch (e) { msg('#pbMsg', 'err', e.message); }
+}
+
+async function pbMakeFinal(round) {
+  if (!confirm(t('pm.bud.confirmFinal', { label: round.label, y: round.year }))) return;
+  try {
+    await SB.patch('pm_budget_round', `year=eq.${round.year}&is_final=eq.true`, { is_final: false });
+    await SB.patch('pm_budget_round', `id=eq.${round.id}`, { is_final: true });
+    await pbLoad();
+    msg('#pbMsg', 'ok', t('pm.bud.finalSet', { label: round.label }));
+  } catch (e) { msg('#pbMsg', 'err', e.message); }
+}
+
+async function pbDeleteRound(round) {
+  if (!confirm(t('pm.bud.confirmDel', { label: round.label, n: fmtInt(round.line_count) }))) return;
+  try {
+    await SB.remove('pm_budget_round', `id=eq.${round.id}`);
+    PM.bud.roundId = null;
+    await pbLoad();
+    msg('#pbMsg', 'ok', t('pm.bud.deleted', { label: round.label }));
+  } catch (e) { msg('#pbMsg', 'err', e.message); }
+}
+
+function pbRender() {
+  pbYearBox();
+  const head = $('#pbGrid thead'), body = $('#pbGrid tbody');
+  head.innerHTML = ''; body.innerHTML = '';
+  const rows = pbFiltered();
+  const phase = $('#pbPhase').checked;
+  const qa = PM.bud.lines.some(l => l.owner_note || l.dept_response);
+  const cols = [['#', 'idx'], ['pm.col.code'], ['pm.col.dept'], ['pm.col.entity'], ['pm.col.name'],
+    ['pm.col.projCat'], ['pm.col.areaCat'], ['pm.col.invest'], ['pm.col.risk'],
+    ['pm.col.estimate', 'num'], ['pm.col.start'], ['pm.col.end'], ['pm.col.status']];
+  if (phase) for (let m = 1; m <= 12; m++) cols.push([null, 'num', pmMonthName(m)]);
+  if (qa) cols.push(['pm.col.ownerNote'], ['pm.col.deptResp']);
+  head.append(el('tr', {}, cols.map(([k, c, txt]) => el('th', {
+    className: c === 'idx' ? 'num idx' : (c || ''), textContent: txt || (k === '#' ? '#' : t(k)) }))));
+  const clip = (s, n) => !s ? '' : s.length > n ? s.slice(0, n - 1) + '…' : s;
+  rows.forEach((l, i) => {
+    const st = PM.bud.projByMain.get(l.project_code) || PM.bud.projByMain.get(l.current_code) || null;
+    const tr = el('tr', { className: PM.bud.pick === l.id ? 'pick' : '' });
+    const deptTd = el('td', { textContent: l.dept_code || '' });
+    if (l.dept_code && !pmDeptKnown(l.dept_code))
+      deptTd.append(el('span', { className: 'flag', textContent: '⚠', title: t('pm.flag.dept', { d: l.dept_code }) }));
+    tr.append(
+      el('td', { className: 'num idx', textContent: fmtInt(i + 1) }),
+      el('td', {}, el('code', { textContent: l.project_code })),
+      deptTd,
+      el('td', { textContent: pmEntity(l.dept_code) }),
+      el('td', { textContent: l.name || '', title: l.reason || '' }),
+      el('td', { textContent: l.project_category || '' }),
+      el('td', { textContent: l.area_category || '' }),
+      el('td', { textContent: l.investment_type || '' }),
+      el('td', { textContent: l.risk_level || '' }),
+      el('td', { className: 'num', textContent: l.estimated_value != null ? fmtNum(Math.round(l.estimated_value)) : '' }),
+      el('td', { textContent: fmtDate(l.start_date) }),
+      el('td', { textContent: fmtDate(l.end_date) }),
+      el('td', {}, st ? pmStatusChip(st) : el('span', { style: 'color:var(--dim)', textContent: t('pm.st.notStarted') })));
+    if (phase) for (const m of PM_MONTHS)
+      tr.append(el('td', { className: 'num', textContent: l[m] ? fmtNum(Math.round(l[m])) : '' }));
+    if (qa) tr.append(el('td', { title: l.owner_note || '', textContent: clip(l.owner_note, 40) }),
+                      el('td', { title: l.dept_response || '', textContent: clip(l.dept_response, 40) }));
+    tr.onclick = () => { PM.bud.pick = l.id; pbRender(); pbDetail(l); };
+    body.append(tr);
+  });
+  if (!rows.length) {
+    body.append(el('tr', {}, el('td', { colSpan: cols.length, style: 'color:var(--dim);padding:14px',
+      textContent: PM.bud.lines.length ? t('pm.none.filter') : t('pm.bud.noLines') })));
+    return;
+  }
+  const tot = el('tr', { className: 'tot' });
+  tot.append(el('td', { colSpan: 9, textContent: t('pm.total', { n: fmtInt(rows.length) }) }),
+    el('td', { className: 'num', textContent: fmtNum(Math.round(pmSum(rows, 'estimated_value'))) }),
+    el('td', { colSpan: 3 }));
+  if (phase) for (const m of PM_MONTHS)
+    tot.append(el('td', { className: 'num', textContent: fmtNum(Math.round(pmSum(rows, m))) || '' }));
+  if (qa) tot.append(el('td', { colSpan: 2 }));
+  body.append(tot);
+}
+
+const PM_LINE_SHOW = [['project_code', 'pm.col.code'], ['current_code', 'pm.f.currentCode'],
+  ['name', 'pm.col.name'], ['dept_code', 'pm.col.dept'], ['category', 'pm.f.category2'],
+  ['investment_type', 'pm.col.invest'], ['reason', 'pm.f.reason'], ['asset_item', 'pm.f.assetItem'],
+  ['location', 'pm.f.location'], ['estimated_value', 'pm.col.estimate'], ['gm_approved', 'pm.f.gmApproved'],
+  ['quantity', 'pm.f.qty'], ['unit_price', 'pm.f.unitPrice'], ['possibility', 'pm.f.possibility'],
+  ['impact', 'pm.f.impact'], ['assessment', 'pm.f.assessment'], ['risk_level', 'pm.col.risk'],
+  ['start_date', 'pm.col.start'], ['end_date', 'pm.col.end'], ['rationale', 'pm.f.rationale'],
+  ['tech_standard', 'pm.f.techStd'], ['reference', 'pm.f.reference'], ['previous_code', 'pm.f.prevCode'],
+  ['supplier', 'pm.f.supplier'], ['details', 'pm.f.details'], ['project_category', 'pm.col.projCat'],
+  ['area_category', 'pm.col.areaCat'], ['color_status', 'pm.f.color'],
+  ['purchasing_in_charge', 'pm.f.purchasing'], ['owner_note', 'pm.col.ownerNote'],
+  ['dept_response', 'pm.col.deptResp'], ['note', 'pm.f.note']];
+
+function pmDl(obj, fields) {
+  const dl = el('dl');
+  for (const [k, lbl] of fields) {
+    let v = obj[k];
+    if (v == null || v === '') continue;
+    if (PM_DATES.includes(k) || /_date$/.test(k)) v = fmtDate(v);
+    else if (typeof v === 'number' || /value|price|amount|approved/.test(k)) v = isFinite(Number(v)) ? fmtNum(Number(v)) : v;
+    dl.append(el('dt', { textContent: t(lbl) }), el('dd', { textContent: String(v) }));
+  }
+  return dl;
+}
+
+function pbDetail(l) {
+  const box = $('#pbDetail');
+  box.innerHTML = '';
+  const card = el('div', { className: 'card pmdet' });
+  card.append(el('h2', { textContent: `${l.project_code} — ${l.name || ''}` }), pmDl(l, PM_LINE_SHOW));
+  box.append(card);
+  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function pbExport() {
+  const rows = pbFiltered().map((l, i) => {
+    const o = { '#': i + 1 };
+    for (const [k, lbl] of PM_LINE_SHOW) o[t(lbl)] = l[k];
+    o[t('pm.col.entity')] = pmEntity(l.dept_code);
+    for (let m = 1; m <= 12; m++) o[pmMonthName(m)] = l[PM_MONTHS[m - 1]];
+    return o;
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Budget ' + PM.bud.year);
+  XLSX.writeFile(wb, `Budget ${PM.bud.year} - ${($('#pbRound').selectedOptions[0] || {}).text || ''}.xlsx`
+    .replace(/[\\/:*?"<>|★]/g, ' ').replace(/\s+/g, ' '));
+}
+
+/* ============================================================ projects */
+async function ppLoad() {
+  const out = $('#ppMsg');
+  msg(out, 'info', t('table.loading'));
+  try {
+    await pmLookups();
+    const [rows, finals, vendors] = await Promise.all([
+      pmSelectAll('pm_project', 'select=*&order=year.desc,code'),
+      SB.select('pm_budget_round', 'select=id,year&is_final=eq.true'),
+      SB.select('pm_vendor', 'select=code,name,aliases&order=name')
+    ]);
+    PM.prj.rows = rows;
+    PM.prj.vendors = vendors;
+    const ids = finals.map(f => f.id);
+    const fl = ids.length
+      ? await pmSelectAll('pm_budget_line', `select=project_code,current_code,name,dept_code,estimated_value,start_date,end_date,risk_level,possibility,impact,assessment,project_category,area_category,investment_type,asset_item,location,reason,round_id&round_id=in.(${ids.join(',')})`)
+      : [];
+    PM.prj.finalLines = fl.map(l => Object.assign(l, { year: (finals.find(f => f.id === l.round_id) || {}).year }));
+    PM.prj.finalCodes = new Set(fl.flatMap(l => [l.project_code, l.current_code]).filter(Boolean));
+    const ys = [...new Set(rows.map(r => r.year))].sort((a, b) => b - a);
+    const ySel = $('#ppYear');
+    const keep = ySel.value;
+    ySel.innerHTML = '';
+    ySel.append(el('option', { value: '', textContent: t('pm.f.allYears') }));
+    for (const y of ys) ySel.append(el('option', { value: y, textContent: y }));
+    ySel.value = ys.map(String).includes(keep) ? keep : (ys[0] ? String(ys[0]) : '');
+    const bud = $('#ppBud');
+    if (!bud.options.length) for (const [v, k] of [['', 'pm.f.all'], ['1', 'pm.f.budgetedOnly'], ['0', 'pm.f.unbudgetedOnly']])
+      bud.append(el('option', { value: v, textContent: t(k) }));
+    msSetup('ppEnt', PM_ENTITIES.map(e => ({ v: e, t: `${e} — ${t('perms.ent.' + e)}` })));
+    msSetup('ppDept', [...new Set(rows.map(r => r.dept_code))].sort().map(d => ({ v: d, t: d })));
+    msSetup('ppStatus', PM_STATUS.map(s => ({ v: s, t: t('pm.st.' + s) })));
+    msg(out, '', '');
+    ppRender();
+    // Coming back from a document: reopen its project.
+    const back = PM.prj.open && rows.find(r => r.code === PM.prj.open);
+    PM.prj.open = null;
+    if (back) { PM.prj.pick = back.code; ppRender(); ppDetail(back); }
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+function ppFiltered() {
+  const y = $('#ppYear').value, bud = $('#ppBud').value;
+  const ent = msValues('ppEnt'), dep = msValues('ppDept'), sts = msValues('ppStatus');
+  const q = hnorm($('#ppQ').value);
+  return PM.prj.rows.filter(p =>
+    (!y || String(p.year) === y)
+    && (bud === '' || String(Number(p.budgeted)) === bud)
+    && (!ent.length || ent.includes(pmEntity(p.dept_code)))
+    && (!dep.length || dep.includes(p.dept_code))
+    && (!sts.length || sts.includes(p.status))
+    && (!q || hnorm(`${p.code} ${p.name} ${p.chosen_vendor} ${p.asset_item}`).includes(q)));
+}
+
+function ppFlags(p) {
+  const f = [];
+  if (pmDatesOdd(p)) f.push(t('pm.flag.dates'));
+  if (p.budgeted && !PM.prj.finalCodes.has(p.main_code)) f.push(t('pm.flag.noLine'));
+  if (!pmDeptKnown(p.dept_code)) f.push(t('pm.flag.dept', { d: p.dept_code }));
+  return f;
+}
+
+function ppRender() {
+  const head = $('#ppGrid thead'), body = $('#ppGrid tbody');
+  head.innerHTML = ''; body.innerHTML = '';
+  const tools = [];
+  if (can('project', 'create')) tools.push(['pm.prj.new', () => ppNew()]);
+  tools.push(['reg.xlsx', ppExport]);
+  const bar = $('#ppMsg');
+  const rows = ppFiltered();
+  const cols = [['#', 'num idx'], ['pm.col.code'], ['pm.col.name'], ['pm.col.dept'], ['pm.col.budgeted'],
+    ['pm.col.estimate', 'num'], ['pm.col.contract', 'num'], ['pm.col.variance', 'num'], ['pm.col.vendor'],
+    ['pm.col.request'], ['pm.col.approve'], ['pm.col.purchase'], ['pm.col.handover'], ['pm.col.status']];
+  head.append(el('tr', {}, cols.map(([k, c]) => el('th', { className: c || '', textContent: k === '#' ? '#' : t(k) }))));
+  rows.forEach((p, i) => {
+    const v = p.contract_value != null && p.estimated_value ? (p.contract_value - p.estimated_value) / p.estimated_value : null;
+    const flags = ppFlags(p);
+    const codeTd = el('td', {}, el('code', { textContent: p.code }));
+    if (flags.length) codeTd.append(el('span', { className: 'flag', textContent: '⚠', title: flags.join('\n') }));
+    const tr = el('tr', { className: PM.prj.pick === p.code ? 'pick' : '' }, [
+      el('td', { className: 'num idx', textContent: fmtInt(i + 1) }),
+      codeTd,
+      el('td', { textContent: p.name || '' }),
+      el('td', { textContent: p.dept_code }),
+      el('td', { textContent: p.budgeted ? '✔' : '—' }),
+      el('td', { className: 'num', textContent: p.estimated_value != null ? fmtNum(Math.round(p.estimated_value)) : '' }),
+      el('td', { className: 'num', textContent: p.contract_value != null ? fmtNum(Math.round(p.contract_value)) : '' }),
+      el('td', { className: 'num' + (v > 0 ? ' neg' : ''), textContent: v == null ? '' : (v > 0 ? '+' : '') + fmtPct(v) }),
+      el('td', { textContent: p.chosen_vendor || '' }),
+      el('td', { textContent: fmtDate(p.request_date) }),
+      el('td', { textContent: fmtDate(p.approve_date) }),
+      el('td', { textContent: fmtDate(p.purchase_date) }),
+      el('td', { textContent: fmtDate(p.handover_date) }),
+      el('td', {}, pmStatusChip(p.status))
+    ]);
+    tr.onclick = () => { PM.prj.pick = p.code; ppRender(); ppDetail(p); };
+    body.append(tr);
+  });
+  if (!rows.length)
+    body.append(el('tr', {}, el('td', { colSpan: cols.length, style: 'color:var(--dim);padding:14px',
+      textContent: PM.prj.rows.length ? t('pm.none.filter') : t('pm.prj.empty') })));
+  else {
+    body.append(el('tr', { className: 'tot' }, [
+      el('td', { colSpan: 5, textContent: t('pm.total', { n: fmtInt(rows.length) }) }),
+      el('td', { className: 'num', textContent: fmtNum(Math.round(pmSum(rows, 'estimated_value'))) }),
+      el('td', { className: 'num', textContent: fmtNum(Math.round(pmSum(rows, 'contract_value'))) }),
+      el('td', { colSpan: 7 })]));
+  }
+  // Tools ride in the message line's slot, above the grid.
+  let tb = $('#ppTools');
+  if (!tb) { tb = el('div', { id: 'ppTools', className: 'row', style: 'margin:10px 0 0;justify-content:flex-end' }); bar.before(tb); }
+  tb.innerHTML = '';
+  for (const [k, fn] of tools) { const b = el('button', { className: 'btn' + (k === 'pm.prj.new' ? ' pri' : ''), textContent: t(k) }); b.onclick = fn; tb.append(b); }
+}
+
+const PM_PROJ_SHOW = [['code', 'pm.col.code'], ['main_code', 'pm.f.mainCode'], ['name', 'pm.col.name'],
+  ['dept_code', 'pm.col.dept'], ['share_pct', 'pm.f.share'], ['investment_type', 'pm.col.invest'],
+  ['project_type', 'pm.f.projectType'], ['procurement_type', 'pm.f.procType'],
+  ['estimated_value', 'pm.col.estimate'], ['risk_level', 'pm.col.risk'], ['risk_category', 'pm.f.riskCat'],
+  ['asset_item', 'pm.f.assetItem'], ['location', 'pm.f.location'], ['reason', 'pm.f.reason'],
+  ['rationale', 'pm.f.rationale'], ['tech_standard', 'pm.f.techStd'], ['proposed_supplier', 'pm.f.supplier'],
+  ['request_date', 'pm.col.request'], ['assess_date', 'pm.f.assess'], ['approve_date', 'pm.col.approve'],
+  ['purchase_date', 'pm.col.purchase'], ['handover_date', 'pm.col.handover'],
+  ['contract_value', 'pm.col.contract'], ['contract_volume', 'pm.f.volume'], ['chosen_vendor', 'pm.col.vendor'],
+  ['evaluation', 'pm.f.evaluation'], ['comment', 'pm.f.note'], ['source_file', 'pm.f.sourceFile']];
+
+async function ppDetail(p) {
+  const box = $('#ppDetail');
+  box.innerHTML = '';
+  const card = el('div', { className: 'card pmdet' });
+  const share = p.share_pct != null ? Object.assign({}, p, { share_pct: fmtPct(Number(p.share_pct), 0) }) : p;
+  card.append(el('h2', { textContent: `${p.code} — ${p.name || ''}` }));
+  const flags = ppFlags(p);
+  if (flags.length) card.append(el('div', { className: 'msg warn', textContent: flags.join('\n') }));
+  card.append(pmDl(share, PM_PROJ_SHOW));
+  box.append(card);
+  // Tender scores, newest dossier's.
+  try {
+    const sc = await SB.select('pm_vendor_score', `select=*&project_code=eq.${encodeURIComponent(p.code)}&order=total_score.desc.nullslast`);
+    if (sc.length) {
+      const tb = el('table');
+      tb.append(el('tr', {}, [['pm.vs.vendor'], ['pm.vs.amount', 'num'], ['pm.vs.ability', 'num'],
+        ['pm.vs.technique', 'num'], ['pm.vs.finance', 'num'], ['pm.vs.total', 'num'], ['pm.vs.chosen']]
+        .map(([k, c]) => el('th', { className: c || '', textContent: t(k) }))));
+      const f1 = v => v == null ? '' : Number(v).toLocaleString(pmLoc(), { maximumFractionDigits: 1 });
+      for (const s of sc) tb.append(el('tr', {}, [
+        el('td', { textContent: s.vendor_name }),
+        el('td', { className: 'num', textContent: s.total_amount != null ? fmtNum(s.total_amount) : '' }),
+        el('td', { className: 'num', textContent: f1(s.ability) }),
+        el('td', { className: 'num', textContent: f1(s.technique) }),
+        el('td', { className: 'num', textContent: f1(s.finance) }),
+        el('td', { className: 'num', textContent: f1(s.total_score) }),
+        el('td', { textContent: s.chosen ? '✔' : '' })]));
+      card.append(el('h2', { style: 'margin-top:14px', textContent: t('pm.vs.h') }), el('div', { className: 'wrap' }, tb));
+    }
+  } catch {}
+  // The procurement documents. Before 19_pm_workflow.sql is run the tables do
+  // not exist, and the project screen must keep working without them.
+  try { await wfProjectPanel(p, card); } catch {}
+  if (can('project', 'edit')) card.append(ppEditForm(p));
+  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+/* The execution facts that change as the project moves. Phase 3 replaces most
+   of this with the document workflow; until then someone must be able to
+   correct a date or record the contract. */
+function ppEditForm(p) {
+  const wrap = el('div', { style: 'margin-top:14px' });
+  wrap.append(el('h2', { textContent: t('pm.prj.edit') }));
+  const row = el('div', { className: 'row', style: 'align-items:flex-end;flex-wrap:wrap' });
+  const fld = (k, lbl, type, w) => {
+    const i = el('input', { type: type || 'text', style: `width:${w || 150}px`,
+      value: type === 'date' ? (p[k] || '') : (p[k] != null ? (typeof p[k] === 'number' || /value|volume/.test(k) ? fmtNum(p[k]) : p[k]) : '') });
+    i.dataset.k = k; i.dataset.type = type || 'text';
+    return el('div', { className: 'fld' }, [el('label', { textContent: t(lbl) }), i]);
+  };
+  const st = el('select', { style: 'width:150px' });
+  st.dataset.k = 'status_override'; st.dataset.type = 'select';
+  st.append(el('option', { value: '', textContent: t('pm.prj.autoStatus') }));
+  for (const s of PM_STATUS) st.append(el('option', { value: s, textContent: t('pm.st.' + s) }));
+  st.value = p.status_override || '';
+  row.append(
+    el('div', { className: 'fld' }, [el('label', { textContent: t('pm.col.status') }), st]),
+    fld('request_date', 'pm.col.request', 'date'), fld('approve_date', 'pm.col.approve', 'date'),
+    fld('purchase_date', 'pm.col.purchase', 'date'), fld('handover_date', 'pm.col.handover', 'date'),
+    fld('contract_value', 'pm.col.contract', 'text', 150), fld('chosen_vendor', 'pm.col.vendor', 'text', 200),
+    fld('comment', 'pm.f.note', 'text', 260));
+  const acts = el('div', { className: 'acts' });
+  const save = el('button', { className: 'btn pri', textContent: t('tool.save') });
+  save.onclick = async () => {
+    const patch = {};
+    for (const i of row.querySelectorAll('[data-k]')) {
+      const k = i.dataset.k, ty = i.dataset.type, v = i.value.trim();
+      patch[k] = ty === 'date' ? (v || null) : ty === 'select' ? (v || null)
+        : /value|volume/.test(k) ? xlNum(v) : (v || null);
+    }
+    try {
+      await SB.patch('pm_project', `code=eq.${encodeURIComponent(p.code)}`, patch);
+      await ppLoad();                               // clears #ppMsg, so report after it
+      msg('#ppMsg', 'ok', t('pm.prj.saved', { code: p.code }));
+      const again = PM.prj.rows.find(r => r.code === p.code);
+      if (again) ppDetail(again);
+    } catch (e) { msg('#ppMsg', 'err', e.message); }
+  };
+  acts.append(save);
+  if (can('project', 'admin')) {
+    const del = el('button', { className: 'btn danger', textContent: t('pm.prj.delete') });
+    del.onclick = async () => {
+      if (!confirm(t('pm.prj.confirmDel', { code: p.code }))) return;
+      try { await SB.remove('pm_project', `code=eq.${encodeURIComponent(p.code)}`); $('#ppDetail').innerHTML = '';
+            await ppLoad(); msg('#ppMsg', 'ok', t('pm.prj.deleted', { code: p.code })); }
+      catch (e) { msg('#ppMsg', 'err', e.message); }
+    };
+    acts.append(del);
+  }
+  row.append(acts);
+  wrap.append(row);
+  return wrap;
+}
+
+/* New project: from an approved budget line (the usual case — everything is
+   copied over) or unbudgeted, which needs its own code. The database refuses
+   an unbudgeted code that a budget line already owns. */
+function ppNew() {
+  const box = $('#ppDetail');
+  box.innerHTML = '';
+  PM.prj.pick = null;
+  const y = +$('#ppYear').value || new Date().getFullYear();
+  const taken = new Set(PM.prj.rows.map(r => r.main_code));
+  const free = (PM.prj.finalLines || []).filter(l => l.year === y && !taken.has(l.project_code));
+  const card = el('div', { className: 'card pmdet' });
+  card.append(el('h2', { textContent: t('pm.prj.newH', { y }) }));
+  const row = el('div', { className: 'row', style: 'align-items:flex-end;flex-wrap:wrap' });
+  const lineSel = el('select', { style: 'min-width:360px' });
+  lineSel.append(el('option', { value: '', textContent: free.length ? t('pm.prj.pickLine') : t('pm.prj.noFreeLine') }));
+  free.forEach((l, i) => lineSel.append(el('option', { value: i,
+    textContent: `${l.project_code} — ${l.name || ''} — ${fmtM(l.estimated_value)}` })));
+  const unb = el('input', { type: 'checkbox' });
+  const code = el('input', { style: 'width:190px', placeholder: 'FFE.ENG.21.' + y, spellcheck: false });
+  const name = el('input', { style: 'width:280px' });
+  const dept = el('select', { style: 'width:120px' });
+  for (const o of PM.orgs.filter(o => o.is_department)) dept.append(el('option', { value: o.code, textContent: o.code }));
+  const est = el('input', { style: 'width:150px', inputMode: 'numeric' });
+  const sync = () => {
+    const l = free[lineSel.value];
+    code.disabled = !unb.checked; lineSel.disabled = unb.checked;
+    if (!unb.checked && l) { code.value = l.project_code; name.value = l.name || ''; dept.value = pmDept(l.dept_code);
+                             est.value = l.estimated_value != null ? fmtNum(l.estimated_value) : ''; }
+  };
+  lineSel.onchange = sync; unb.onchange = sync;
+  row.append(
+    el('div', { className: 'fld' }, [el('label', { textContent: t('pm.prj.fromLine') }), lineSel]),
+    el('label', { className: 'chk' }, [unb, el('span', { textContent: t('pm.prj.unbudgeted') })]),
+    el('div', { className: 'fld' }, [el('label', { textContent: t('pm.col.code') }), code]),
+    el('div', { className: 'fld' }, [el('label', { textContent: t('pm.col.name') }), name]),
+    el('div', { className: 'fld' }, [el('label', { textContent: t('pm.col.dept') }), dept]),
+    el('div', { className: 'fld' }, [el('label', { textContent: t('pm.col.estimate') }), est]));
+  const acts = el('div', { className: 'acts' });
+  const save = el('button', { className: 'btn pri', textContent: t('tool.save') });
+  save.onclick = async () => {
+    const c = pmCode(code.value);
+    if (!PM_CODE_OK.test(c)) return msg('#ppMsg', 'err', t('pm.prj.badCode'));
+    const l = unb.checked ? null : free[lineSel.value];
+    const rec = pmProjRow(l ? {
+      name: l.name, investment_type: l.investment_type, possibility: l.possibility, impact: l.impact,
+      assessment: l.assessment, risk_level: l.risk_level, project_category: l.project_category,
+      area_category: l.area_category, asset_item: l.asset_item, location: l.location, reason: l.reason,
+      planned_start: l.start_date, planned_end: l.end_date } : {}, {
+      code: c, main_code: pmMain(c), dept_code: dept.value, name: name.value.trim() || null,
+      estimated_value: xlNum(est.value), budgeted: !unb.checked, source: 'app',
+      request_date: new Date().toISOString().slice(0, 10) });
+    try {
+      await SB.insert('pm_project', [rec]);
+      box.innerHTML = '';
+      await ppLoad();                               // clears #ppMsg, so report after it
+      msg('#ppMsg', 'ok', t('pm.prj.created', { code: c }));
+    } catch (e) { msg('#ppMsg', 'err', e.message); }
+  };
+  const cancel = el('button', { className: 'btn', textContent: t('auth.cancel') });
+  cancel.onclick = () => { box.innerHTML = ''; };
+  acts.append(cancel, save);
+  row.append(acts);
+  card.append(row);
+  box.append(card);
+  sync();
+  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function ppExport() {
+  const rows = ppFiltered().map((p, i) => {
+    const o = { '#': i + 1 };
+    for (const [k, lbl] of PM_PROJ_SHOW) o[t(lbl)] = p[k];
+    o[t('pm.col.entity')] = pmEntity(p.dept_code);
+    o[t('pm.col.budgeted')] = p.budgeted ? 'Y' : 'N';
+    o[t('pm.col.status')] = t('pm.st.' + p.status);
+    return o;
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Projects');
+  XLSX.writeFile(wb, `Projects ${$('#ppYear').value || 'all'}.xlsx`);
+}
+
+/* ================================================================ charts
+   Plain SVG, no library. Specs from the dataviz reference: bars <= 24px with a
+   4px rounded data end and a square baseline, 2px lines, 8px end dots with a
+   2px surface ring, 2px surface gaps, hairline solid grid, one tooltip that
+   lists every series, and a table view behind every chart. */
+// SVG presentation attributes take literal colours; CSS variables are only
+// dependable inside CSS and style="". Same values as the .viz tokens.
+const VZ = { grid: '#e1e0d9', axis: '#c3c2b7', ink3: '#898781', surface: '#ffffff' };
+const SVGNS = 'http://www.w3.org/2000/svg';
+const sv = (tag, attrs = {}, kids = []) => {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) n.setAttribute(k, v);
+  for (const c of [].concat(kids)) if (c) n.append(c);
+  return n;
+};
+const svText = (x, y, s, attrs = {}) => { const n = sv('text', Object.assign({ x, y }, attrs)); n.textContent = s; return n; };
+
+let VTIP = null;
+function tipShow(ev, title, rows) {
+  if (!VTIP) { VTIP = el('div', { className: 'vtip', hidden: true }); document.body.append(VTIP); }
+  VTIP.innerHTML = '';
+  VTIP.append(el('div', { className: 'tt', textContent: title }));
+  for (const r of rows) {
+    const line = el('div', { className: 'tr' });
+    if (r.color) line.append(el('i', { style: `background:${r.color}` }));
+    line.append(el('b', { textContent: r.value }), el('span', { textContent: r.label }));
+    VTIP.append(line);
+  }
+  VTIP.hidden = false;
+  let x, y;
+  if (ev && ev.clientX != null && ev.type !== 'focus') { x = ev.clientX; y = ev.clientY; }
+  else { const b = ev.target.getBoundingClientRect(); x = b.left + b.width / 2; y = b.top; }
+  const w = VTIP.offsetWidth, h = VTIP.offsetHeight;
+  VTIP.style.left = Math.min(window.innerWidth - w - 8, Math.max(8, x + 14)) + 'px';
+  VTIP.style.top = Math.max(8, y - h - 10) + 'px';
+}
+const tipHide = () => { if (VTIP) VTIP.hidden = true; };
+
+// Round a data end (right side for bars growing rightwards), square at the base.
+function barPath(x, y, w, h, r = 4) {
+  if (w <= 0) return '';
+  const rr = Math.min(r, w, h / 2);
+  return `M${x},${y}h${w - rr}q${rr},0 ${rr},${rr}v${h - 2 * rr}q0,${rr} -${rr},${rr}h-${w - rr}z`;
+}
+function niceMax(v) {
+  if (!(v > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v))), n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+
+/* A chart card: title, optional legend, the chart, and a Table toggle that
+   swaps the chart for the numbers behind it. */
+function chartCard(title, sub, legend, drawChart, tableRows, wide) {
+  const card = el('div', { className: 'chartcard' + (wide ? ' wide' : '') });
+  const h3 = el('h3', { textContent: title });
+  if (sub) h3.append(el('span', { className: 'sub', textContent: sub }));
+  const toggle = el('button', { className: 'btn tiny', textContent: t('pm.viz.table') });
+  card.append(el('div', { className: 'ch' }, [h3, toggle]));
+  if (legend && legend.length > 1) {
+    const lg = el('div', { className: 'legend' });
+    for (const it of legend) lg.append(el('span', {}, [el('i', { className: it.line ? 'ln' : '', style: `background:${it.color}` }), document.createTextNode(it.label)]));
+    card.append(lg);
+  }
+  const body = el('div');
+  const tbl = el('div', { className: 'viztbl wrap', hidden: true });
+  card.append(body, tbl);
+  let showing = false;
+  toggle.onclick = () => {
+    showing = !showing;
+    toggle.textContent = t(showing ? 'pm.viz.chart' : 'pm.viz.table');
+    body.hidden = showing; tbl.hidden = !showing;
+    if (showing && !tbl.firstChild) {
+      const [hd, ...rs] = tableRows();
+      const tb = el('table');
+      tb.append(el('tr', {}, hd.map((h, i) => el('th', { className: i ? 'num' : '', textContent: h }))));
+      for (const r of rs) tb.append(el('tr', {}, r.map((c, i) => el('td', { className: i ? 'num' : '', textContent: c }))));
+      tbl.append(tb);
+    }
+  };
+  // Drawn after the card is in the page, so it can measure its own width.
+  card._draw = () => { body.innerHTML = ''; body.append(drawChart(Math.max(300, body.clientWidth || card.clientWidth - 28))); };
+  return card;
+}
+
+/* Horizontal bars, one or two series on ONE axis. Only the first series gets
+   a value at its tip; the rest is in the tooltip and the table. */
+function hbarChart(W, cats, series, labelFirst = true) {
+  const labW = Math.min(170, Math.max(90, W * 0.26)), rightPad = 58, top = 4, axisH = 20;
+  const barH = series.length > 1 ? 10 : 16, gap = 2;
+  const band = series.length * barH + (series.length - 1) * gap + 12;
+  const H = top + cats.length * band + axisH;
+  const max = niceMax(Math.max(1, ...cats.flatMap(c => series.map(s => s.values.get(c.key) || 0))));
+  const x = v => labW + (W - labW - rightPad) * (v / max);
+  const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img' });
+  // Hairline grid + ticks.
+  for (let i = 0; i <= 4; i++) {
+    const v = max * i / 4, gx = x(v);
+    svg.append(sv('line', { x1: gx, x2: gx, y1: top, y2: H - axisH, stroke: VZ.grid, 'stroke-width': 1 }));
+    svg.append(svText(gx, H - 6, fmtM(v), { 'text-anchor': i === 0 ? 'start' : 'middle' }));
+  }
+  svg.append(sv('line', { x1: labW, x2: labW, y1: top, y2: H - axisH, stroke: VZ.axis, 'stroke-width': 1 }));
+  cats.forEach((c, ci) => {
+    const y0 = top + ci * band + 6;
+    const lbl = c.label.length > 24 ? c.label.slice(0, 23) + '…' : c.label;
+    svg.append(svText(labW - 8, y0 + (band - 12) / 2 + 4, lbl, { 'text-anchor': 'end', class: 'lab' }));
+    const g = sv('g', { class: 'hitbar', tabindex: 0 });
+    series.forEach((s, si) => {
+      const v = s.values.get(c.key) || 0, by = y0 + si * (barH + gap);
+      if (v > 0) g.append(sv('path', { class: 'mk', d: barPath(labW, by, x(v) - labW, barH), fill: s.color }));
+      if (si === 0 && labelFirst && v > 0) g.append(svText(x(v) + 5, by + barH / 2 + 4, fmtM(v), { class: 'v' }));
+    });
+    // The hit target is the whole band, not the painted pixels.
+    g.prepend(sv('rect', { class: 'hit', x: 0, y: y0 - 4, width: W, height: band - 4, fill: 'transparent' }));
+    const show = ev => tipShow(ev, c.label, series.map(s => ({ color: s.color, label: s.label, value: fmtNum(Math.round(s.values.get(c.key) || 0)) })));
+    g.addEventListener('pointermove', show); g.addEventListener('focus', show);
+    g.addEventListener('pointerleave', tipHide); g.addEventListener('blur', tipHide);
+    svg.append(g);
+  });
+  return svg;
+}
+
+/* Cumulative plan vs actual over the twelve months: two 2px lines, end dots,
+   a crosshair that snaps to the nearest month and lists both series. */
+function lineChart(W, months, series, highlight) {
+  const H = 230, L = 58, R = 70, T = 10, B = 24;
+  const max = niceMax(Math.max(1, ...series.flatMap(s => s.values)));
+  const x = i => L + (W - L - R) * (i / 11), y = v => T + (H - T - B) * (1 - v / max);
+  const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img' });
+  if (highlight && highlight.length < 12) {
+    const a = Math.min(...highlight) - 1, b = Math.max(...highlight) - 1;
+    svg.append(sv('rect', { x: x(a) - 6, y: T, width: x(b) - x(a) + 12, height: H - T - B, fill: '#eef4fc' }));
+  }
+  for (let i = 0; i <= 4; i++) {
+    const v = max * i / 4;
+    svg.append(sv('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: i ? VZ.grid : VZ.axis, 'stroke-width': 1 }));
+    svg.append(svText(L - 8, y(v) + 4, fmtM(v), { 'text-anchor': 'end' }));
+  }
+  months.forEach((m, i) => svg.append(svText(x(i), H - 6, m, { 'text-anchor': 'middle' })));
+  const ends = [];
+  for (const s of series) {
+    const d = s.values.map((v, i) => `${i ? 'L' : 'M'}${x(i)},${y(v)}`).join('');
+    svg.append(sv('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    const last = s.values.length - 1;
+    svg.append(sv('circle', { cx: x(last), cy: y(s.values[last]), r: 4, fill: s.color, stroke: VZ.surface, 'stroke-width': 2 }));
+    ends.push({ s, yy: y(s.values[last]) });
+  }
+  // End labels only when they do not collide; otherwise legend + tooltip carry it.
+  if (ends.length < 2 || Math.abs(ends[0].yy - ends[1].yy) > 14)
+    for (const e of ends) svg.append(svText(W - R + 8, e.yy + 4, fmtM(e.s.values[e.s.values.length - 1]), { class: 'v' }));
+  const cross = sv('line', { y1: T, y2: H - B, stroke: VZ.ink3, 'stroke-width': 1, visibility: 'hidden' });
+  svg.append(cross);
+  const hit = sv('rect', { x: L, y: T, width: W - L - R, height: H - T - B, fill: 'transparent', tabindex: 0 });
+  let at = 11;
+  const move = (ev, idx) => {
+    at = idx;
+    cross.setAttribute('x1', x(at)); cross.setAttribute('x2', x(at)); cross.setAttribute('visibility', 'visible');
+    tipShow(ev, months[at], series.map(s => ({ color: s.color, label: s.label, value: fmtNum(Math.round(s.values[at])) })));
+  };
+  hit.addEventListener('pointermove', ev => {
+    const b = svg.getBoundingClientRect(), px = (ev.clientX - b.left) * (W / b.width);
+    move(ev, Math.max(0, Math.min(11, Math.round((px - L) / ((W - L - R) / 11)))));
+  });
+  hit.addEventListener('focus', ev => move(ev, at));
+  hit.addEventListener('keydown', ev => {
+    if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') { ev.preventDefault(); move({ target: hit }, Math.max(0, Math.min(11, at + (ev.key === 'ArrowLeft' ? -1 : 1)))); }
+  });
+  const off = () => { cross.setAttribute('visibility', 'hidden'); tipHide(); };
+  hit.addEventListener('pointerleave', off); hit.addEventListener('blur', off);
+  svg.append(hit);
+  return svg;
+}
+
+/* Part-to-whole on an ordered scale: one 100% bar, 2px surface gaps between
+   segments, a label inside a segment only when it fits. */
+function stackBar(W, parts) {
+  const H = 34, total = parts.reduce((s, p) => s + p.n, 0) || 1;
+  const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img' });
+  const clip = 'clip' + Math.random().toString(36).slice(2, 8);
+  svg.append(sv('clipPath', { id: clip }, sv('rect', { x: 0, y: 6, width: W, height: 22, rx: 4 })));
+  const g = sv('g', { 'clip-path': `url(#${clip})` });
+  let x = 0;
+  const shown = parts.filter(p => p.n > 0);
+  shown.forEach((p, i) => {
+    const w = W * p.n / total, gw = i < shown.length - 1 ? 2 : 0;
+    const seg = sv('g', { class: 'hitbar', tabindex: 0 });
+    seg.append(sv('rect', { class: 'mk', x, y: 6, width: Math.max(0, w - gw), height: 22, fill: p.color }));
+    const txt = `${p.label} ${fmtPct(p.n / total, 0)}`;
+    if (txt.length * 6.4 + 14 < w - gw)
+      seg.append(svText(x + (w - gw) / 2, 21, txt, { 'text-anchor': 'middle', style: `fill:${p.ink}` }));
+    const show = ev => tipShow(ev, p.label, [{ color: p.color, label: t('pm.viz.projects'), value: `${fmtInt(p.n)} · ${fmtPct(p.n / total)}` },
+                                             { label: t('pm.viz.value'), value: fmtNum(Math.round(p.v || 0)) }]);
+    seg.addEventListener('pointermove', show); seg.addEventListener('focus', show);
+    seg.addEventListener('pointerleave', tipHide); seg.addEventListener('blur', tipHide);
+    g.append(seg);
+    x += w;
+  });
+  svg.append(g);
+  return svg;
+}
+
+/* One row per project across the year: the planned window as a grey track,
+   the actual span (request → handover, or → today while open) in the accent. */
+function gantt(W, items, year) {
+  const wrap = el('div', { className: 'gantt' });
+  const y0 = Date.UTC(year, 0, 1), y1 = Date.UTC(year + 1, 0, 1);
+  const pos = d => { if (!d) return null; const v = Date.parse(d + 'T00:00:00Z'); return Math.max(0, Math.min(100, (v - y0) / (y1 - y0) * 100)); };
+  const ax = el('div', { className: 'gax' }, [el('div'), el('div')]);
+  for (let m = 0; m < 12; m += 1) ax.lastChild.append(el('span', { style: `left:${(m + .5) / 12 * 100}%`, textContent: pmMonthName(m + 1) }));
+  wrap.append(ax);
+  const today = new Date().toISOString().slice(0, 10);
+  const tpos = today.slice(0, 4) === String(year) ? pos(today) : null;
+  for (const it of items) {
+    const track = el('div', { className: 'gt', tabindex: 0 });
+    const ps = pos(it.ps), pe = pos(it.pe);
+    if (ps != null && pe != null && pe > ps) track.append(el('div', { className: 'pl', style: `left:${ps}%;width:${pe - ps}%` }));
+    const as = pos(it.as), ae = pos(it.ae || (it.open ? today : null));
+    if (as != null && ae != null && ae >= as) track.append(el('div', { className: 'ac' + (it.ae ? '' : ' open'), style: `left:${as}%;width:${Math.max(.6, ae - as)}%` }));
+    if (tpos != null) track.append(el('div', { className: 'today', style: `left:${tpos}%` }));
+    const show = ev => tipShow(ev, `${it.code} — ${it.name || ''}`, [
+      { color: 'var(--track)', label: t('pm.viz.planned'), value: `${fmtDate(it.ps) || '—'} → ${fmtDate(it.pe) || '—'}` },
+      { color: 'var(--series-1)', label: t('pm.viz.actual'), value: `${fmtDate(it.as) || '—'} → ${fmtDate(it.ae) || (it.open ? t('pm.viz.ongoing') : '—')}` },
+      { label: t('pm.col.status'), value: t('pm.st.' + it.status) }]);
+    track.addEventListener('pointermove', show); track.addEventListener('focus', show);
+    track.addEventListener('pointerleave', tipHide); track.addEventListener('blur', tipHide);
+    wrap.append(el('div', { className: 'gr' }, [
+      el('div', { className: 'gl', title: `${it.code} — ${it.name || ''}` }, [el('code', { textContent: it.code }), document.createTextNode(it.name || '')]),
+      track]));
+  }
+  return wrap;
+}
+
+/* ============================================================= dashboard */
+async function pdLoad() {
+  const out = $('#pdMsg');
+  msg(out, 'info', t('table.loading'));
+  try {
+    await pmLookups();
+    const [years, finals, projects] = await Promise.all([
+      SB.select('pm_budget_year', 'select=*'),
+      SB.select('pm_budget_round', 'select=id,year,label&is_final=eq.true'),
+      pmSelectAll('pm_project', 'select=*')
+    ]);
+    PM.dash.years = years;
+    PM.dash.finals = finals;
+    PM.dash.projects = projects;
+    const ys = [...new Set([...finals.map(f => f.year), ...projects.map(p => p.year)])].sort((a, b) => b - a);
+    const ySel = $('#pdYear');
+    const keep = +ySel.value;
+    ySel.innerHTML = '';
+    for (const y of ys) ySel.append(el('option', { value: y, textContent: y }));
+    if (!ys.length) { msg(out, 'info', t('pm.dash.empty')); $('#pdBody').innerHTML = ''; return; }
+    ySel.value = ys.includes(keep) ? keep : (ys.includes(new Date().getFullYear()) ? new Date().getFullYear() : ys[0]);
+    const per = $('#pdPeriod');
+    if (!per.options.length) {
+      per.append(el('option', { value: 'Y', textContent: t('pm.per.year') }));
+      for (let q = 1; q <= 4; q++) per.append(el('option', { value: 'Q' + q, textContent: 'Q' + q }));
+      for (let m = 1; m <= 12; m++) per.append(el('option', { value: 'M' + m, textContent: pmMonthName(m) }));
+    }
+    const bud = $('#pdBud');
+    if (!bud.options.length) for (const [v, k] of [['', 'pm.f.all'], ['1', 'pm.f.budgetedOnly'], ['0', 'pm.f.unbudgetedOnly']])
+      bud.append(el('option', { value: v, textContent: t(k) }));
+    await pdYearChanged();
+    msg(out, '', '');
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+async function pdYearChanged() {
+  const y = +$('#pdYear').value;
+  PM.dash.year = y;
+  const f = PM.dash.finals.find(r => r.year === y);
+  PM.dash.lines = f ? await pmSelectAll('pm_budget_line', `select=*&round_id=eq.${f.id}`) : [];
+  PM.dash.yearRow = PM.dash.years.find(r => r.year === y) || null;
+  const depts = [...new Set([...PM.dash.lines.map(l => l.dept_code), ...PM.dash.projects.filter(p => p.year === y).map(p => p.dept_code)].filter(Boolean))].sort();
+  const cats = [...new Set(PM.dash.lines.map(l => l.project_category).filter(Boolean))].sort();
+  msSetup('pdEnt', PM_ENTITIES.map(e => ({ v: e, t: `${e} — ${t('perms.ent.' + e)}` })));
+  msSetup('pdDept', depts.map(d => ({ v: d, t: d })));
+  msSetup('pdCat', cats.map(c => ({ v: c, t: c })));
+  msSetup('pdStatus', PM_STATUS.map(s => ({ v: s, t: t('pm.st.' + s) })));
+  for (const id of ['pdEnt', 'pdDept', 'pdCat', 'pdStatus']) MS[id].onChange = pdRender;
+  pdRender();
+}
+
+function pdPeriodMonths() {
+  const v = $('#pdPeriod').value || 'Y';
+  if (v === 'Y') return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  if (v[0] === 'Q') { const q = +v.slice(1); return [q * 3 - 2, q * 3 - 1, q * 3]; }
+  return [+v.slice(1)];
+}
+
+function pdRender() {
+  const box = $('#pdBody');
+  if (!PM.dash.year) return;
+  const y = PM.dash.year, months = pdPeriodMonths(), fullYear = months.length === 12;
+  const ent = msValues('pdEnt'), dep = msValues('pdDept'), cat = msValues('pdCat'), sts = msValues('pdStatus');
+  const bud = $('#pdBud').value;
+  const byMain = new Map();
+  for (const p of PM.dash.projects) { const a = byMain.get(p.main_code) || []; a.push(p); byMain.set(p.main_code, a); }
+  const lineStatus = l => {
+    const ps = byMain.get(l.project_code) || byMain.get(l.current_code);
+    if (!ps) return 'pending';
+    return ps.every(p => p.status === 'completed') ? 'completed' : ps.every(p => p.status === 'cancelled') ? 'cancelled'
+      : ps.some(p => p.status !== 'pending') ? 'in_progress' : 'pending';
+  };
+  const common = (dept, pcat) => (!ent.length || ent.includes(pmEntity(dept))) && (!dep.length || dep.includes(dept))
+    && (!cat.length || cat.includes(pcat));
+  const lines = bud === '0' ? [] : PM.dash.lines.filter(l => common(l.dept_code, l.project_category)
+    && (!sts.length || sts.includes(lineStatus(l))));
+  const lineCat = new Map(PM.dash.lines.map(l => [l.project_code, l.project_category]));
+  const projOk = p => common(p.dept_code, p.project_category || lineCat.get(p.main_code))
+    && (!sts.length || sts.includes(p.status)) && (bud === '' || String(Number(p.budgeted)) === bud);
+  const inPeriod = d => d && d.slice(0, 4) === String(y) && months.includes(+d.slice(5, 7));
+  const projects = PM.dash.projects.filter(p => p.year === y && projOk(p));
+  const committedSet = fullYear ? projects : projects.filter(p => inPeriod(p.purchase_date));
+  const carried = PM.dash.projects.filter(p => p.year < y && projOk(p) && !['completed', 'cancelled'].includes(p.status));
+
+  const budget = pmSum(lines, 'estimated_value');
+  const planned = pmSum(lines, l => months.reduce((s, m) => s + (Number(l[PM_MONTHS[m - 1]]) || 0), 0));
+  const committed = pmSum(committedSet, 'contract_value');
+  const overrunRows = committedSet.filter(p => p.contract_value != null && p.estimated_value != null && p.contract_value > p.estimated_value);
+  const overrun = pmSum(overrunRows, p => p.contract_value - p.estimated_value);
+  const done = projects.filter(p => p.status === 'completed').length;
+  const unb = projects.filter(p => !p.budgeted);
+  const yr = PM.dash.yearRow || {};
+  const cap = yr.ssp_cap != null ? Number(yr.ssp_cap) : (yr.ssp_revenue != null ? Number(yr.ssp_revenue) * Number(yr.reserve_pct || 3) / 100 : null);
+  const sspBudget = pmSum(lines.filter(l => pmEntity(l.dept_code) === 'SSP'), 'estimated_value');
+  const perLabel = ($('#pdPeriod').selectedOptions[0] || {}).text || '';
+
+  box.innerHTML = '';
+  // Hero: the one number this page leads with.
+  box.append(el('div', { className: 'hero' }, [
+    el('span', { className: 'hl', textContent: t('pm.dash.budget', { y }) }),
+    el('span', { className: 'hv', textContent: fmtM(budget) }),
+    el('span', { className: 'hs', textContent: t('pm.dash.budgetSub', {
+      n: fmtInt(new Set(lines.map(l => l.project_code)).size),
+      planned: fullYear ? '' : t('pm.dash.plannedIn', { p: perLabel, v: fmtM(planned) }) }) })]));
+
+  const stats = el('div', { className: 'stats' });
+  const tile = (label, value, sub, cls, meter) => {
+    const d = el('div', { className: 'stat' }, [el('span', { className: 'sl', textContent: label }),
+                                                  el('span', { className: 'sv', textContent: value })]);
+    if (sub) d.append(el('span', { className: 'sd' + (cls ? ' ' + cls : ''), textContent: sub }));
+    if (meter != null) d.append(el('div', { className: 'meter' + (meter > 1 ? ' over' : '') },
+      el('i', { style: `width:${Math.min(100, Math.max(0, meter * 100))}%` })));
+    return d;
+  };
+  if (cap && (!ent.length || ent.includes('SSP')))
+    stats.append(tile(t('pm.dash.cap'), fmtPct(sspBudget / cap), t('pm.dash.capSub', { v: fmtM(sspBudget), cap: fmtM(cap) }), null, sspBudget / cap));
+  stats.append(tile(fullYear ? t('pm.dash.committed') : t('pm.dash.committedIn', { p: perLabel }), fmtM(committed),
+    budget ? t('pm.dash.ofBudget', { pct: fmtPct(committed / budget) }) : null));
+  if (fullYear) stats.append(tile(t('pm.dash.remaining'), fmtM(budget - committed), null));
+  stats.append(tile(t('pm.dash.overrun'), fmtM(overrun), t('pm.dash.overrunSub', { n: fmtInt(overrunRows.length) }), overrun > 0 ? 'down' : null));
+  stats.append(tile(t('pm.dash.carried'), fmtInt(carried.length), t('pm.dash.carriedSub', { v: fmtM(pmSum(carried, 'estimated_value')) })));
+  stats.append(tile(t('pm.dash.completed'), projects.length ? fmtPct(done / projects.length, 0) : '—',
+    t('pm.dash.completedSub', { done: fmtInt(done), n: fmtInt(projects.length) })));
+  stats.append(tile(t('pm.dash.unbudgeted'), fmtInt(unb.length), t('pm.dash.unbudgetedSub', { v: fmtM(pmSum(unb, p => p.contract_value ?? p.estimated_value)) })));
+  box.append(stats);
+
+  // Cycle time between the dated steps — the approval clock before phase 3
+  // starts timing each signature.
+  const span = (a, b) => { const v = projects.map(p => p[a] && p[b] && p[b] >= p[a] ? (Date.parse(p[b]) - Date.parse(p[a])) / 864e5 : null).filter(v => v != null);
+                           return { avg: v.length ? v.reduce((s, x) => s + x, 0) / v.length : null, n: v.length }; };
+  const cyc = el('div', { className: 'stats' });
+  for (const [a, b, k] of [['request_date', 'approve_date', 'pm.dash.cyc1'], ['approve_date', 'purchase_date', 'pm.dash.cyc2'], ['purchase_date', 'handover_date', 'pm.dash.cyc3']]) {
+    const s = span(a, b);
+    cyc.append(tile(t(k), s.avg == null ? '—' : t('pm.dash.days', { n: fmtInt(Math.round(s.avg)) }), t('pm.dash.cycSub', { n: fmtInt(s.n) })));
+  }
+  box.append(cyc);
+
+  const charts = el('div', { className: 'charts' });
+  const C1 = 'var(--series-1)', C2 = 'var(--series-2)';
+  // 1. Budget vs committed by department.
+  const depKeys = [...new Set([...lines.map(l => l.dept_code), ...committedSet.map(p => p.dept_code)].filter(Boolean))];
+  const bV = new Map(), cV = new Map();
+  for (const l of lines) bV.set(l.dept_code, (bV.get(l.dept_code) || 0) + (Number(l.estimated_value) || 0));
+  for (const p of committedSet) cV.set(p.dept_code, (cV.get(p.dept_code) || 0) + (Number(p.contract_value) || 0));
+  depKeys.sort((a, b) => (bV.get(b) || 0) - (bV.get(a) || 0));
+  const depCats = depKeys.map(k => ({ key: k, label: k }));
+  const s1 = [{ label: t('pm.viz.budget'), color: '#2a78d6', values: bV }, { label: t('pm.viz.committed'), color: '#eb6834', values: cV }];
+  charts.append(chartCard(t('pm.viz.byDept'), null, [{ label: s1[0].label, color: C1 }, { label: s1[1].label, color: C2 }],
+    W => hbarChart(W, depCats, s1),
+    () => [[t('pm.col.dept'), s1[0].label, s1[1].label], ...depKeys.map(k => [k, fmtNum(Math.round(bV.get(k) || 0)), fmtNum(Math.round(cV.get(k) || 0))])]));
+  // 2. Budget by project category (one series: one colour, no legend box).
+  const catV = new Map();
+  for (const l of lines) { const k = l.project_category || t('pm.viz.uncategorised'); catV.set(k, (catV.get(k) || 0) + (Number(l.estimated_value) || 0)); }
+  const catKeys = [...catV.keys()].sort((a, b) => catV.get(b) - catV.get(a));
+  charts.append(chartCard(t('pm.viz.byCat'), null, null,
+    W => hbarChart(W, catKeys.map(k => ({ key: k, label: k })), [{ label: t('pm.viz.budget'), color: '#2a78d6', values: catV }]),
+    () => [[t('pm.col.projCat'), t('pm.viz.budget'), t('pm.viz.share')], ...catKeys.map(k => [k, fmtNum(Math.round(catV.get(k))), fmtPct(catV.get(k) / (budget || 1))])]));
+  // 3. Plan vs committed, cumulative by month.
+  const plan = [], act = [];
+  let pc = 0, ac = 0;
+  for (let m = 1; m <= 12; m++) {
+    pc += pmSum(lines, PM_MONTHS[m - 1]);
+    ac += pmSum(projects.filter(p => p.purchase_date && p.purchase_date.slice(0, 7) === `${y}-${String(m).padStart(2, '0')}`), 'contract_value');
+    plan.push(pc); act.push(ac);
+  }
+  const mNames = Array.from({ length: 12 }, (_, i) => pmMonthName(i + 1));
+  const hasPlan = pc > 0;
+  const s3 = [{ label: t('pm.viz.plannedCum'), color: '#2a78d6', values: plan }, { label: t('pm.viz.committedCum'), color: '#eb6834', values: act }];
+  charts.append(chartCard(t('pm.viz.overTime'), hasPlan ? null : t('pm.viz.noPhasing'),
+    [{ label: s3[0].label, color: C1, line: true }, { label: s3[1].label, color: C2, line: true }],
+    W => lineChart(W, mNames, s3, months),
+    () => [[t('pm.viz.month'), s3[0].label, s3[1].label], ...mNames.map((m, i) => [m, fmtNum(Math.round(plan[i])), fmtNum(Math.round(act[i]))])], true));
+  // 4. Risk mix — ordered, so an ordinal ramp, darkest = most severe.
+  const ramp = [['Critical', '#0d366b', '#fff'], ['High', '#1c5cab', '#fff'], ['Medium', '#3987e5', '#fff'], ['Low', '#86b6ef', '#0b0b0b']];
+  const parts = ramp.map(([k, c, ink]) => ({ label: k, color: c, ink, n: lines.filter(l => l.risk_level === k).length,
+    v: pmSum(lines.filter(l => l.risk_level === k), 'estimated_value') }));
+  const other = lines.filter(l => !PM_RISK.includes(l.risk_level));
+  if (other.length) parts.push({ label: t('pm.viz.notAssessed'), color: '#cfcdc4', ink: '#0b0b0b', n: other.length, v: pmSum(other, 'estimated_value') });
+  const riskCard = chartCard(t('pm.viz.risk'), t('pm.viz.riskSub', { n: fmtInt(lines.length) }),
+    parts.filter(p => p.n).map(p => ({ label: `${p.label} · ${fmtInt(p.n)}`, color: p.color })),
+    W => stackBar(W, parts),
+    () => [[t('pm.col.risk'), t('pm.viz.projects'), t('pm.viz.share'), t('pm.viz.value')], ...parts.map(p => [p.label, fmtInt(p.n), fmtPct(p.n / (lines.length || 1)), fmtNum(Math.round(p.v))])],
+    true);   // full row: alone in a half-width slot it left the other half empty
+  charts.append(riskCard);
+  // 5. Timeline.
+  const lineOf = new Map(PM.dash.lines.map(l => [l.project_code, l]));
+  const items = projects.map(p => {
+    const l = lineOf.get(p.main_code) || {};
+    return { code: p.code, name: p.name, status: p.status, ps: p.planned_start || l.start_date, pe: p.planned_end || l.end_date,
+             as: p.request_date, ae: p.status === 'completed' ? p.handover_date : null, open: !['completed', 'cancelled'].includes(p.status) && !!p.request_date };
+  }).sort((a, b) => (a.as || a.ps || '9') .localeCompare(b.as || b.ps || '9'));
+  const cap40 = 40;
+  let showAll = false;
+  const gCard = chartCard(t('pm.viz.timeline'), t('pm.viz.timelineSub', { n: fmtInt(items.length) }),
+    [{ label: t('pm.viz.planned'), color: 'var(--track)' }, { label: t('pm.viz.actual'), color: C1 }],
+    W => {
+      const w = el('div');
+      w.append(gantt(W, showAll ? items : items.slice(0, cap40), y));
+      if (items.length > cap40) {
+        const more = el('button', { className: 'btn tiny', style: 'margin-top:8px',
+          textContent: showAll ? t('pm.viz.showFewer') : t('pm.viz.showAll', { n: fmtInt(items.length) }) });
+        more.onclick = () => { showAll = !showAll; gCard._draw(); };
+        w.append(more);
+      }
+      return w;
+    },
+    () => [[t('pm.col.code'), t('pm.viz.planned'), t('pm.viz.actual'), t('pm.col.status')],
+           ...items.map(i => [i.code, `${fmtDate(i.ps) || '—'} → ${fmtDate(i.pe) || '—'}`, `${fmtDate(i.as) || '—'} → ${fmtDate(i.ae) || (i.open ? t('pm.viz.ongoing') : '—')}`, t('pm.st.' + i.status)])], true);
+  charts.append(gCard);
+  box.append(charts);
+  for (const c of charts.children) c._draw && c._draw();
+}
+
+let PD_RESIZE = null;
+window.addEventListener('resize', () => {
+  if (VIEW !== 'pmdash') return;
+  clearTimeout(PD_RESIZE);
+  PD_RESIZE = setTimeout(() => { for (const c of $$('#pdBody .chartcard')) c._draw && c._draw(); }, 150);
+});
+
+function initPm() {
+  $('#btnPiBudRead').onclick = piBudRead;
+  $('#btnPiBudGo').onclick = piBudGo;
+  $('#btnPiDosRead').onclick = piDosRead;
+  $('#btnPiDosGo').onclick = piDosGo;
+  $('#pbYear').onchange = () => pbYearChanged(false);
+  $('#pbRound').onchange = pbRoundChanged;
+  for (const id of ['pbEnt', 'pbDept', 'pbRisk', 'ppEnt', 'ppDept', 'ppStatus']) msSetup(id, []);
+  MS.pbEnt.onChange = MS.pbDept.onChange = MS.pbRisk.onChange = () => pbRender();
+  MS.ppEnt.onChange = MS.ppDept.onChange = MS.ppStatus.onChange = () => ppRender();
+  $('#pbQ').oninput = () => pbRender();
+  $('#pbPhase').onchange = () => pbRender();
+  $('#ppYear').onchange = () => ppRender();
+  $('#ppBud').onchange = () => ppRender();
+  $('#ppQ').oninput = () => ppRender();
+  for (const id of ['pdEnt', 'pdDept', 'pdCat', 'pdStatus']) msSetup(id, []);
+  $('#pdYear').onchange = pdYearChanged;
+  $('#pdPeriod').onchange = pdRender;
+  $('#pdBud').onchange = pdRender;
+}
+
+/* ============================================================== WORKFLOW
+   Phase 3: the procurement documents and their approval chains.
+
+   The browser never changes a document's status itself. Create, save, submit,
+   approve, return, reject and cancel all go through functions in
+   19_pm_workflow.sql, which hold the rules: the right order, the right person
+   for the step (role + department scope + the "approve" right), and the
+   preparer never approving their own document. What this file adds is the
+   forms — one generic editor driven by WF_SPECS, plus a custom one for the QC
+   scoring matrix — the inbox, the chain editor and the printed form. */
+
+const WF = { types: [], chains: [], roles: [], doc: null, steps: [], events: [], project: null,
+             line: null, docs: [], year: null, inbox: [], entity: 'SSP', dirty: false };
+const WF_ORDER = ['PR', 'RR', 'PA', 'QC', 'MC', 'PO', 'CT', 'AH'];
+const WF_STATUS = ['draft', 'in_review', 'returned', 'rejected', 'approved', 'cancelled'];
+
+/* Risk thresholds from the Menu sheet of the FFE template. */
+const wfRisk = a => a == null || !isFinite(a) ? null : a >= 16 ? 'Critical' : a >= 12 ? 'High' : a >= 8 ? 'Medium' : 'Low';
+const WF_SUGGEST = { Critical: 'Need to be processed immediately', High: 'Need to be processed ASAP',
+                     Medium: 'Need to be processed after higher priorities', Low: 'May be deferred if necessary' };
+const n0 = v => Number(v) || 0;
+const wfSum = (rows, f) => (rows || []).reduce((s, r) => s + n0(typeof f === 'function' ? f(r) : r[f]), 0);
+// Only http(s) links: an attachment is a OneDrive/SharePoint URL, never script.
+const wfSafeUrl = u => /^https?:\/\//i.test(String(u || '').trim()) ? String(u).trim() : null;
+
+/* QC sub-criteria, per the operator guide's appendix. */
+const QC_ABILITY = ['Capital', 'Similar contracts (count)', 'Similar contract value', 'Equipment capacity', 'Rating / reputation'];
+const QC_TECH = {
+  equipment: ['Delivery schedule', 'Installation term', 'Warranty', 'Maintenance', 'Sustainability', 'CO / CQ certificates', 'After-sales service'],
+  construction: ['Method statement', 'Construction schedule', 'Procurement lead time', 'Quality assurance', 'Warranty', 'Maintenance', 'Quality control process', 'Testing & commissioning'],
+};
+QC_TECH.mixed = QC_TECH.construction;
+// Equal weights that add up to exactly 100: the last one takes the rounding.
+const qcSubs = labels => { const w = Math.floor(10000 / labels.length) / 100;
+  return labels.map((l, i) => ({ label: l, w: i < labels.length - 1 ? w : Math.round((100 - w * (labels.length - 1)) * 100) / 100 })); };
+const off100 = v => Math.abs(v - 100) > 0.01;
+
+/* ---------------------------------------------------------------- specs
+   A field: { k, t, opts, calc(d, ctx), ro, wide }. t is one of
+   text | area | num | money | date | select | bool | int15 | pct.
+   A line column: the same, calc(l, d, ctx). */
+
+const WF_SPECS = {
+  PR: {
+    head: [
+      { k: 'project_type', t: 'select', opts: ['Non-consultancy', 'Consultancy'] },
+      { k: 'investment_type', t: 'select', opts: ['Replacement', 'New Investment'] },
+      { k: 'budget', t: 'select', opts: ['Budgeted', 'Unbudgeted'], ro: true },
+      { k: 'share_pct', t: 'pct' },
+      { k: 'possibility', t: 'int15' }, { k: 'impact', t: 'int15' },
+      { k: 'assessment', t: 'num', ro: true, calc: d => d.possibility && d.impact ? n0(d.possibility) * n0(d.impact) : null },
+      { k: 'risk_level', t: 'text', ro: true, calc: d => wfRisk(n0(d.possibility) * n0(d.impact) || null) },
+      { k: 'suggestion', t: 'text', ro: true, wide: true, calc: d => WF_SUGGEST[wfRisk(n0(d.possibility) * n0(d.impact) || null)] || '' },
+      { k: 'reason', t: 'area', wide: true },
+      { k: 'cost_benchmark', t: 'select', opts: ['Quotation', 'Previous Project', 'Price Reference', 'Internet'] },
+      { k: 'supplier', t: 'text' }
+    ],
+    lines: { cols: [{ k: 'asset_item', t: 'text', w: 220, product: true }, { k: 'rationale', t: 'area', w: 240 },
+                    { k: 'tech_standard', t: 'area', w: 200 }, { k: 'location', t: 'text', w: 100 },
+                    { k: 'qty', t: 'num', w: 70 }, { k: 'unit_price', t: 'money', w: 130 },
+                    { k: 'amount', t: 'money', w: 140, calc: l => n0(l.qty) * n0(l.unit_price) }] },
+    terms: [{ k: 'warranty_term', t: 'text' }, { k: 'delivery_term', t: 'text' }, { k: 'start_date', t: 'date' },
+            { k: 'note', t: 'area', wide: true }],
+    total: d => wfSum(d.lines, l => n0(l.qty) * n0(l.unit_price))
+  },
+  RR: {
+    head: [
+      { k: 'replacement_level', t: 'select', opts: ['Full replacement', 'Partial replacement', 'Upgrade', 'Renovation'] },
+      { k: 'after_replacement', t: 'select', opts: ['Liquidation', 'Transfer', 'Keep as spare', 'Scrap'] }
+    ],
+    lines: { assetLookup: true,
+             cols: [{ k: 'asset_code', t: 'text', w: 190 }, { k: 'asset_item', t: 'text', w: 200 },
+                    { k: 'condition', t: 'select', w: 110, opts: ['Like new', 'Poor', 'Damaged'] },
+                    { k: 'reason', t: 'select', w: 140, opts: ['High repair cost', 'Obsolete', 'Irreparable', 'Breakage/loss'] },
+                    { k: 'dep_done', t: 'bool', w: 70 }, { k: 'qty', t: 'num', w: 60 }, { k: 'unit', t: 'text', w: 60 },
+                    { k: 'original_value', t: 'money', w: 130 }] },
+    terms: [{ k: 'note', t: 'area', wide: true }],
+    evidence: true,
+    total: d => wfSum(d.lines, 'original_value')
+  },
+  PA: {
+    head: [
+      { k: 'budget_value', t: 'money', ro: true, calc: (d, c) => c.budgetValue },
+      { k: 'estimated_value', t: 'money', ro: true, calc: (d, c) => c.prTotal },
+      { k: 'fx', t: 'money', ro: true, calc: (d, c) => c.fx },
+      { k: 'overrun', t: 'money', ro: true, calc: (d, c) => c.budgetValue != null ? c.prTotal - c.budgetValue : null },
+      { k: 'overrun_pct', t: 'text', ro: true, calc: (d, c) => c.budgetValue ? fmtPct((c.prTotal - c.budgetValue) / c.budgetValue) : '—' },
+      { k: 'overrun_usd', t: 'money', ro: true, calc: (d, c) => c.budgetValue != null ? Math.round((c.prTotal - c.budgetValue) / c.fx) : null },
+      { k: 'risk_assessment', t: 'num', ro: true, calc: (d, c) => c.prAssessment },
+      { k: 'emergency', t: 'bool' },
+      { k: 'gate', t: 'text', ro: true, wide: true, calc: (d, c) => paGate(d, c).text },
+      { k: 'recommendation', t: 'select', opts: ['Proceed', 'Proceed with conditions', 'Revise', 'Reject'] },
+      { k: 'comments', t: 'area', wide: true }
+    ],
+    evidence: true,
+    total: (d, c) => c.prTotal
+  },
+  MC: {
+    head: [{ k: 'tolerance_pct', t: 'num', ro: true, calc: () => 10 }, { k: 'fv_rate_pct', t: 'num', ro: true, calc: () => 4.6 }],
+    lines: { cols: [{ k: 'item', t: 'text', w: 220 }, { k: 'qty', t: 'num', w: 60 },
+                    { k: 'chosen_price', t: 'money', w: 130 },
+                    { k: 'ref_type', t: 'select', w: 140, opts: ['Market quote', 'Historical project', 'Internet'] },
+                    { k: 'ref_source', t: 'text', w: 200 }, { k: 'ref_price', t: 'money', w: 130 },
+                    { k: 'ref_date', t: 'date', w: 130 },
+                    // Old prices are brought forward at 4.6% a year before comparing.
+                    { k: 'ref_adjusted', t: 'money', w: 130, calc: l => mcAdjusted(l) },
+                    { k: 'diff_pct', t: 'text', w: 80, calc: l => { const a = mcAdjusted(l); return a ? fmtPct((n0(l.chosen_price) - a) / a) : ''; } },
+                    { k: 'within', t: 'text', w: 80, calc: l => { const a = mcAdjusted(l); return !a || !l.chosen_price ? '' : (n0(l.chosen_price) - a) / a <= 0.10 ? '✔' : '✘'; } }] },
+    terms: [{ k: 'conclusion', t: 'area', wide: true }],
+    evidence: true,
+    total: d => wfSum(d.lines, l => n0(l.qty || 1) * n0(l.chosen_price))
+  },
+  PO: {
+    head: [{ k: 'order_date', t: 'date' }, { k: 'supplier', t: 'text' }],
+    lines: { specs: true,
+             cols: [{ k: 'asset_item', t: 'text', w: 230, product: true }, { k: 'origin', t: 'text', w: 100 },
+                    { k: 'warranty_months', t: 'num', w: 80 }, { k: 'qty', t: 'num', w: 60 },
+                    { k: 'unit', t: 'text', w: 60 }, { k: 'unit_price', t: 'money', w: 130 },
+                    { k: 'amount', t: 'money', w: 140, calc: l => n0(l.qty) * n0(l.unit_price) }] },
+    terms: [{ k: 'overheads', t: 'money' }, { k: 'delivery_term', t: 'text' }, { k: 'payment_term', t: 'text' },
+            { k: 'warranty_term', t: 'text' }, { k: 'progress', t: 'text' }, { k: 'note', t: 'area', wide: true }],
+    total: d => wfSum(d.lines, l => n0(l.qty) * n0(l.unit_price)) + n0(d.overheads)
+  },
+  CT: {
+    head: [{ k: 'contract_no', t: 'text' }, { k: 'signed_date', t: 'date' }, { k: 'value', t: 'money' },
+           { k: 'warranty_months', t: 'num' }, { k: 'file_link', t: 'text', wide: true }],
+    lines: { cols: [{ k: 'milestone', t: 'select', w: 150, opts: ['Deposit', 'Progress', 'Handover', 'Retention'] },
+                    { k: 'pct', t: 'num', w: 80 }, { k: 'amount', t: 'money', w: 150, calc: (l, d) => Math.round(n0(d.value) * n0(l.pct) / 100) },
+                    { k: 'due', t: 'text', w: 240 }] },
+    terms: [{ k: 'note', t: 'area', wide: true }],
+    total: d => n0(d.value)
+  },
+  AH: {
+    head: [{ k: 'handover_date', t: 'date' }, { k: 'final', t: 'bool' },
+           { k: 'evaluation', t: 'select', opts: ['Excellent', 'Satisfactory', 'Unsatisfactory'] },
+           { k: 'evaluation_detail', t: 'area', wide: true }],
+    lines: { specs: true,
+             cols: [{ k: 'asset_item', t: 'text', w: 230, product: true }, { k: 'origin', t: 'text', w: 100 },
+                    { k: 'warranty_months', t: 'num', w: 80 }, { k: 'qty', t: 'num', w: 60 },
+                    { k: 'unit', t: 'text', w: 60 }, { k: 'location', t: 'text', w: 100 },
+                    { k: 'unit_price', t: 'money', w: 130 },
+                    { k: 'amount', t: 'money', w: 140, calc: l => n0(l.qty) * n0(l.unit_price) }] },
+    terms: [{ k: 'warranty_term', t: 'text' }, { k: 'maintenance_term', t: 'text' }, { k: 'retained_amount', t: 'money' },
+            { k: 'note', t: 'area', wide: true }],
+    evidence: true,
+    total: d => wfSum(d.lines, l => n0(l.qty) * n0(l.unit_price))
+  }
+};
+
+/* The PA gate, from the FFE Assessment Hub:
+     budgeted   → accept when the overrun is under 10% OR under USD 50,000;
+     unbudgeted → only an emergency with risk ≥ 16 and value under USD 50,000. */
+function paGate(d, c) {
+  const usd = 50000 * c.fx;
+  if (c.budgeted) {
+    if (c.budgetValue == null) return { ok: false, text: t('wf.pa.noBudget') };
+    const over = c.prTotal - c.budgetValue;
+    const ok = over <= 0 || over / c.budgetValue < 0.10 || over < usd;
+    return { ok, text: t(ok ? 'wf.pa.passBud' : 'wf.pa.failBud', { pct: fmtPct(over / c.budgetValue), usd: fmtInt(Math.round(over / c.fx)) }) };
+  }
+  const ok = !!d.emergency && n0(c.prAssessment) >= 16 && c.prTotal < usd;
+  return { ok, text: t(ok ? 'wf.pa.passUnb' : 'wf.pa.failUnb', { a: c.prAssessment ?? '—', usd: fmtInt(Math.round(c.prTotal / c.fx)) }) };
+}
+function mcAdjusted(l) {
+  const p = n0(l.ref_price);
+  if (!p) return null;
+  if (l.ref_type !== 'Historical project' || !l.ref_date) return p;
+  const years = (Date.now() - Date.parse(l.ref_date)) / (365.25 * 864e5);
+  return Math.round(p * Math.pow(1.046, Math.max(0, years)));
+}
+
+/* ------------------------------------------------------- QC scoring maths
+   ability / technique = Σ sub-weight × sub-score. Finance = price weight ×
+   (lowest price ÷ this price × 100) + payment weight × payment score — the
+   formula that reproduces the guide's worked example (80 / 96 / 90). Total =
+   Σ criterion weight × criterion score. */
+function qcScore(d) {
+  const vs = (d.vendors || []).filter(v => v.name);
+  const priced = vs.map(v => n0(v.amount)).filter(a => a > 0);
+  const low = priced.length ? Math.min(...priced) : 0;
+  const sub = (list, scores) => list.reduce((s, it) => s + n0(it.w) / 100 * n0((scores || {})[it.label]), 0);
+  for (const v of vs) {
+    v.ability = Math.round(sub(d.sub_ability || [], v.s_ability) * 100) / 100;
+    v.technique = Math.round(sub(d.sub_technique || [], v.s_technique) * 100) / 100;
+    v.price_score = n0(v.amount) > 0 && low ? Math.round(low / n0(v.amount) * 10000) / 100 : 0;
+    v.finance = Math.round((n0(d.w_price) / 100 * v.price_score + n0(d.w_pay) / 100 * n0(v.pay_score)) * 100) / 100;
+    v.total = Math.round((n0(d.w_ability) / 100 * v.ability + n0(d.w_technique) / 100 * v.technique
+                          + n0(d.w_finance) / 100 * v.finance) * 100) / 100;
+  }
+  const best = vs.slice().sort((a, b) => b.total - a.total)[0];
+  const problems = [];
+  if (off100(n0(d.w_ability) + n0(d.w_technique) + n0(d.w_finance))) problems.push(t('wf.qc.w100'));
+  if ([d.w_ability, d.w_technique, d.w_finance].some(w => !(n0(w) > 0))) problems.push(t('wf.qc.w0'));
+  for (const [k, list] of [['ability', d.sub_ability], ['technique', d.sub_technique]])
+    if (off100(wfSum(list, 'w'))) problems.push(t('wf.qc.sub100', { c: t('wf.qc.' + k) }));
+  if (off100(n0(d.w_price) + n0(d.w_pay))) problems.push(t('wf.qc.fin100'));
+  if (vs.length < 3 && n0(d.total_vendors) < 3) problems.push(t('wf.qc.few'));
+  if (!d.chosen_vendor) problems.push(t('wf.qc.noChoice'));
+  else if (best && best.name !== d.chosen_vendor) problems.push(t('wf.qc.notBest', { best: best.name }));
+  return { vendors: vs, best, problems };
+}
+
+/* ------------------------------------------------------------- context */
+// What a document needs from the rest of the project: the budget value, the
+// FX rate of the budget year, the PR total, the PO lines an AH starts from.
+function wfCtx() {
+  const p = WF.project || {}, byType = {};
+  for (const d of WF.docs) if (!['cancelled', 'rejected'].includes(d.status)) (byType[d.doc_type] = byType[d.doc_type] || []).push(d);
+  const pr = (byType.PR || [])[0];
+  const l = WF.line;
+  const share = p.share_pct != null ? Number(p.share_pct) : 1;
+  return {
+    budgeted: !!p.budgeted,
+    budgetValue: l && l.estimated_value != null ? Math.round(Number(l.estimated_value) * (share || 1)) : null,
+    fx: Number((WF.year || {}).fx_rate) || 26000,
+    prTotal: pr ? n0(pr.total_value) : n0(p.estimated_value),
+    prAssessment: pr && pr.data ? (n0(pr.data.possibility) * n0(pr.data.impact) || null) : (p.assessment != null ? Number(p.assessment) : null),
+    byType
+  };
+}
+
+/* Client mirror of pm_can_prepare / the step check — only to decide which
+   buttons to show. The database decides for real. */
+function wfCovers(scope, dept) {
+  if (!scope) return false;
+  const root = PM.orgMap.get(scope);
+  if (root && !root.parent_code) return true;
+  let o = PM.orgMap.get(dept), g = 0;
+  while (o && g++ < 12) { if (o.code === scope) return true; o = PM.orgMap.get(o.parent_code); }
+  return false;
+}
+const wfHasRoleFor = (role, dept) => !!(ME && ME.roles.some(r => r.role === role && wfCovers(r.scope, dept)));
+const wfChain = (entity, type) => WF.chains.filter(c => c.entity === entity && c.doc_type === type).sort((a, b) => a.step - b.step);
+function wfCanPrepare(type, dept) {
+  const prep = wfChain(pmEntity(dept), type).find(c => c.step === 0);
+  return can('project', 'create') && !!prep && wfHasRoleFor(prep.role_code, dept);
+}
+function wfCanAct(doc, step, dept) {
+  return doc.status === 'in_review' && !!step && can('approval', 'approve')
+    && doc.created_by !== (ME && ME.id) && wfHasRoleFor(step.role_code, dept);
+}
+const wfRoleName = code => { const r = WF.roles.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
+const wfTypeName = code => { const r = WF.types.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
+const wfChip = s => el('span', { className: 'st wf-' + s, textContent: t('wf.st.' + s) });
+
+async function wfLookups(force) {
+  if (WF.types.length && !force) return;
+  await pmLookups();
+  const [types, chains, roles] = await Promise.all([
+    SB.select('pm_doc_type', 'select=*&order=seq'),
+    SB.select('pm_chain', 'select=*'),
+    SB.select('app_role', 'select=code,name_en,name_vi,entity,sort&order=sort')
+  ]);
+  Object.assign(WF, { types, chains, roles });
+}
+
+/* ------------------------------------------ the documents of one project */
+async function wfProjectPanel(p, host) {
+  await wfLookups();
+  const docs = await SB.select('pm_doc', `select=id,doc_type,doc_no,status,current_step,version,total_value,created_by,created_email,submitted_at,decided_at,data&project_code=eq.${encodeURIComponent(p.code)}&order=created_at`);
+  const card = el('div', { style: 'margin-top:14px' });
+  card.append(el('h2', { textContent: t('wf.docs') }));
+  const strip = el('div', { className: 'wfstrip' });
+  const approved = type => docs.some(d => d.doc_type === type && d.status === 'approved');
+  const replacement = /replace/i.test(p.investment_type || '');
+  for (const type of WF_ORDER) {
+    const tt = WF.types.find(x => x.code === type) || {};
+    const mine = docs.filter(d => d.doc_type === type && d.status !== 'cancelled');
+    const box = el('div', { className: 'wfbox' });
+    box.append(el('div', { className: 'wft' }, [el('b', { textContent: type }), document.createTextNode(' ' + wfTypeName(type))]));
+    if (!tt.required && !(type === 'RR' && replacement)) box.append(el('div', { className: 'wfopt', textContent: t('wf.optional') }));
+    for (const d of mine) {
+      const a = el('a', { href: '#', className: 'wfdoc' }, [el('code', { textContent: d.doc_no }), wfChip(d.status)]);
+      a.onclick = ev => { ev.preventDefault(); wfOpen(d.id); };
+      box.append(a);
+    }
+    // "Create" only when the earlier required steps are approved — the same
+    // rule pm_doc_create enforces.
+    const seq = tt.seq || 0;
+    const blockers = WF.types.filter(x => x.seq < seq && (x.required || (x.code === 'RR' && replacement)) && !approved(x.code));
+    // One live document per type; AH repeats (one open at a time) until the final one.
+    const live = mine.filter(d => d.status !== 'rejected');
+    const finalAH = docs.some(d => d.doc_type === 'AH' && d.status === 'approved' && d.data && d.data.final);
+    const room = tt.repeatable ? !finalAH && !live.some(d => ['draft', 'in_review', 'returned'].includes(d.status)) : !live.length;
+    // An optional step (RR, CT) cannot be slotted in once a later one exists.
+    const later = docs.some(d => !['rejected', 'cancelled'].includes(d.status)
+      && ((WF.types.find(x => x.code === d.doc_type) || {}).seq || 0) > seq);
+    if (!blockers.length && room && !later && wfCanPrepare(type, p.dept_code)) {
+      const b = el('button', { className: 'btn tiny pri', textContent: t('wf.create') });
+      b.onclick = () => wfCreate(p, type, docs);
+      box.append(b);
+    }
+    strip.append(box);
+  }
+  card.append(strip);
+  host.append(card);
+}
+
+/* What a new document starts with, taken from the project and the documents
+   before it — so nothing that is already known is typed twice. */
+// The project's line in the FINAL budget round of its year ("Master Data").
+async function wfFinalLine(p) {
+  const [fin] = await SB.select('pm_budget_round', `select=id&is_final=eq.true&year=eq.${Number(p.year) || 0}`);
+  if (!fin) return null;
+  return (await SB.select('pm_budget_line', `select=*&round_id=eq.${fin.id}&project_code=eq.${encodeURIComponent(p.main_code)}&limit=1`))[0] || null;
+}
+
+async function wfPrefill(p, type, docs) {
+  const get = tp => docs.find(d => d.doc_type === tp && d.status === 'approved');
+  const line = (await wfFinalLine(p)) || {};
+  const prLines = (get('PR')?.data?.lines) || [];
+  if (type === 'PR') return {
+    project_type: 'Non-consultancy', investment_type: p.investment_type || line.investment_type || 'Replacement',
+    budget: p.budgeted ? 'Budgeted' : 'Unbudgeted', share_pct: p.share_pct != null ? Number(p.share_pct) : 1,
+    possibility: p.possibility ?? line.possibility ?? null, impact: p.impact ?? line.impact ?? null,
+    reason: p.reason || line.reason || '', cost_benchmark: line.reference || 'Quotation',
+    supplier: p.proposed_supplier || line.supplier || '',
+    lines: [{ asset_item: p.asset_item || line.asset_item || '', rationale: line.rationale || p.rationale || '',
+              tech_standard: line.tech_standard || p.tech_standard || '', location: p.location || line.location || '',
+              qty: line.quantity ?? 1, unit_price: line.unit_price ?? p.estimated_value ?? null }]
+  };
+  if (type === 'RR') return { replacement_level: 'Full replacement', after_replacement: 'Liquidation', lines: [], evidence: [] };
+  if (type === 'PA') return { emergency: false, recommendation: '', comments: '', evidence: [] };
+  if (type === 'QC') {
+    const pt = /x[aâ]y|constr/i.test(p.project_type || '') ? 'construction' : /h[oỗ]n|mix/i.test(p.project_type || '') ? 'mixed' : 'equipment';
+    return { date: new Date().toISOString().slice(0, 10), project_type: pt, procurement_type: p.procurement_type || 'Competitive Quotation',
+             w_ability: 20, w_technique: 40, w_finance: 40, w_price: 80, w_pay: 20,
+             sub_ability: qcSubs(QC_ABILITY), sub_technique: qcSubs(QC_TECH[pt]),
+             total_vendors: 3, vendors: [{ name: '' }, { name: '' }, { name: '' }], chosen_vendor: '', comments: '' };
+  }
+  if (type === 'MC') return { lines: prLines.map(l => ({ item: l.asset_item, qty: l.qty, ref_type: 'Market quote' })), conclusion: '', evidence: [] };
+  if (type === 'PO') return { order_date: new Date().toISOString().slice(0, 10), supplier: get('QC')?.data?.chosen_vendor || '',
+    lines: prLines.map(l => ({ asset_item: l.asset_item, qty: l.qty, unit: 'pcs', unit_price: l.unit_price, location: l.location })) };
+  if (type === 'CT') { const po = get('PO'); return { value: po ? n0(po.total_value) : null, lines: [{ milestone: 'Deposit', pct: 50 }, { milestone: 'Handover', pct: 50 }] }; }
+  if (type === 'AH') { const po = get('PO'); return { handover_date: new Date().toISOString().slice(0, 10), final: true, evaluation: 'Satisfactory',
+    lines: ((po && po.data && po.data.lines) || []).map(l => Object.assign({}, l)), evidence: [] }; }
+  return {};
+}
+
+async function wfCreate(p, type, docs) {
+  try {
+    const data = await wfPrefill(p, type, docs);
+    const spec = WF_SPECS[type];
+    Object.assign(WF, { project: p, docs, line: null });
+    data.total = type === 'QC' ? null : (spec && spec.total ? spec.total(data, wfCtx()) : null);
+    const id = await SB.rpc('pm_doc_create', { p_project: p.code, p_type: type, p_data: data });
+    await wfOpen(id);
+  } catch (e) { msg('#ppMsg', 'err', e.message); }
+}
+
+/* ------------------------------------------------------------ doc screen */
+async function wfOpen(id) {
+  WF.openId = id;
+  showView('doc');
+}
+
+async function wfLoad() {
+  const out = $('#wdMsg');
+  if (!WF.openId) { msg(out, 'info', t('wf.noDoc')); $('#wdBody').innerHTML = ''; return; }
+  msg(out, 'info', t('table.loading'));
+  try {
+    await wfLookups();
+    const [doc] = await SB.select('pm_doc', `select=*&id=eq.${WF.openId}`);
+    if (!doc) { msg(out, 'err', t('wf.gone')); return; }
+    const [project] = await SB.select('pm_project', `select=*&code=eq.${encodeURIComponent(doc.project_code)}`);
+    const [steps, events, docs, years] = await Promise.all([
+      SB.select('pm_doc_step', `select=*&doc_id=eq.${doc.id}&order=step`),
+      SB.select('pm_doc_event', `select=*&doc_id=eq.${doc.id}&order=at`),
+      SB.select('pm_doc', `select=id,doc_type,doc_no,status,total_value,data&project_code=eq.${encodeURIComponent(doc.project_code)}`),
+      SB.select('pm_budget_year', `select=*&year=eq.${project ? project.year : 0}`)
+    ]);
+    const line = project ? await wfFinalLine(project) : null;
+    Object.assign(WF, { doc, project, steps, events, docs, year: years[0] || null, line: line || null, dirty: false });
+    WF.data = JSON.parse(JSON.stringify(doc.data || {}));
+    msg(out, '', '');
+    wfRender();
+    // Who the document is waiting for, by name.
+    if (doc.status === 'in_review') {
+      try {
+        const who = await SB.rpc('pm_next_actors', { p_id: doc.id });
+        const n = $('#wdWho');
+        if (n) n.textContent = who.length ? who.map(w => w.full_name || w.email).join(', ') : t('wf.nobody');
+      } catch {}
+    }
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+const wfEditable = () => WF.doc && ['draft', 'returned'].includes(WF.doc.status)
+  && (WF.doc.created_by === (ME && ME.id) || wfCanPrepare(WF.doc.doc_type, WF.project.dept_code));
+
+function wfRender() {
+  const box = $('#wdBody');
+  box.innerHTML = '';
+  const d = WF.doc, p = WF.project || {};
+  const step = WF.steps.find(s => s.step === d.current_step);
+  const edit = wfEditable();
+  $('#pageTitle').textContent = `${d.doc_no} — ${wfTypeName(d.doc_type)}`;
+
+  // Header + actions.
+  const head = el('div', { className: 'card' });
+  const top = el('div', { className: 'row', style: 'align-items:center;flex-wrap:wrap;gap:10px' });
+  const back = el('a', { href: '#', textContent: '← ' + p.code + ' — ' + (p.name || '') });
+  back.onclick = ev => { ev.preventDefault(); PM.prj.open = p.code; showView('projects'); };
+  top.append(el('b', { style: 'font-size:15px', textContent: d.doc_no }), wfChip(d.status),
+             el('span', { style: 'color:var(--dim)', textContent: t('wf.version', { n: d.version }) }), back);
+  head.append(top);
+  const info = el('div', { style: 'margin-top:8px;font-size:12.5px;color:var(--dim)' });
+  info.append(document.createTextNode(t('wf.madeBy', { who: d.created_email || '—', at: fmtDate((d.created_at || '').slice(0, 10)) })));
+  if (d.status === 'in_review' && step) {
+    info.append(el('br'), document.createTextNode(t('wf.waiting', { step: step.step, role: wfRoleName(step.role_code) }) + ' '),
+                el('b', { id: 'wdWho', textContent: '…' }));
+  }
+  head.append(info);
+
+  const acts = el('div', { className: 'row', style: 'margin-top:10px;align-items:flex-end;flex-wrap:wrap' });
+  const note = el('textarea', { id: 'wdNote', placeholder: t('wf.notePh'), style: 'min-height:38px;width:340px' });
+  const btn = (k, cls, fn) => { const b = el('button', { className: 'btn ' + (cls || ''), textContent: t(k) }); b.onclick = fn; acts.append(b); return b; };
+  if (edit) {
+    btn('wf.save', '', () => wfSave(false));
+    btn('wf.submit', 'pri', () => wfSubmit());
+  }
+  if (wfCanAct(d, step, p.dept_code)) {
+    acts.prepend(el('div', { className: 'fld' }, [el('label', { textContent: t('wf.note') }), note]));
+    btn('wf.approve', 'pri', () => wfAct('approve'));
+    btn('wf.return', '', () => wfAct('return'));
+    btn('wf.reject', 'danger', () => wfAct('reject'));
+  }
+  if (!['approved', 'cancelled'].includes(d.status)
+      && (can('project', 'admin') || (d.created_by === (ME && ME.id) && ['draft', 'returned'].includes(d.status))))
+    btn('wf.cancel', 'danger', () => wfCancel());
+  btn('wf.print', '', () => wfPrint());
+  if (d.doc_type === 'AH' && d.status === 'approved') btn('wf.toIntake', '', () => wfToIntake());
+  head.append(acts);
+  box.append(head);
+
+  // Chain of this submission.
+  const chain = el('div', { className: 'card' });
+  chain.append(el('h2', { textContent: t('wf.chain') }));
+  const planned = WF.steps.length ? WF.steps : wfChain(pmEntity(p.dept_code), d.doc_type).filter(c => c.step > 0)
+    .map(c => ({ step: c.step, role_code: c.role_code, status: 'planned' }));
+  const ol = el('div', { className: 'wfsteps' });
+  const prep = wfChain(pmEntity(p.dept_code), d.doc_type).find(c => c.step === 0);
+  ol.append(el('div', { className: 'wfstep done' }, [el('span', { className: 'n', textContent: '0' }),
+    el('div', {}, [el('b', { textContent: prep ? wfRoleName(prep.role_code) : '—' }), el('small', { textContent: t('wf.preparer') + ' · ' + (d.created_email || '') })])]));
+  for (const s of planned) {
+    const cur = d.status === 'in_review' && s.step === d.current_step;
+    const cls = s.status === 'approved' ? 'done' : ['returned', 'rejected'].includes(s.status) ? 'bad' : cur ? 'cur' : '';
+    const lines = [el('b', { textContent: wfRoleName(s.role_code) })];
+    if (s.acted_email) lines.push(el('small', { textContent: `${t('wf.st.' + s.status)} · ${s.acted_email} · ${fmtDate((s.acted_at || '').slice(0, 10))}` }));
+    else lines.push(el('small', { textContent: cur ? t('wf.nowHere') : s.status === 'planned' ? t('wf.planned') : t('wf.st.' + s.status) }));
+    if (s.comment) lines.push(el('small', { className: 'cm', textContent: '“' + s.comment + '”' }));
+    ol.append(el('div', { className: 'wfstep ' + cls }, [el('span', { className: 'n', textContent: String(s.step) }), el('div', {}, lines)]));
+  }
+  chain.append(ol);
+  box.append(chain);
+
+  // The form.
+  const form = el('div', { className: 'card' });
+  form.append(el('h2', { textContent: t('wf.content') }));
+  form.append(wfProjectHeader(p));
+  if (d.doc_type === 'QC') form.append(qcEditor(edit));
+  else form.append(wfEditor(WF_SPECS[d.doc_type], edit));
+  box.append(form);
+
+  // History.
+  const hist = el('details', { className: 'card' });
+  hist.append(el('summary', { textContent: t('wf.history', { n: WF.events.length }) }));
+  const tb = el('table');
+  tb.append(el('tr', {}, ['wf.h.at', 'wf.h.who', 'wf.h.action', 'wf.h.step', 'wf.h.note'].map(k => el('th', { textContent: t(k) }))));
+  for (const e of WF.events) tb.append(el('tr', {}, [
+    el('td', { textContent: new Date(e.at).toLocaleString(pmLoc(), { hour12: false }) }),
+    el('td', { textContent: e.actor_email || '' }), el('td', { textContent: t('wf.a.' + e.action) }),
+    el('td', { textContent: e.step != null ? String(e.step) : '' }), el('td', { style: 'white-space:normal', textContent: e.comment || '' })]));
+  hist.append(el('div', { className: 'wrap' }, tb));
+  box.append(hist);
+}
+
+function wfProjectHeader(p) {
+  const dl = el('dl', { className: 'wfhead' });
+  const put = (k, v) => { if (v == null || v === '') return; dl.append(el('dt', { textContent: t(k) }), el('dd', { textContent: String(v) })); };
+  put('pm.col.code', p.code); put('pm.col.name', p.name); put('pm.col.dept', p.dept_code);
+  put('pm.col.entity', pmEntity(p.dept_code)); put('pm.f.year', p.year);
+  put('pm.col.budgeted', p.budgeted ? t('pm.f.budgetedOnly') : t('pm.f.unbudgetedOnly'));
+  if (WF.line && WF.line.estimated_value != null) put('wf.budgetLine', fmtNum(Math.round(WF.line.estimated_value)));
+  return dl;
+}
+
+/* ----------------------------------------------------- generic editor */
+// Stored values stay as the dossier template writes them; a few get a label.
+const wfOpt = o => { const k = 'wf.o.' + o, s = t(k); return s === k ? o : s; };
+function wfInput(f, obj, edit, onChange, ctxRow) {
+  const v = f.calc ? f.calc(...ctxRow) : obj[f.k];
+  if (!edit || f.ro || f.calc) {
+    const shown = v == null || v === '' ? '' : f.t === 'money' ? fmtNum(Math.round(Number(v)))
+      : f.t === 'bool' ? (v ? '✔' : '—') : f.t === 'date' ? fmtDate(v) : f.t === 'pct' ? fmtPct(Number(v), 0) : f.t === 'select' ? wfOpt(v) : String(v);
+    return el('span', { className: 'wfro' + (f.t === 'money' || f.t === 'num' ? ' num' : ''), textContent: shown });
+  }
+  let i;
+  if (f.t === 'select') {
+    i = el('select');
+    i.append(el('option', { value: '', textContent: '—' }));
+    for (const o of f.opts) i.append(el('option', { value: o, textContent: wfOpt(o) }));
+    i.value = v ?? '';
+  } else if (f.t === 'bool') {
+    i = el('input', { type: 'checkbox', checked: !!v });
+  } else if (f.t === 'area') {
+    i = el('textarea', { value: v ?? '', style: 'min-height:42px' });
+  } else {
+    i = el('input', { value: v == null ? '' : f.t === 'money' ? fmtNum(v) : f.t === 'pct' ? String(Math.round(Number(v) * 100)) : v,
+                      type: f.t === 'date' ? 'date' : 'text', inputMode: ['money', 'num', 'int15', 'pct'].includes(f.t) ? 'decimal' : 'text' });
+    if (f.product) i.setAttribute('list', 'prodList');
+  }
+  i.onchange = () => {
+    let nv = f.t === 'bool' ? i.checked : i.value;
+    if (['money', 'num'].includes(f.t)) nv = xlNum(nv);
+    if (f.t === 'int15') nv = xlNum(nv) == null ? null : Math.max(1, Math.min(5, Math.round(xlNum(nv))));
+    if (f.t === 'pct') nv = xlNum(nv) == null ? null : xlNum(nv) / 100;
+    obj[f.k] = nv === '' ? null : nv;
+    onChange();
+  };
+  return i;
+}
+
+function wfEditor(spec, edit) {
+  const d = WF.data, ctx = wfCtx();
+  const wrap = el('div');
+  const rerender = () => { WF.dirty = true; d.total = spec.total ? spec.total(d, wfCtx()) : d.total; const n = wfEditor(spec, edit); wrap.replaceWith(n); };
+  const grid = (fields) => {
+    const g = el('div', { className: 'wfgrid' });
+    for (const f of fields) g.append(el('div', { className: 'fld' + (f.wide ? ' wide' : '') }, [
+      el('label', { textContent: t('wf.f.' + f.k) }), wfInput(f, d, edit, rerender, [d, ctx])]));
+    return g;
+  };
+  if (spec.head) wrap.append(grid(spec.head));
+  if (spec.lines) {
+    d.lines = d.lines || [];
+    const tb = el('table', { className: 'wflines' });
+    const cols = spec.lines.cols;
+    tb.append(el('tr', {}, [el('th', { className: 'num idx', textContent: '#' }),
+      ...cols.map(c => el('th', { className: ['money', 'num'].includes(c.t) ? 'num' : '', textContent: t('wf.f.' + c.k) })),
+      ...(spec.lines.specs ? [el('th', { textContent: t('wf.specs') })] : []), el('th')]));
+    d.lines.forEach((l, i) => {
+      const tr = el('tr');
+      tr.append(el('td', { className: 'num idx', textContent: String(i + 1) }));
+      for (const c of cols) {
+        const td = el('td', { className: ['money', 'num'].includes(c.t) ? 'num' : '' });
+        const inp = wfInput(c, l, edit, rerender, [l, d, ctx]);
+        if (inp.style && c.w && inp.tagName !== 'SPAN') inp.style.width = c.w + 'px';
+        td.append(inp);
+        if (spec.lines.assetLookup && c.k === 'asset_code' && edit) {
+          const b = el('button', { className: 'btn tiny', textContent: '↵', title: t('wf.lookup') });
+          b.onclick = () => wfAssetLookup(l, rerender);
+          td.append(b);
+        }
+        tr.append(td);
+      }
+      if (spec.lines.specs) {
+        const det = el('details', { className: 'wfspec' });
+        det.append(el('summary', { textContent: t('wf.specN', { n: SPEC_FIELDS.filter(k => (l.spec || {})[k]).length }) }));
+        const g = el('div', { className: 'wfgrid' });
+        l.spec = l.spec || {};
+        for (const k of SPEC_FIELDS) {
+          const f = { k, t: 'text' };
+          g.append(el('div', { className: 'fld' }, [el('label', { textContent: t('spec.' + k) }),
+            wfInput(f, l.spec, edit, () => { WF.dirty = true; }, [l.spec])]));
+        }
+        det.append(g);
+        tr.append(el('td', {}, det));
+      }
+      const x = el('td');
+      if (edit) { const del = el('button', { className: 'xbtn', textContent: '×' }); del.onclick = () => { d.lines.splice(i, 1); rerender(); }; x.append(del); }
+      tr.append(x);
+      tb.append(tr);
+    });
+    const totCol = cols.findIndex(c => c.k === 'amount' || c.k === 'original_value');
+    if (totCol >= 0 && d.lines.length) {
+      const tr = el('tr', { className: 'tot' });
+      tr.append(el('td', { colSpan: totCol + 1, textContent: t('pm.total', { n: d.lines.length }) }),
+        el('td', { className: 'num', textContent: fmtNum(Math.round(wfSum(d.lines, l => { const c = cols[totCol]; return c.calc ? c.calc(l, d, ctx) : l[c.k]; }))) }),
+        el('td', { colSpan: cols.length - totCol + (spec.lines.specs ? 1 : 0) }));
+      tb.append(tr);
+    }
+    wrap.append(el('div', { className: 'wrap', style: 'margin-top:10px' }, tb));
+    if (edit) { const add = el('button', { className: 'btn', textContent: t('wf.addLine'), style: 'margin-top:6px' }); add.onclick = () => { d.lines.push({}); rerender(); }; wrap.append(add); }
+  }
+  if (spec.terms) wrap.append(grid(spec.terms));
+  wrap.append(wfEvidence(edit, rerender));
+  if (spec.total) wrap.append(el('div', { className: 'wftotal', textContent: t('wf.total', { v: fmtNum(Math.round(n0(spec.total(d, wfCtx())))) }) }));
+  if (WF.doc.doc_type === 'PA') {
+    const g = paGate(d, wfCtx());
+    wrap.append(el('div', { className: 'msg ' + (g.ok ? 'ok' : 'warn'), textContent: g.text }));
+  }
+  return wrap;
+}
+
+// OneDrive / SharePoint links, per the decision to keep files out of Supabase for now.
+function wfEvidence(edit, rerender) {
+  const d = WF.data;
+  d.evidence = d.evidence || [];
+  const box = el('div', { className: 'wfev' });
+  box.append(el('label', { textContent: t('wf.evidence') }));
+  if (!d.evidence.length && !edit) box.append(el('div', { style: 'color:var(--dim)', textContent: '—' }));
+  d.evidence.forEach((e, i) => {
+    const row = el('div', { className: 'row', style: 'align-items:center;margin:3px 0' });
+    const url = wfSafeUrl(e.url);
+    if (edit) {
+      const lab = el('input', { value: e.label || '', placeholder: t('wf.evLabel'), style: 'width:200px' });
+      const u = el('input', { value: e.url || '', placeholder: 'https://…sharepoint.com/…', style: 'width:420px', spellcheck: false });
+      lab.onchange = () => { e.label = lab.value.trim(); WF.dirty = true; };
+      u.onchange = () => { e.url = u.value.trim(); WF.dirty = true; rerender(); };
+      const x = el('button', { className: 'xbtn', textContent: '×' }); x.onclick = () => { d.evidence.splice(i, 1); rerender(); };
+      row.append(lab, u, x);
+      if (e.url && !url) row.append(el('span', { className: 'flag', textContent: '⚠ ' + t('wf.badUrl') }));
+    } else if (url) {
+      row.append(el('a', { href: url, target: '_blank', rel: 'noopener noreferrer', textContent: e.label || url }));
+    } else row.append(el('span', { textContent: e.label || e.url || '' }));
+    box.append(row);
+  });
+  if (edit) { const add = el('button', { className: 'btn tiny', textContent: t('wf.addLink') }); add.onclick = () => { d.evidence.push({}); rerender(); }; box.append(add); }
+  return box;
+}
+
+async function wfAssetLookup(l, rerender) {
+  const code = String(l.asset_code || '').trim();
+  if (!code) return;
+  try {
+    const [a] = await SB.select('am_asset', `select=asset_code,name_vi,name_en,unit_price,qty,unit_code,purchase_date&asset_code=eq.${encodeURIComponent(code)}`);
+    if (!a) return msg('#wdMsg', 'warn', t('wf.assetNone', { code }));
+    Object.assign(l, { asset_item: [a.name_vi, a.name_en].filter(Boolean).join(' / '), original_value: a.unit_price,
+                       qty: l.qty || 1, unit: a.unit_code });
+    msg('#wdMsg', '', '');
+    rerender();
+  } catch (e) { msg('#wdMsg', 'err', e.message); }
+}
+
+/* --------------------------------------------------------- QC editor */
+function qcEditor(edit) {
+  const d = WF.data;
+  const wrap = el('div');
+  const rerender = () => { WF.dirty = true; const n = qcEditor(edit); wrap.replaceWith(n); };
+  const numIn = (obj, k, w = 70) => {
+    if (!edit) return el('span', { className: 'wfro num', textContent: obj[k] == null ? '' : String(obj[k]) });
+    const i = el('input', { value: obj[k] ?? '', style: `width:${w}px`, inputMode: 'decimal' });
+    i.onchange = () => { obj[k] = xlNum(i.value); rerender(); };
+    return i;
+  };
+  const top = el('div', { className: 'wfgrid' });
+  const typeSel = { k: 'project_type', t: 'select', opts: ['equipment', 'construction', 'mixed'] };
+  top.append(
+    el('div', { className: 'fld' }, [el('label', { textContent: t('wf.f.date') }), wfInput({ k: 'date', t: 'date' }, d, edit, rerender, [d])]),
+    el('div', { className: 'fld' }, [el('label', { textContent: t('wf.f.project_type') }), wfInput(typeSel, d, edit, () => {
+      // A new project type brings its own technical sub-criteria.
+      d.sub_technique = qcSubs(QC_TECH[d.project_type] || QC_TECH.equipment); rerender(); }, [d])]),
+    el('div', { className: 'fld' }, [el('label', { textContent: t('wf.f.procurement_type') }),
+      wfInput({ k: 'procurement_type', t: 'select', opts: ['Direct Appointment', 'Competitive Quotation', 'Public Tender'] }, d, edit, rerender, [d])]),
+    el('div', { className: 'fld' }, [el('label', { textContent: t('wf.f.total_vendors') }), numIn(d, 'total_vendors')]));
+  wrap.append(top);
+
+  const r = qcScore(d);
+  const vs = d.vendors = d.vendors && d.vendors.length ? d.vendors : [{ name: '' }, { name: '' }, { name: '' }];
+  const tb = el('table', { className: 'wflines qcm' });
+  const head = el('tr', {}, [el('th', { textContent: t('wf.qc.criteria') }), el('th', { className: 'num', textContent: t('wf.qc.weight') })]);
+  vs.forEach((v, i) => {
+    const th = el('th');
+    if (edit) {
+      const nm = el('input', { value: v.name || '', placeholder: t('wf.qc.vendorN', { n: i + 1 }), style: 'width:150px' });
+      nm.onchange = () => { v.name = nm.value.trim(); rerender(); };
+      th.append(nm);
+      if (vs.length > 1) { const x = el('button', { className: 'xbtn', textContent: '×' }); x.onclick = () => { vs.splice(i, 1); rerender(); }; th.append(x); }
+    } else th.textContent = v.name || '';
+    head.append(th);
+  });
+  if (edit && vs.length < 3) { const add = el('button', { className: 'btn tiny', textContent: '+' }); add.onclick = () => { vs.push({ name: '' }); rerender(); }; head.append(el('th', {}, add)); }
+  tb.append(head);
+  const group = (key, wKey, subs, scoreKey) => {
+    const g = el('tr', { className: 'grp' }, [el('td', { textContent: t('wf.qc.' + key) }), el('td', { className: 'num' }, numIn(d, wKey, 60)),
+      ...vs.map(v => el('td', { className: 'num', textContent: v.name && v[key] != null ? String(v[key]) : '' }))]);
+    tb.append(g);
+    (subs || []).forEach((s, si) => {
+      const tr = el('tr');
+      const lab = el('td', { className: 'sub' });
+      if (edit) { const i = el('input', { value: s.label, style: 'width:200px' }); i.onchange = () => { const old = s.label; s.label = i.value.trim();
+        for (const v of vs) if (v[scoreKey] && old in v[scoreKey]) { v[scoreKey][s.label] = v[scoreKey][old]; delete v[scoreKey][old]; } rerender(); }; lab.append(i);
+        const x = el('button', { className: 'xbtn', textContent: '×' }); x.onclick = () => { subs.splice(si, 1); rerender(); }; lab.append(x); }
+      else lab.textContent = s.label;
+      tr.append(lab, el('td', { className: 'num' }, numIn(s, 'w', 60)));
+      for (const v of vs) { v[scoreKey] = v[scoreKey] || {}; tr.append(el('td', { className: 'num' }, numIn(v[scoreKey], s.label, 60))); }
+      tb.append(tr);
+    });
+    if (edit) { const add = el('button', { className: 'btn tiny', textContent: t('wf.qc.addSub') }); add.onclick = () => { subs.push({ label: '', w: 0 }); rerender(); };
+      tb.append(el('tr', {}, el('td', { colSpan: 2 + vs.length }, add))); }
+  };
+  d.sub_ability = d.sub_ability || qcSubs(QC_ABILITY);
+  d.sub_technique = d.sub_technique || qcSubs(QC_TECH[d.project_type] || QC_TECH.equipment);
+  group('ability', 'w_ability', d.sub_ability, 's_ability');
+  group('technique', 'w_technique', d.sub_technique, 's_technique');
+  // Finance: price (auto-scored) and payment term (scored by hand).
+  tb.append(el('tr', { className: 'grp' }, [el('td', { textContent: t('wf.qc.finance') }), el('td', { className: 'num' }, numIn(d, 'w_finance', 60)),
+    ...vs.map(v => el('td', { className: 'num', textContent: v.name && v.finance != null ? String(v.finance) : '' }))]));
+  const finRow = (label, wKey, cell) => { const tr = el('tr', {}, [el('td', { className: 'sub', textContent: t(label) }), el('td', { className: 'num' }, wKey ? numIn(d, wKey, 60) : '')]);
+    for (const v of vs) tr.append(el('td', { className: 'num' }, cell(v))); tb.append(tr); };
+  finRow('wf.qc.amount', 'w_price', v => { if (!edit) return el('span', { textContent: v.amount != null ? fmtNum(v.amount) : '' });
+    const i = el('input', { value: v.amount != null ? fmtNum(v.amount) : '', style: 'width:130px', inputMode: 'numeric' }); i.onchange = () => { v.amount = xlNum(i.value); rerender(); }; return i; });
+  finRow('wf.qc.priceScore', null, v => el('span', { textContent: v.name && v.price_score ? String(v.price_score) : '' }));
+  finRow('wf.qc.payTerm', null, v => { if (!edit) return el('span', { textContent: v.pay_term || '' });
+    const i = el('input', { value: v.pay_term || '', style: 'width:150px', placeholder: '50% deposit – 50% handover' }); i.onchange = () => { v.pay_term = i.value; WF.dirty = true; }; return i; });
+  finRow('wf.qc.payScore', 'w_pay', v => numIn(v, 'pay_score', 60));
+  tb.append(el('tr', { className: 'tot' }, [el('td', { textContent: t('wf.qc.totalScore') }), el('td', { className: 'num', textContent: '100' }),
+    ...vs.map(v => el('td', { className: 'num', textContent: v.name && v.total != null ? String(v.total) : '' }))]));
+  wrap.append(el('div', { className: 'wrap', style: 'margin-top:10px' }, tb));
+
+  const bottom = el('div', { className: 'wfgrid' });
+  const chosen = { k: 'chosen_vendor', t: 'select', opts: vs.map(v => v.name).filter(Boolean) };
+  bottom.append(el('div', { className: 'fld' }, [el('label', { textContent: t('wf.f.chosen_vendor') }), wfInput(chosen, d, edit, rerender, [d])]),
+                el('div', { className: 'fld wide' }, [el('label', { textContent: t('wf.f.comments') }), wfInput({ k: 'comments', t: 'area' }, d, edit, () => { WF.dirty = true; }, [d])]));
+  wrap.append(bottom);
+  wrap.append(wfEvidence(edit, rerender));
+  if (r.problems.length) wrap.append(el('div', { className: 'msg warn', textContent: r.problems.join('\n') }));
+  else if (r.best) wrap.append(el('div', { className: 'msg ok', textContent: t('wf.qc.ok', { v: d.chosen_vendor, s: r.best.total }) }));
+  const ch = vs.find(v => v.name === d.chosen_vendor);
+  d.total = ch ? n0(ch.amount) : null;
+  return wrap;
+}
+
+/* ------------------------------------------------------------ actions */
+function wfCollect() {
+  const d = WF.data;
+  if (WF.doc.doc_type === 'QC') {
+    const r = qcScore(d);
+    d.vendors_scored = r.vendors.map(v => ({ name: v.name, amount: v.amount, ability: v.ability, technique: v.technique,
+                                             finance: v.finance, total: v.total }));
+    // The approval side effect writes these into pm_vendor_score.
+    d.vendors = d.vendors.map(v => Object.assign({}, v));
+    const ch = d.vendors.find(v => v.name === d.chosen_vendor);
+    d.total = ch ? n0(ch.amount) : null;
+  } else {
+    const spec = WF_SPECS[WF.doc.doc_type];
+    const ctx = wfCtx();
+    // Freeze computed fields into the saved document, so the printed form and
+    // the audit log show the numbers as they were when it was submitted.
+    for (const f of [...(spec.head || []), ...(spec.terms || [])]) if (f.calc) d[f.k] = f.calc(d, ctx);
+    for (const l of d.lines || []) for (const c of (spec.lines ? spec.lines.cols : [])) if (c.calc) l[c.k] = c.calc(l, d, ctx);
+    d.total = spec.total ? spec.total(d, ctx) : null;
+    if (WF.doc.doc_type === 'PA') d.gate_ok = paGate(d, ctx).ok;
+  }
+  return d;
+}
+
+async function wfSave(quiet) {
+  try {
+    await SB.rpc('pm_doc_save', { p_id: WF.doc.id, p_data: wfCollect() });
+    WF.dirty = false;
+    if (!quiet) { await wfLoad(); msg('#wdMsg', 'ok', t('wf.saved')); }
+    return true;
+  } catch (e) { msg('#wdMsg', 'err', e.message); return false; }
+}
+
+async function wfSubmit() {
+  const d = wfCollect();
+  if (WF.doc.doc_type === 'QC' && qcScore(d).problems.some(p => p === t('wf.qc.w0') || p === t('wf.qc.w100')))
+    return msg('#wdMsg', 'err', t('wf.qc.cannotSubmit'));
+  if (WF.doc.doc_type === 'PA' && !d.recommendation) return msg('#wdMsg', 'err', t('wf.pa.needRec'));
+  if (!confirm(t('wf.confirmSubmit', { no: WF.doc.doc_no }))) return;
+  if (!(await wfSave(true))) return;
+  try {
+    await SB.rpc('pm_doc_submit', { p_id: WF.doc.id });
+    await wfLoad(); wfBadge();
+    msg('#wdMsg', 'ok', t('wf.submitted', { no: WF.doc.doc_no }));
+  } catch (e) { msg('#wdMsg', 'err', e.message); }
+}
+
+async function wfAct(action) {
+  const note = ($('#wdNote') || {}).value || '';
+  if (action !== 'approve' && !note.trim()) return msg('#wdMsg', 'err', t('wf.needReason'));
+  if (!confirm(t('wf.confirm.' + action, { no: WF.doc.doc_no }))) return;
+  try {
+    const to = await SB.rpc('pm_doc_act', { p_id: WF.doc.id, p_action: action, p_comment: note.trim() || null, p_signature: null });
+    await wfLoad(); wfBadge();
+    msg('#wdMsg', 'ok', t('wf.acted.' + (to === 'approved' ? 'final' : action), { no: WF.doc.doc_no }));
+  } catch (e) { msg('#wdMsg', 'err', e.message); }
+}
+
+async function wfCancel() {
+  const why = prompt(t('wf.cancelWhy', { no: WF.doc.doc_no }));
+  if (why === null) return;
+  try { await SB.rpc('pm_doc_cancel', { p_id: WF.doc.id, p_comment: why || null }); await wfLoad(); wfBadge();
+        msg('#wdMsg', 'ok', t('wf.cancelled', { no: WF.doc.doc_no })); }
+  catch (e) { msg('#wdMsg', 'err', e.message); }
+}
+
+/* An approved handover becomes the next delivery in the asset intake, with the
+   project code as its purpose — so the assets it hands over get their codes
+   through the one path that allocates them. */
+function wfToIntake() {
+  const d = WF.doc.data || {}, p = WF.project || {};
+  if (IN.lines.length && !confirm(t('dn.replace', { n: IN.lines.length }))) return;
+  IN.lines = (d.lines || []).map(l => {
+    const ln = Object.assign(inBlank(), {
+      qty: n0(l.qty) || 1, unit_price: l.unit_price ?? '', origin_raw: l.origin || '',
+      // The location on a handover is free text; the intake wants a location
+      // code, so it rides in the description for the reviewer to pick.
+      description: [l.location && `@ ${l.location}`, l.warranty_months && `BH ${l.warranty_months}m`].filter(Boolean).join(' · '),
+      spec: Object.assign({}, l.spec || {})
+    });
+    if (l.unit) ln.unit_code = l.unit;
+    inSetName(ln, l.asset_item || '');
+    return ln;
+  });
+  IN.checked = null; IN.sugRan = false;
+  showView('intake');
+  $('#inPurpose').value = p.code || '';
+  $('#inSupplier').value = d.supplier || p.chosen_vendor || '';
+  if (d.handover_date) $('#inDate').value = d.handover_date;
+  inRender();
+  msg('#inMsg', 'ok', t('wf.intakeReady', { n: IN.lines.length, no: WF.doc.doc_no }));
+  inResolveOrigins().then(n => n && inRender()).catch(() => {});
+}
+
+/* ------------------------------------------------------------- print
+   The official bilingual form: company block, title EN / VI, number and date,
+   the general information, the lines (columns can be hidden before printing),
+   terms, links, and the approvals with names and dates. */
+function wfPrint() {
+  const root = $('#wdPrint');
+  root.innerHTML = '';
+  const d = WF.doc, data = wfCollect(), p = WF.project || {}, tt = WF.types.find(x => x.code === d.doc_type) || {};
+  root.append(el('div', { className: 'doc-head' }, [
+    el('div', { className: 'left' }, [el('div', { className: 'co', textContent: t('alr.doc.company') }),
+                                      el('div', { className: 'addr', textContent: t('alr.doc.addr') })]),
+    el('div', { className: 'right' }, [
+      el('div', { className: 'ttl' }, [document.createTextNode(tt.name_en || ''), el('br'), document.createTextNode(tt.name_vi || '')]),
+      el('div', { className: 'meta' }, [el('div', {}, [el('b', { textContent: 'No. / Số: ' }), d.doc_no]),
+        el('div', {}, [el('b', { textContent: 'Date / Ngày: ' }), fmtDate((d.submitted_at || d.created_at || '').slice(0, 10))])])])]));
+  const kv = el('table', { className: 'doc wfkv' });
+  const addKv = (k, v) => { if (v == null || v === '') return; kv.append(el('tr', {}, [el('th', { textContent: k }), el('td', { textContent: String(v) })])); };
+  addKv('Project / Dự án', `${p.code} — ${p.name || ''}`);
+  addKv('Department / Bộ phận', p.dept_code);
+  addKv('Budget / Ngân sách', p.budgeted ? 'Budgeted' : 'Unbudgeted');
+  const spec = WF_SPECS[d.doc_type];
+  for (const f of (spec && spec.head) || []) {
+    let v = data[f.k];
+    if (f.t === 'money' && v != null && v !== '') v = fmtNum(Math.round(Number(v)));
+    if (f.t === 'bool') v = v ? '✔' : '—';
+    if (f.t === 'date') v = fmtDate(v);
+    if (f.t === 'pct' && v != null) v = fmtPct(Number(v), 0);
+    addKv(t('wf.f.' + f.k), v);
+  }
+  root.append(kv);
+  if (d.doc_type === 'QC') {
+    const r = qcScore(data);
+    const tb = el('table', { className: 'doc' });
+    tb.append(el('tr', {}, [el('th', { textContent: 'Criteria / Tiêu chí' }), el('th', { textContent: '%' }), ...r.vendors.map(v => el('th', { textContent: v.name }))]));
+    for (const [k, w] of [['ability', 'w_ability'], ['technique', 'w_technique'], ['finance', 'w_finance']])
+      tb.append(el('tr', {}, [el('td', { textContent: t('wf.qc.' + k) }), el('td', { className: 'r', textContent: String(data[w] ?? '') }),
+        ...r.vendors.map(v => el('td', { className: 'r', textContent: String(v[k] ?? '') }))]));
+    tb.append(el('tr', {}, [el('td', { textContent: t('wf.qc.amount') }), el('td'), ...r.vendors.map(v => el('td', { className: 'r', textContent: v.amount != null ? fmtNum(v.amount) : '' }))]));
+    tb.append(el('tr', {}, [el('td', {}, el('b', { textContent: t('wf.qc.totalScore') })), el('td', { className: 'r', textContent: '100' }),
+      ...r.vendors.map(v => el('td', { className: 'r' }, el('b', { textContent: String(v.total ?? '') })))]));
+    root.append(tb);
+    addKv(t('wf.f.chosen_vendor'), data.chosen_vendor);
+  } else if (spec && spec.lines && (data.lines || []).length) {
+    const cols = spec.lines.cols.filter(c => !(WF.hideCols || new Set()).has(c.k));
+    const tb = el('table', { className: 'doc' });
+    tb.append(el('tr', {}, [el('th', { textContent: 'No.', style: 'width:34px' }), ...cols.map(c => el('th', { textContent: t('wf.f.' + c.k) }))]));
+    data.lines.forEach((l, i) => tb.append(el('tr', {}, [el('td', { className: 'c', textContent: String(i + 1) }),
+      ...cols.map(c => { let v = l[c.k]; if (c.t === 'money' && v != null && v !== '') v = fmtNum(Math.round(Number(v))); if (c.t === 'date') v = fmtDate(v); if (c.t === 'bool') v = v ? '✔' : ''; if (c.k === 'asset_item' && spec.lines.specs) {
+        const sp = SPEC_FIELDS.filter(k => (l.spec || {})[k]).map(k => (l.spec || {})[k]).join(' · '); if (sp) v = `${v || ''}\n${sp}`; }
+        return el('td', { className: ['money', 'num'].includes(c.t) ? 'r' : '', style: 'white-space:pre-wrap', textContent: v == null ? '' : String(v) }); })])));
+    root.append(tb);
+  }
+  const terms = el('table', { className: 'doc wfkv' });
+  for (const f of (spec && spec.terms) || []) {
+    let v = data[f.k]; if (v == null || v === '') continue;
+    if (f.t === 'money') v = fmtNum(Math.round(Number(v))); if (f.t === 'date') v = fmtDate(v);
+    terms.append(el('tr', {}, [el('th', { textContent: t('wf.f.' + f.k) }), el('td', { style: 'white-space:pre-wrap', textContent: String(v) })]));
+  }
+  if (terms.children.length) root.append(terms);
+  if (data.total != null) root.append(el('div', { className: 'doc-notes', textContent: `Total / Tổng: ${fmtNum(Math.round(n0(data.total)))} VND` }));
+  const links = (data.evidence || []).filter(e => wfSafeUrl(e.url));
+  if (links.length) root.append(el('div', { className: 'doc-notes' }, [el('b', { textContent: 'Attachments / Tài liệu đính kèm:' }),
+    ...links.map(e => el('div', { textContent: `• ${e.label || ''} ${e.url}` }))]));
+  // Approvals: preparer, then every step with who and when.
+  const sign = el('div', { className: 'doc-sign wfsign' });
+  const prep = wfChain(pmEntity(p.dept_code), d.doc_type).find(c => c.step === 0);
+  sign.append(el('div', {}, [el('b', { textContent: `Prepared by / Người lập` }), el('small', { textContent: prep ? wfRoleName(prep.role_code) : '' }),
+    el('i', {}), document.createTextNode(d.created_email || '')]));
+  for (const s of WF.steps) sign.append(el('div', {}, [el('b', { textContent: wfRoleName(s.role_code) }),
+    el('small', { textContent: s.acted_at ? `${t('wf.st.' + s.status)} · ${fmtDate(s.acted_at.slice(0, 10))}` : '' }),
+    el('i', {}), document.createTextNode(s.acted_email || '')]));
+  root.append(sign);
+  document.getElementById('am-page-rule')?.remove();
+  const st = el('style', { id: 'am-page-rule' });
+  st.textContent = '@page{size:A4 portrait;margin:12mm}';
+  document.head.append(st);
+  window.print();
+}
+
+/* ------------------------------------------------------------- inbox */
+async function wfInboxLoad() {
+  const out = $('#wiMsg');
+  msg(out, 'info', t('table.loading'));
+  try {
+    await wfLookups();
+    WF.inbox = await SB.rpc('pm_inbox');
+    msg(out, WF.inbox.length ? '' : 'ok', WF.inbox.length ? '' : t('wf.inboxEmpty'));
+    const head = $('#wiGrid thead'), body = $('#wiGrid tbody');
+    head.innerHTML = ''; body.innerHTML = '';
+    head.append(el('tr', {}, [['wf.i.kind'], ['wf.i.doc'], ['wf.i.type'], ['pm.col.code'], ['pm.col.name'], ['pm.col.dept'],
+      ['wf.i.value', 'num'], ['wf.i.sent'], ['wf.i.step']].map(([k, c]) => el('th', { className: c || '', textContent: t(k) }))));
+    for (const r of WF.inbox) {
+      const tr = el('tr', { style: 'cursor:pointer' }, [
+        el('td', {}, el('span', { className: 'st ' + (r.kind === 'approve' ? 'in_progress' : 'cancelled'), textContent: t('wf.i.' + r.kind) })),
+        el('td', {}, el('code', { textContent: r.doc_no })), el('td', { textContent: wfTypeName(r.doc_type) }),
+        el('td', {}, el('code', { textContent: r.project_code })), el('td', { textContent: r.project_name || '' }),
+        el('td', { textContent: r.dept_code }), el('td', { className: 'num', textContent: r.total_value != null ? fmtNum(Math.round(r.total_value)) : '' }),
+        el('td', { textContent: r.submitted_at ? fmtDate(r.submitted_at.slice(0, 10)) : '' }),
+        el('td', { textContent: r.role_code ? `${r.step} · ${wfRoleName(r.role_code)}` : '' })]);
+      tr.onclick = () => wfOpen(r.doc_id);
+      body.append(tr);
+    }
+    wfBadge(WF.inbox.length);
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+/* The number beside "Waiting for me" in the menu. */
+async function wfBadge(n) {
+  if (n == null) { try { n = (await SB.rpc('pm_inbox')).length; } catch { return; } }
+  WF.badgeN = n;                       // buildNav() redraws the menu and re-adds it from here
+  const a = $('#nav a[data-view="inbox"]');
+  if (!a) return;
+  a.querySelector('.tag')?.remove();
+  if (n > 0) a.append(el('span', { className: 'tag', textContent: String(n) }));
+}
+let WF_TIMER = null;
+function wfBadgeStart() {
+  clearInterval(WF_TIMER);
+  if (!can('approval', 'view')) return;
+  wfBadge();
+  WF_TIMER = setInterval(() => { if (ME && document.visibilityState === 'visible') wfBadge(); }, 120000);
+}
+
+/* ------------------------------------------------------ chain editor */
+async function wfChainsLoad() {
+  const out = $('#wcMsg');
+  msg(out, 'info', t('table.loading'));
+  try { await wfLookups(true); msg(out, '', ''); wfChainsRender(); }
+  catch (e) { msg(out, 'err', e.message); }
+}
+
+function wfChainsRender() {
+  const tabs = $('#wcTabs');
+  tabs.innerHTML = '';
+  for (const e of PM_ENTITIES) {
+    const b = el('button', { textContent: `${e} — ${t('perms.ent.' + e)}` });
+    b.classList.toggle('on', WF.entity === e);
+    b.onclick = () => { WF.entity = e; wfChainsRender(); };
+    tabs.append(b);
+  }
+  const admin = can('approval', 'admin');
+  const head = $('#wcGrid thead'), body = $('#wcGrid tbody');
+  head.innerHTML = ''; body.innerHTML = '';
+  head.append(el('tr', {}, [el('th', { textContent: t('wf.c.doc') }), el('th', { textContent: t('wf.c.prep') }), el('th', { textContent: t('wf.c.steps') }), el('th')]));
+  const roleSel = (val) => { const s = el('select'); s.append(el('option', { value: '', textContent: '—' }));
+    for (const r of WF.roles) s.append(el('option', { value: r.code, textContent: LANG === 'vi' ? r.name_vi : r.name_en })); s.value = val || ''; return s; };
+  for (const type of WF_ORDER) {
+    const rows = wfChain(WF.entity, type);
+    const prep = rows.find(c => c.step === 0);
+    const steps = rows.filter(c => c.step > 0).map(c => c.role_code);
+    const tr = el('tr');
+    tr.append(el('td', {}, [el('b', { textContent: type }), document.createTextNode(' ' + wfTypeName(type))]));
+    const prepCell = el('td');
+    let prepSel = null;
+    if (admin) { prepSel = roleSel(prep && prep.role_code); prepCell.append(prepSel); } else prepCell.textContent = prep ? wfRoleName(prep.role_code) : '—';
+    tr.append(prepCell);
+    const chips = el('div', { className: 'roles' });
+    const draw = () => {
+      chips.innerHTML = '';
+      steps.forEach((r, i) => {
+        const c = el('span', { className: 'role' }, [el('b', { textContent: `${i + 1}. ` }), document.createTextNode(wfRoleName(r))]);
+        if (admin) {
+          if (i > 0) { const l = el('button', { className: 'x', textContent: '←' }); l.onclick = () => { [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]]; draw(); }; c.append(l); }
+          const x = el('button', { className: 'x', textContent: '×' }); x.onclick = () => { steps.splice(i, 1); draw(); }; c.append(x);
+        }
+        chips.append(c);
+      });
+      if (admin) { const add = roleSel(''); add.onchange = () => { if (add.value) { steps.push(add.value); draw(); } }; chips.append(add); }
+    };
+    draw();
+    tr.append(el('td', {}, chips));
+    const act = el('td');
+    if (admin) { const save = el('button', { className: 'btn tiny pri', textContent: t('tool.save') });
+      save.onclick = () => wfChainSave(type, prepSel.value, steps); act.append(save); }
+    tr.append(act);
+    body.append(tr);
+  }
+}
+
+/* Upsert the new steps first, then drop the ones past the end — a failure in
+   between leaves a chain with extra steps, never a chain with none. */
+async function wfChainSave(type, prep, steps) {
+  if (!prep) return msg('#wcMsg', 'err', t('wf.c.needPrep'));
+  if (!steps.length) return msg('#wcMsg', 'err', t('wf.c.needStep'));
+  const rows = [{ entity: WF.entity, doc_type: type, step: 0, role_code: prep },
+                ...steps.map((r, i) => ({ entity: WF.entity, doc_type: type, step: i + 1, role_code: r }))];
+  try {
+    await SB.call('pm_chain?on_conflict=entity,doc_type,step', { method: 'POST',
+      headers: SB.hdr({ Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify(rows) });
+    await SB.remove('pm_chain', `entity=eq.${WF.entity}&doc_type=eq.${type}&step=gt.${steps.length}`);
+    await wfLookups(true);
+    wfChainsRender();
+    msg('#wcMsg', 'ok', t('wf.c.saved', { e: WF.entity, type }));
+  } catch (e) { msg('#wcMsg', 'err', e.message); }
+}
+
+function initWf() {
+  // Leaving a form with unsaved edits asks first.
+  window.addEventListener('beforeunload', ev => { if (VIEW === 'doc' && WF.dirty && wfEditable()) { ev.preventDefault(); ev.returnValue = ''; } });
 }

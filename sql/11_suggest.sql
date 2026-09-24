@@ -113,5 +113,5 @@ as $$
   limit 20;
 $$;
 
-grant execute on function am_suggest_lines(text[]) to anon, authenticated;
-grant execute on function am_suggest_detail(text)  to anon, authenticated;
+grant execute on function am_suggest_lines(text[]) to authenticated;
+grant execute on function am_suggest_detail(text)  to authenticated;

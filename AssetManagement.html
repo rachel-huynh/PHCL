@@ -132,6 +132,189 @@
   /* Actions pushed to the right end of a row of fields. */
   .acts{margin-left:auto;display:flex;gap:7px;flex:none}
   #regSelN{align-self:center;white-space:nowrap}
+
+  /* ------------------------------------------------ project management */
+  /* Chart tokens. Series 1/2 and the four-step ordinal ramp are the dataviz
+     reference palette, validated against this white card surface (CVD ΔE 24.7,
+     ordinal light end 2.11:1). Charts are written against roles, not hex. */
+  .viz{--surface-1:#ffffff;--ink-1:#0b0b0b;--ink-2:#52514e;--ink-3:#898781;
+       --grid:#e1e0d9;--axis:#c3c2b7;--series-1:#2a78d6;--series-2:#eb6834;
+       --track:#cfcdc4;--ord-1:#0d366b;--ord-2:#1c5cab;--ord-3:#3987e5;--ord-4:#86b6ef;
+       --good:#0ca30c;--critical:#d03b3b;--warning:#fab219}
+  .pmfilters > .row{margin:0}
+  .hero{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+        padding:14px 18px;margin:12px 0 0;display:flex;align-items:baseline;gap:18px;
+        flex-wrap:wrap}
+  .hero .hv{font-size:48px;font-weight:700;line-height:1.05;letter-spacing:-.02em;color:var(--ink-1)}
+  .hero .hl{font-size:13px;color:var(--ink-2)}
+  .hero .hs{font-size:12.5px;color:var(--ink-3)}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:12px 0}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:11px 14px}
+  /* Sentence case, not the small-caps field label: this names a number. */
+  .stat .sl{display:block;font-size:12px;color:var(--ink-2)}
+  /* Proportional figures on a standalone value — tabular digits look loose. */
+  .stat .sv{display:block;font-size:22px;font-weight:600;color:var(--ink-1);margin-top:2px}
+  .stat .sd{display:block;font-size:11.5px;color:var(--ink-3);margin-top:3px}
+  .stat .sd.up{color:#006300} .stat .sd.down{color:var(--critical)}
+  .meter{height:8px;border-radius:4px;background:#cde2fb;margin-top:7px;overflow:hidden}
+  .meter > i{display:block;height:100%;border-radius:4px;background:var(--series-1)}
+  .meter.over > i{background:var(--critical)}
+  .charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:12px}
+  .chartcard{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+             padding:12px 14px;min-width:0}
+  .chartcard.wide{grid-column:1 / -1}
+  .chartcard .ch{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .chartcard .ch h3{margin:0;flex:1;font-size:13px;font-weight:700}
+  .chartcard .ch .sub{font-size:11.5px;color:var(--ink-3);font-weight:400;margin-left:6px}
+  .chartcard svg{display:block;width:100%;height:auto;overflow:visible}
+  .chartcard svg text{font:11px system-ui,-apple-system,"Segoe UI",sans-serif;fill:var(--ink-3)}
+  .chartcard svg text.v{fill:var(--ink-2);font-variant-numeric:tabular-nums}
+  .chartcard svg text.lab{fill:var(--ink-2)}
+  .legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--ink-2);margin:2px 0 6px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px}
+  .legend i.ln{height:2px;width:14px;border-radius:1px}
+  .vtip{position:fixed;z-index:60;pointer-events:none;background:var(--panel);
+        border:1px solid rgba(11,11,11,.12);border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.12);
+        padding:7px 10px;font-size:12px;color:var(--ink-2);max-width:320px}
+  .vtip[hidden]{display:none}
+  .vtip .tt{font-weight:600;color:var(--ink-1);margin-bottom:3px}
+  .vtip .tr{display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .vtip .tr b{color:var(--ink-1);font-variant-numeric:tabular-nums}
+  .vtip .tr i{display:inline-block;width:12px;height:2px;border-radius:1px}
+  .viztbl{margin-top:8px}
+  .viztbl table{font-size:12px}
+  .hitbar{cursor:default}
+  .hitbar:hover rect.mk,.hitbar:focus rect.mk{filter:brightness(1.12)}
+  .hitbar:focus{outline:none}
+  .hitbar:focus rect.hit{stroke:var(--ink-2);stroke-width:1}
+  .gantt .gr{display:grid;grid-template-columns:260px 1fr;align-items:center;gap:10px;
+             border-bottom:1px solid var(--line-2);padding:3px 0}
+  .gantt .gl{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gantt .gl code{font-size:11px;color:var(--ink-3);margin-right:6px}
+  .gantt .gt{position:relative;height:16px}
+  .gantt .gt .pl{position:absolute;top:5px;height:6px;border-radius:3px;background:var(--track)}
+  .gantt .gt .ac{position:absolute;top:3px;height:10px;border-radius:4px;background:var(--series-1)}
+  .gantt .gt .ac.open{border-radius:4px 0 0 4px;opacity:.75}
+  .gantt .gt .today{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--critical)}
+  .gantt .gax{display:grid;grid-template-columns:260px 1fr;gap:10px;font-size:11px;color:var(--ink-3)}
+  .gantt .gax > div:last-child{position:relative;height:16px}
+  .gantt .gax span{position:absolute;transform:translateX(-50%);white-space:nowrap}
+  /* Status: a coloured dot beside neutral text, never colour alone. */
+  .st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .st::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--track);flex:none}
+  .st.completed::before{background:#0ca30c} .st.in_progress::before{background:#2a78d6}
+  .st.cancelled::before{background:#d03b3b}
+  .flag{color:var(--amber);cursor:help;margin-left:4px}
+  .pmgrid{margin-top:10px}
+  #pbGrid tr.pick td,#ppGrid tr.pick td{background:#eef4fc}
+  #pbGrid tbody tr,#ppGrid tbody tr{cursor:pointer}
+  tr.tot td{font-weight:700;background:var(--head);position:sticky;bottom:0}
+  .pmdet{margin-top:12px}
+  .pmdet dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:6px 18px;margin:0}
+  .pmdet dt{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+  .pmdet dd{margin:0 0 4px;white-space:pre-wrap;word-break:break-word}
+  /* Workflow (phase 3) */
+  .btn.tiny{padding:2px 8px;font-size:11.5px}
+  .st.wf-draft::before{background:var(--track)} .st.wf-in_review::before{background:#2a78d6}
+  .st.wf-returned::before{background:var(--amber)} .st.wf-approved::before{background:#0ca30c}
+  .st.wf-rejected::before,.st.wf-cancelled::before{background:#d03b3b}
+  .wfstrip{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+  .wfbox{border:1px solid var(--line);border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:5px;align-items:flex-start;background:var(--panel)}
+  .wfbox .wft{font-size:12px;line-height:1.3}
+  .wfbox .wfopt{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+  .wfdoc{display:flex;flex-direction:column;gap:2px;text-decoration:none;color:var(--ink);font-size:12px}
+  .wfdoc:hover code{text-decoration:underline}
+  .wfsteps{display:flex;flex-wrap:wrap;gap:8px}
+  .wfstep{display:flex;gap:8px;align-items:flex-start;border:1px solid var(--line);border-radius:6px;padding:6px 10px;min-width:180px;max-width:280px}
+  .wfstep .n{flex:none;width:22px;height:22px;border-radius:50%;background:var(--track);color:#fff;display:grid;place-items:center;font-size:11.5px;font-weight:700}
+  .wfstep small{display:block;color:var(--dim);font-size:11px}
+  .wfstep small.cm{color:var(--ink);font-style:italic;white-space:pre-wrap}
+  .wfstep.done .n{background:#0ca30c} .wfstep.cur{border-color:#2a78d6;box-shadow:0 0 0 1px #2a78d6}
+  .wfstep.cur .n{background:#2a78d6} .wfstep.bad .n{background:#d03b3b}
+  .wfhead{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:4px 18px;margin:0 0 10px}
+  .wfhead dt{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+  .wfhead dd{margin:0 0 4px}
+  .wfgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px 14px;margin-top:10px}
+  .wfgrid .fld.wide{grid-column:1/-1}
+  .wfgrid .fld input[type=checkbox]{width:auto;justify-self:start}
+  .wfro{display:block;padding:5px 0;min-height:18px;white-space:pre-wrap}
+  .wfro.num{text-align:right} .wfgrid .wfro.num{text-align:left}
+  table.wflines td{vertical-align:top}
+  table.wflines td input,table.wflines td select,table.wflines td textarea{min-width:60px}
+  table.wflines td.idx,table.wflines th.idx{width:28px;color:var(--dim)}
+  table.qcm tr.grp td{font-weight:700;background:var(--head)}
+  table.qcm td.sub{padding-left:18px}
+  .wfspec summary{cursor:pointer;font-size:11.5px;color:var(--dim);white-space:nowrap}
+  .wfspec .wfgrid{min-width:520px}
+  .wfev{margin-top:12px}
+  .wfev > label{display:block;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin-bottom:4px}
+  .wftotal{margin-top:10px;font-weight:700;text-align:right}
+  #wdPrint{display:none}
+  table.wfkv{margin-top:8px} table.wfkv th{width:32%;text-align:left;background:#f4f6f8}
+  .wfsign{flex-wrap:wrap;gap:12px} .wfsign div{min-width:120px}
+  .wfsign small{display:block;color:#444;font-size:10px}
+  .pmyear{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+  .pmsheets td{vertical-align:middle}
+
+  /* ------------------------------------------------------------ sign-in */
+  /* Navy, like the sidebar, so signing in reads as the same application and
+     not as a third-party page asking for a password. */
+  .login{position:fixed;inset:0;z-index:50;display:flex;align-items:center;
+         justify-content:center;padding:16px;background:var(--navy)}
+  .login[hidden]{display:none}
+  .lcard{width:100%;max-width:380px;background:var(--panel);border-radius:8px;
+         padding:22px 22px 18px;box-shadow:0 12px 40px rgba(0,0,0,.35);
+         border-top:3px solid var(--gold)}
+  .lhead{display:flex;align-items:flex-start;gap:12px;margin-bottom:16px}
+  .lbrand{flex:1;min-width:0}
+  .lbrand b{display:block;font-size:14px;text-transform:uppercase;letter-spacing:.01em;
+            line-height:1.25}
+  .lbrand span{display:block;color:var(--dim);font-size:12px;margin-top:3px}
+  .lcard .fld{margin-bottom:11px}
+  .lcard .btn.wide{width:100%;padding:8px 12px;font-size:13px}
+  .lrow{display:flex;justify-content:space-between;gap:10px;margin-top:10px}
+  /* The confirming button keeps to the right even when Cancel is hidden (after
+     a reset e-mail there is nothing to cancel back to). */
+  #btnSetPw{margin-left:auto}
+  .lnote{color:var(--dim);font-size:12.5px;margin:0 0 12px}
+  .lnk{background:none;border:none;padding:0;color:var(--blue);font-size:12px;cursor:pointer}
+  .lnk:hover{text-decoration:underline}
+  /* Sidebar: who is signed in, and as what. */
+  .foot .meroles{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+  .rchip{background:rgba(255,255,255,.1);color:var(--side-ink);border-radius:9px;
+         padding:0 7px;font-size:10.5px;line-height:17px;white-space:nowrap}
+  .foot .meacts{display:flex;gap:12px;margin-top:7px}
+  .foot .meacts[hidden]{display:none}
+  .foot .lnk{color:var(--side-ink);font-size:11px}
+  .foot .lnk:hover{color:#fff}
+  /* A control the signed-in user has no right to. It stays visible, so people
+     know the function exists, but its clicks are swallowed (applyPerms). The
+     database refuses the action anyway — this only spares the round trip. */
+  .noperm{opacity:.4;cursor:not-allowed!important}
+  /* Users screen: one chip per role, with a cross to take it away. */
+  .roles{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  .role{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);
+        background:var(--head);border-radius:10px;padding:0 3px 0 8px;font-size:11.5px;
+        line-height:19px;white-space:nowrap}
+  .role b{font-weight:600}
+  .role .x{border:none;background:none;color:var(--dim);padding:0 3px;font-size:13px;
+           line-height:1;cursor:pointer}
+  .role .x:hover{color:var(--red)}
+  .addrole{display:inline-flex;gap:4px;align-items:center}
+  .addrole select{width:auto;font-size:12px;padding:2px 4px}
+  tr.off td{color:var(--dim)}
+  /* Permission matrix. */
+  .permtabs{flex-wrap:wrap}
+  #pmGrid th.ck,#pmGrid td.ck{text-align:center;width:84px}
+  #pmGrid td.ck input{width:auto;margin:0;cursor:pointer}
+  #pmGrid tr.grp td{background:var(--head);font-weight:700;font-size:10.5px;
+                    letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+  /* Audit: one line per changed field, before → after. */
+  .chg{font-size:12px;line-height:1.5;white-space:normal;min-width:260px}
+  .chg b{font-weight:600}
+  .chg s{color:var(--red)}
+  .chg ins{color:var(--green);text-decoration:none}
   th.overcol{padding-left:4px;padding-right:4px;text-align:right}
   /* Multi-select filter: a summary line that opens a searchable checkbox list. */
   .ms{position:relative}
@@ -464,6 +647,8 @@
     .tape-wrap{display:block;gap:0}
     .tape{border:none;page-break-after:always;break-after:page}
     .tape:last-child{page-break-after:auto;break-after:auto}
+    #v-doc.on > :not(#wdPrint){display:none!important}
+    #v-doc.on #wdPrint{display:block}
   }
 
   @media (max-width:860px){
@@ -482,6 +667,45 @@
 </style>
 </head>
 <body>
+<!-- Sign-in. Covers the whole app until there is a session. It is a <form> so
+     Enter submits and the browser offers to remember the password. The same
+     box doubles as "set a new password" — after the reset e-mail, or from the
+     sidebar. -->
+<div class="login" id="login" hidden>
+  <form class="lcard" id="loginForm" autocomplete="on" novalidate>
+    <div class="lhead">
+      <div class="lbrand"><b>Plaza Hotel Company Limited</b>
+        <span data-i18n="app.subtitle"></span></div>
+      <div class="seg" id="loginLang">
+        <button type="button" data-lang="en">EN</button><button type="button" data-lang="vi">VI</button>
+      </div>
+    </div>
+    <div id="loginIn">
+      <div class="fld"><label for="liEmail" data-i18n="auth.email"></label>
+        <input id="liEmail" type="email" autocomplete="username" spellcheck="false"></div>
+      <div class="fld"><label for="liPw" data-i18n="auth.password"></label>
+        <input id="liPw" type="password" autocomplete="current-password"></div>
+      <button class="btn pri wide" id="btnSignIn" type="submit" data-i18n="auth.signIn"></button>
+      <div class="lrow">
+        <button type="button" class="lnk" id="btnForgot" data-i18n="auth.forgot"></button>
+        <button type="button" class="lnk" id="btnLoginSetup" data-i18n="auth.connSettings"></button>
+      </div>
+    </div>
+    <div id="loginNew" hidden>
+      <p class="lnote" data-i18n="auth.setNewLead"></p>
+      <div class="fld"><label for="liNew1" data-i18n="auth.newPw"></label>
+        <input id="liNew1" type="password" autocomplete="new-password"></div>
+      <div class="fld"><label for="liNew2" data-i18n="auth.newPw2"></label>
+        <input id="liNew2" type="password" autocomplete="new-password"></div>
+      <div class="lrow">
+        <button class="btn" id="btnPwCancel" type="button" data-i18n="auth.cancel"></button>
+        <button class="btn pri" id="btnSetPw" type="button" data-i18n="auth.setPw"></button>
+      </div>
+    </div>
+    <div id="loginMsg"></div>
+  </form>
+</div>
+
 <div class="shell">
 
 <aside>
@@ -491,8 +715,15 @@
   </div>
   <nav id="nav"></nav>
   <div class="foot">
-    <b>Rachel Huynh</b>
-    <span>projectassistant@jvcplaza.vn</span>
+    <!-- Whoever is signed in — filled by the app, never written into the page:
+         this file is public and every user sees their own name here. -->
+    <b id="meName"></b>
+    <span id="meMail"></span>
+    <div class="meroles" id="meRoles"></div>
+    <div class="meacts" id="meActs" hidden>
+      <button class="lnk" id="btnPw" data-i18n="auth.changePw"></button>
+      <button class="lnk" id="btnSignOut" data-i18n="auth.signOut"></button>
+    </div>
     <div class="conn"><i id="dot"></i><span id="connTxt"></span></div>
     <div class="ver" id="appVer"></div>
     <div class="sidenote" data-i18n="side.note"></div>
@@ -570,12 +801,12 @@
             <input id="rsLetters" spellcheck="false" placeholder="LTG"></div>
           <div class="fld" style="max-width:110px"><label data-i18n="cnt.rs.next"></label>
             <input id="rsNext" type="number" min="1" placeholder="1"></div>
-          <button class="btn" id="btnRsOne" data-i18n="cnt.rs.setOne"></button>
+          <button class="btn" id="btnRsOne" data-perm="assets:admin" data-i18n="cnt.rs.setOne"></button>
         </div>
         <div class="row">
           <div class="acts">
             <button class="btn" id="btnRsPreview" data-i18n="cnt.rs.preview"></button>
-            <button class="btn danger" id="btnRsAll" data-i18n="cnt.rs.runAll"></button>
+            <button class="btn danger" id="btnRsAll" data-perm="assets:admin" data-i18n="cnt.rs.runAll"></button>
           </div>
         </div>
         <div id="rsOut"></div>
@@ -597,7 +828,7 @@
       </div>
       <div class="row" style="margin-top:11px">
         <button class="btn" id="btnScan" data-i18n="cnt.seed.scan"></button>
-        <button class="btn pri" id="btnSeed" disabled data-i18n="cnt.seed.run"></button>
+        <button class="btn pri" id="btnSeed" data-perm="assets:admin" disabled data-i18n="cnt.seed.run"></button>
       </div>
       <div id="seedOut"></div>
     </div>
@@ -725,7 +956,7 @@
         <label class="chk"><input type="checkbox" id="alHidePrice">
           <span data-i18n="alr.hidePrice"></span></label>
         <button class="btn" id="btnAlPrint" disabled data-i18n="alr.print"></button>
-        <button class="btn" id="btnAlSave" disabled data-i18n="alr.saveDb"></button>
+        <button class="btn" id="btnAlSave" data-perm="assets:create" disabled data-i18n="alr.saveDb"></button>
       </div>
       <div class="hint" data-i18n-html="alr.tapeHint_html"></div>
       <div id="alOutMsg"></div>
@@ -766,7 +997,7 @@
           <input type="file" id="bkFile" accept=".json">
         </div>
         <div class="row">
-          <button class="btn pri" id="btnBkPush" data-i18n="bk.push"></button>
+          <button class="btn pri" id="btnBkPush" data-perm="system:admin" data-i18n="bk.push"></button>
         </div>
         <div id="bkPushMsg"></div>
       </div>
@@ -775,7 +1006,7 @@
     <div class="card">
       <h2 data-i18n="bk.h.reseed"></h2>
       <p data-i18n="bk.p.reseed"></p>
-      <button class="btn" id="btnBkReseed" data-i18n="bk.reseed"></button>
+      <button class="btn" id="btnBkReseed" data-perm="system:admin" data-i18n="bk.reseed"></button>
       <div id="bkReseedMsg"></div>
     </div>
   </section>
@@ -836,7 +1067,7 @@
       <h2 data-i18n="in.h.check"></h2>
       <div class="row">
         <button class="btn" id="btnInCheck" data-i18n="in.check"></button>
-        <button class="btn pri" id="btnInConfirm" disabled data-i18n="in.confirm"></button>
+        <button class="btn pri" id="btnInConfirm" data-perm="assets:create" disabled data-i18n="in.confirm"></button>
       </div>
       <div id="inMsg"></div>
     </div>
@@ -846,7 +1077,7 @@
       <div class="row">
         <button class="btn pri" id="btnInXlsx" disabled data-i18n="in.xlsxBeetrack"></button>
         <button class="btn" id="btnInAlr" data-i18n="in.alr"></button>
-        <button class="btn" id="btnInUndo" disabled data-i18n="in.undo"></button>
+        <button class="btn" id="btnInUndo" data-perm="assets:create" disabled data-i18n="in.undo"></button>
       </div>
     </div>
   </section>
@@ -900,8 +1131,8 @@
         <!-- The two things that actually write are pushed to the right edge,
              together, away from the fields that only describe what to write. -->
         <div class="acts">
-          <button class="btn pri" id="btnRegBulkSave" data-i18n="reg.bk.save"></button>
-          <button class="btn danger" id="btnRegBulkDel" data-i18n="reg.bk.del"></button>
+          <button class="btn pri" id="btnRegBulkSave" data-perm="assets:edit" data-i18n="reg.bk.save"></button>
+          <button class="btn danger" id="btnRegBulkDel" data-perm="assets:admin" data-i18n="reg.bk.del"></button>
         </div>
       </div>
       <div id="regBulkMsg"></div>
@@ -931,7 +1162,7 @@
       </div>
       <div class="row" style="margin-top:11px">
         <button class="btn" id="btnSrcRead" data-i18n="src.analyse"></button>
-        <button class="btn pri" id="btnSrcImport" disabled data-i18n="src.import"></button>
+        <button class="btn pri" id="btnSrcImport" data-perm="master:edit" disabled data-i18n="src.import"></button>
       </div>
       <div id="srcMsg"></div>
     </div>
@@ -951,7 +1182,7 @@
       </div>
       <div class="row" style="margin-top:11px">
         <button class="btn" id="btnLegRead" data-i18n="leg.read"></button>
-        <button class="btn pri" id="btnLegImport" disabled data-i18n="leg.import"></button>
+        <button class="btn pri" id="btnLegImport" data-perm="assets:edit" disabled data-i18n="leg.import"></button>
       </div>
       <div id="legMsg"></div>
     </div>
@@ -983,6 +1214,193 @@
     </div>
   </section>
 
+    <!-- ============================================ PROJECT MANAGEMENT -->
+    <section id="v-pmdash" class="viz">
+      <p class="lead" data-i18n-html="pm.dash.lead_html"></p>
+      <!-- One filter row above everything it scopes: every tile and chart below
+           re-computes against the same slice, so the numbers always agree. -->
+      <div class="card pmfilters">
+        <div class="row" style="align-items:flex-end">
+          <div class="fld" style="max-width:110px"><label data-i18n="pm.f.year"></label>
+            <select id="pdYear"></select></div>
+          <div class="fld" style="max-width:140px"><label data-i18n="pm.f.period"></label>
+            <select id="pdPeriod"></select></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.entity"></label>
+            <details class="ms" id="pdEnt"></details></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.dept"></label>
+            <details class="ms" id="pdDept"></details></div>
+          <div class="fld" style="max-width:190px"><label data-i18n="pm.f.category"></label>
+            <details class="ms" id="pdCat"></details></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.status"></label>
+            <details class="ms" id="pdStatus"></details></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.budgeted"></label>
+            <select id="pdBud"></select></div>
+        </div>
+      </div>
+      <div id="pdMsg"></div>
+      <div id="pdBody"></div>
+    </section>
+
+    <section id="v-budget">
+      <p class="lead" data-i18n-html="pm.bud.lead_html"></p>
+      <div class="card">
+        <div class="row" style="align-items:flex-end">
+          <div class="fld" style="max-width:110px"><label data-i18n="pm.f.year"></label>
+            <select id="pbYear"></select></div>
+          <div class="fld" style="max-width:300px"><label data-i18n="pm.f.round"></label>
+            <select id="pbRound"></select></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.entity"></label>
+            <details class="ms" id="pbEnt"></details></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.dept"></label>
+            <details class="ms" id="pbDept"></details></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.risk"></label>
+            <details class="ms" id="pbRisk"></details></div>
+          <div class="fld grow" style="max-width:240px"><label data-i18n="pm.f.search"></label>
+            <input id="pbQ" spellcheck="false"></div>
+          <label class="chk"><input type="checkbox" id="pbPhase">
+            <span data-i18n="pm.bud.showPhasing"></span></label>
+        </div>
+      </div>
+      <div id="pbYearBox"></div>
+      <div id="pbMsg"></div>
+      <div class="wrap pmgrid"><table id="pbGrid"><thead></thead><tbody></tbody></table></div>
+      <div id="pbDetail"></div>
+    </section>
+
+    <section id="v-projects">
+      <p class="lead" data-i18n-html="pm.prj.lead_html"></p>
+      <div class="card">
+        <div class="row" style="align-items:flex-end">
+          <div class="fld" style="max-width:120px"><label data-i18n="pm.f.year"></label>
+            <select id="ppYear"></select></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.entity"></label>
+            <details class="ms" id="ppEnt"></details></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.dept"></label>
+            <details class="ms" id="ppDept"></details></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.status"></label>
+            <details class="ms" id="ppStatus"></details></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.budgeted"></label>
+            <select id="ppBud"></select></div>
+          <div class="fld grow" style="max-width:240px"><label data-i18n="pm.f.search"></label>
+            <input id="ppQ" spellcheck="false"></div>
+        </div>
+      </div>
+      <div id="ppMsg"></div>
+      <div class="wrap pmgrid"><table id="ppGrid"><thead></thead><tbody></tbody></table></div>
+      <div id="ppDetail"></div>
+    </section>
+
+    <section id="v-pmimport">
+      <p class="lead" data-i18n-html="pm.imp.lead_html"></p>
+      <div class="grid2">
+        <div class="card">
+          <h2 data-i18n="pm.imp.budget.h"></h2>
+          <p data-i18n-html="pm.imp.budget.p_html"></p>
+          <div class="row" style="align-items:flex-end">
+            <div class="fld grow"><label data-i18n="pm.imp.file"></label>
+              <input type="file" id="piBudFile" accept=".xlsx,.xlsm"></div>
+            <div class="acts">
+              <button class="btn" id="btnPiBudRead" data-i18n="pm.imp.read"></button>
+              <button class="btn pri" id="btnPiBudGo" disabled data-perm="budget:create"
+                      data-i18n="pm.imp.go"></button>
+            </div>
+          </div>
+          <div id="piBudOut"></div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="pm.imp.dos.h"></h2>
+          <p data-i18n-html="pm.imp.dos.p_html"></p>
+          <div class="row" style="align-items:flex-end">
+            <div class="fld grow"><label data-i18n="pm.imp.files"></label>
+              <input type="file" id="piDosFile" accept=".xlsx,.xlsm" multiple></div>
+            <div class="acts">
+              <button class="btn" id="btnPiDosRead" data-i18n="pm.imp.read"></button>
+              <button class="btn pri" id="btnPiDosGo" disabled data-perm="project:create"
+                      data-i18n="pm.imp.go"></button>
+            </div>
+          </div>
+          <div id="piDosOut"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================ USERS & PERMISSIONS -->
+    <section id="v-users">
+      <p class="lead" data-i18n-html="users.lead_html"></p>
+      <div class="card">
+        <div class="row" style="align-items:flex-end">
+          <div class="fld grow" style="max-width:320px"><label data-i18n="users.find"></label>
+            <input id="usQ" spellcheck="false"></div>
+          <label class="chk"><input type="checkbox" id="usInactive">
+            <span data-i18n="users.showInactive"></span></label>
+        </div>
+        <div id="usMsg"></div>
+        <div class="wrap" style="margin-top:10px">
+          <table id="usGrid"><thead></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section id="v-perms">
+      <p class="lead" data-i18n-html="perms.lead_html"></p>
+      <div class="card">
+        <!-- One module at a time: 14 roles × 5 rights reads as a table,
+             14 × 45 does not. -->
+        <div class="seg permtabs" id="pmTabs"></div>
+        <div id="pmMsg"></div>
+        <div class="wrap" style="margin-top:10px">
+          <table id="pmGrid"><thead></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section id="v-inbox">
+      <p class="lead" data-i18n="wf.i.lead"></p>
+      <div id="wiMsg"></div>
+      <div class="wrap pmgrid"><table id="wiGrid"><thead></thead><tbody></tbody></table></div>
+    </section>
+
+    <section id="v-chains">
+      <p class="lead" data-i18n="wf.c.lead"></p>
+      <div class="card">
+        <div class="seg permtabs" id="wcTabs"></div>
+        <div id="wcMsg"></div>
+        <div class="wrap" style="margin-top:10px">
+          <table id="wcGrid"><thead></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- One procurement document. Not in the menu: it opens from a project or
+         from the inbox. #wdPrint is the paper form, shown only when printing. -->
+    <section id="v-doc">
+      <div id="wdMsg"></div>
+      <div id="wdBody"></div>
+      <div id="wdPrint"></div>
+    </section>
+
+    <section id="v-audit">
+      <p class="lead" data-i18n-html="audit.lead_html"></p>
+      <div class="card">
+        <div class="row" style="align-items:flex-end">
+          <div class="fld" style="max-width:220px"><label data-i18n="audit.table"></label>
+            <select id="auTbl"></select></div>
+          <div class="fld" style="max-width:240px"><label data-i18n="audit.user"></label>
+            <input id="auUser" spellcheck="false"></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="audit.from"></label>
+            <input id="auFrom" type="date"></div>
+          <div class="fld" style="max-width:150px"><label data-i18n="audit.to"></label>
+            <input id="auTo" type="date"></div>
+          <div class="acts">
+            <button class="btn pri" id="btnAuLoad" data-i18n="audit.load"></button>
+          </div>
+        </div>
+        <div id="auMsg"></div>
+        <div class="wrap" style="margin-top:10px">
+          <table id="auGrid"><thead></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
   </main>
 </div>
 </div>
@@ -996,7 +1414,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260917d"></script>
-<script src="app.js?v=20260917d"></script>
+<script src="i18n.js?v=20260924c"></script>
+<script src="app.js?v=20260924c"></script>
 </body>
 </html>

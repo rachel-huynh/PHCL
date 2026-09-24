@@ -27,25 +27,19 @@ create index if not exists am_data_source_latest_idx
   on am_data_source (table_name, loaded_at desc);
 
 -- Most recent import per table — what the Data sources screen reads.
-create or replace view am_data_source_current as
+create or replace view am_data_source_current with (security_invoker = true) as
 select distinct on (table_name)
        table_name, source_file, source_kind, rows_loaded, loaded_at, loaded_by, note
 from   am_data_source
 order  by table_name, loaded_at desc;
 
 alter table am_data_source enable row level security;
-
-drop policy if exists am_data_source_read  on am_data_source;
-drop policy if exists am_data_source_write on am_data_source;
-create policy am_data_source_read  on am_data_source
-  for select to anon, authenticated using (true);
-create policy am_data_source_write on am_data_source
-  for insert to anon, authenticated with check (true);
--- No update and no delete policy: the provenance log is append-only.
-
-grant select, insert on am_data_source to anon, authenticated;
-grant select on am_data_source_current to anon, authenticated;
-grant usage, select on sequence am_data_source_id_seq to anon, authenticated;
+-- Policies live in 17_auth.sql with every other table's, so that re-running
+-- this file can never put back the old open-to-anyone policies. The log stays
+-- append-only: 17 grants select + insert, never update or delete.
+grant select, insert on am_data_source to authenticated;
+grant select on am_data_source_current to authenticated;
+grant usage, select on sequence am_data_source_id_seq to authenticated;
 
 -- Record what the SQL seed files themselves loaded, so a fresh install does
 -- not show "never loaded" for data that is plainly there.

@@ -44,7 +44,7 @@ $$;
 comment on function am_alr_code_from_project(text) is
   'FFE.CP.28.2023 -> AL.CP.28.2023. Bỏ đúng đoạn đầu tiên, giữ nguyên phần còn lại.';
 
-grant execute on function am_alr_code_from_project(text) to anon, authenticated;
+grant execute on function am_alr_code_from_project(text) to authenticated;
 
 -- ---------------------------------------------------------------------
 -- Dòng tài sản của biên bản, kèm đủ trường để in thẳng ra 8 cột
@@ -52,7 +52,7 @@ grant execute on function am_alr_code_from_project(text) to anon, authenticated;
 --   Stt | Mã tài sản | Tên tài sản | Số lượng | Thông số kỹ thuật
 --       | Đơn giá | Vị trí | Tem nhãn
 -- ---------------------------------------------------------------------
-create or replace view am_alr_print as
+create or replace view am_alr_print with (security_invoker = true) as
 select
   l.alr_id,
   l.line_no,
@@ -89,7 +89,7 @@ join   am_asset    a   on a.id = l.asset_id
 left join am_location loc on loc.code = a.location_code
 order by l.alr_id, l.line_no;
 
-grant select on am_alr_print to anon, authenticated;
+grant select on am_alr_print to authenticated;
 
 comment on view am_alr_print is
   'Nguồn in biên bản ALR. spec_summary là bản gom ngắn của các cột spec chi tiết — dùng cho ô "Thông số kỹ thuật cơ bản".';

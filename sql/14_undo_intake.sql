@@ -46,6 +46,8 @@ declare
   v_printed int := 0;
   r         record;
 begin
+  perform app_require('assets', 'create');   -- quyền theo người đăng nhập — xem 17_auth.sql
+  p_ids := app_scope_ids(p_ids);            -- chỉ những dòng trong phạm vi của người gọi
   if p_ids is null or array_length(p_ids, 1) is null then
     return query select 0, 0, 0, 0, 0, 0;
     return;
@@ -131,4 +133,4 @@ end $$;
 comment on function am_undo_intake(bigint[]) is
   'Xoá các tài sản vừa ghi bởi một đợt nhập và lùi bộ đếm về nếu an toàn. Giữ lại dòng lịch sử và dòng đã nằm trên biên bản đã lưu. Chỉ lùi bộ đếm khi nó vẫn đứng đúng chỗ đợt này để lại VÀ chưa dòng nào được đánh dấu đã in tem.';
 
-grant execute on function am_undo_intake(bigint[]) to anon, authenticated;
+grant execute on function am_undo_intake(bigint[]) to authenticated;

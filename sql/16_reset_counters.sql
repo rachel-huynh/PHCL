@@ -37,6 +37,7 @@ declare
   v_old   int;
   v_floor int;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
   p_dept    := upper(trim(p_dept));
   p_letters := am_letters(p_letters);
 
@@ -104,6 +105,7 @@ set search_path = public
 as $$
 declare r record;
 begin
+  perform app_require('assets', 'admin');   -- quyền theo người đăng nhập — xem 17_auth.sql
   create temp table if not exists _reseed (
     scope text, old_next int, new_next int, moved text
   ) on commit drop;
@@ -159,5 +161,5 @@ end $$;
 comment on function am_reseed_counters(boolean) is
   'Nạp lại toàn bộ khoá bộ đếm mã tài sản từ am_asset. p_allow_lower=true cho phép KÉO XUỐNG đúng bằng max(seq)+1 sau khi xoá hàng loạt — chỉ dùng khi chắc chắn không có mã nào đã in tem rồi bị xoá.';
 
-grant execute on function am_set_asset_seq(text, text, int) to anon, authenticated;
-grant execute on function am_reseed_counters(boolean) to anon, authenticated;
+grant execute on function am_set_asset_seq(text, text, int) to authenticated;
+grant execute on function am_reseed_counters(boolean) to authenticated;
