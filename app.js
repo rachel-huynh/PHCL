@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260924j';
+const APP_VERSION = '20260924p';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -24,6 +24,17 @@ function msg(host, kind, text) {
   return box;
 }
 const fmtInt = n => (n ?? 0).toLocaleString(LANG === 'vi' ? 'vi-VN' : 'en-US');
+/* A database column shown as a heading: its label in the reading language
+   (col.* / spec.* in i18n.js), so the asset screens read like the project
+   screens. The raw name stays as the tooltip and in Excel exports, because
+   the importers match on it. */
+function colLabel(c) {
+  for (const k of ['col.' + c, c.startsWith('spec_') ? 'spec.' + c.slice(5) : null]) {
+    if (k && t(k) !== k) return t(k);
+  }
+  const s = String(c).replace(/_/g, ' ');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 /* ---------------------------------------------------------------- config */
 const LS_KEY = 'asset-intake.sb';
@@ -614,7 +625,7 @@ function renderGrid() {
   head.innerHTML = ''; body.innerHTML = '';
   const hr = el('tr');
   if (EDIT) hr.append(el('th', { className: 'delcol', textContent: '' }));
-  for (const c of spec.cols) hr.append(el('th', { textContent: c.name }));
+  for (const c of spec.cols) hr.append(el('th', { textContent: colLabel(c.name), title: c.name }));
   head.append(hr);
 
   const q = ($('#filter')?.value || '').trim().toLowerCase();
@@ -1153,6 +1164,15 @@ const fmtDate = iso => {
   if (!iso) return '';
   const [y, m, d] = iso.split('-');
   return `${d}/${m}/${y}`;
+};
+/* Date + time, one format for the whole app in both languages:
+   dd/mm/yyyy HH:mm, 24-hour, local time (same day order as fmtDate). */
+const fmtDateTime = v => {
+  if (!v) return '';
+  const d = new Date(v);
+  if (isNaN(d)) return String(v);
+  const z = n => String(n).padStart(2, '0');
+  return `${z(d.getDate())}/${z(d.getMonth() + 1)}/${d.getFullYear()} ${z(d.getHours())}:${z(d.getMinutes())}`;
 };
 
 /* Specification cell: short roll-up of the detailed spec fields.
@@ -3212,8 +3232,8 @@ function regRender() {
   for (const c of REG.cols) {
     // The header carries the same alignment as its cells, so a money column
     // reads as one right-ranged block instead of a left title over right digits.
-    const th = el('th', { className: 'sortable' + (REG_RIGHT.has(c) ? ' num' : '') });
-    th.append(document.createTextNode(c));
+    const th = el('th', { className: 'sortable' + (REG_RIGHT.has(c) ? ' num' : ''), title: c });
+    th.append(document.createTextNode(colLabel(c)));
     if (REG.sort === c) th.append(el('span', { className: 'dir',
                                                textContent: REG.dir === 'asc' ? '▲' : '▼' }));
     th.onclick = () => {
@@ -3397,7 +3417,7 @@ function regRenderCols() {
       if (!REG.cols.length) REG.cols = [c];
       regSaveCols(); regRenderCols(); regLoad(true);
     };
-    row.append(cb, el('span', { textContent: c }));
+    row.append(cb, el('span', { textContent: colLabel(c), title: c }));
     if (on) {
       const i = REG.cols.indexOf(c);
       const up = el('button', { textContent: '◀', title: t('reg.up'), disabled: i === 0 });
@@ -5543,9 +5563,7 @@ function auRender(rows) {
   head.append(el('tr', {}, ['audit.col.at', 'audit.col.user', 'audit.col.table', 'audit.col.op',
                             'audit.col.pk', 'audit.col.changes']
     .map(k => el('th', { textContent: t(k) }))));
-  const fmtAt = s => new Date(s).toLocaleString(LANG === 'vi' ? 'vi-VN' : 'en-GB',
-    { day: '2-digit', month: '2-digit', year: 'numeric',
-      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  const fmtAt = fmtDateTime;
   for (const r of rows)
     body.append(el('tr', {}, [
       el('td', { textContent: fmtAt(r.at) }),
@@ -5690,9 +5708,12 @@ function initCur() {
   for (const b of $$('#curSeg button')) b.onclick = () => curSet(b.dataset.cur);
   curMark();
 }
+/* Short figures, written like the SSP BOD dashboard: "39.28 bn", "755.1 M",
+   plain below a million; decimal mark per language (39,28 bn in Vietnamese). */
 const fmtM = v => { if (v == null || !isFinite(v)) return '—';
-  const c = curV(v), p = curUsd() ? '$' : '';
-  return p + (Math.abs(c) >= 1e6 ? fmtInt(Math.round(c / 1e6)) + 'M' : fmtInt(Math.round(c))); };
+  const c = curV(v), p = curUsd() ? '$' : '', a = Math.abs(c);
+  const dec = (x, d) => x.toLocaleString(pmLoc(), { minimumFractionDigits: d, maximumFractionDigits: d });
+  return p + (a >= 1e9 ? dec(c / 1e9, 2) + ' bn' : a >= 1e6 ? dec(c / 1e6, 1) + ' M' : fmtInt(Math.round(c))); };
 const fmtPct = (v, d = 1) => (v == null || !isFinite(v)) ? '—'
   : (v * 100).toLocaleString(pmLoc(), { maximumFractionDigits: d, minimumFractionDigits: d }) + '%';
 const pmSum = (rows, f) => rows.reduce((s, r) => s + (Number(typeof f === 'function' ? f(r) : r[f]) || 0), 0);
@@ -6460,12 +6481,16 @@ async function ppLoad() {
   msg(out, 'info', t('table.loading'));
   try {
     await pmLookups();
-    const [rows, finals, vendors] = await Promise.all([
+    const [rows, finals, vendors, money] = await Promise.all([
       pmSelectAll('pm_project', 'select=*&order=year.desc,code'),
       SB.select('pm_budget_round', 'select=id,year&is_final=eq.true'),
-      SB.select('pm_vendor', 'select=code,name,aliases&order=name')
+      SB.select('pm_vendor', 'select=code,name,aliases&order=name'),
+      // Paid so far (21_pm_payment.sql). Not run yet, or no right to see
+      // payments: the column is simply left out.
+      can('payment', 'view') ? pmSelectAll('pm_project_money', 'select=project_code,paid_gross,invoiced_net,invoiced_vat').catch(() => null) : null
     ]);
     PM.prj.rows = rows;
+    PM.prj.money = money ? new Map(money.map(m => [m.project_code, m])) : null;
     PM.prj.vendors = vendors;
     const ids = finals.map(f => f.id);
     const fl = ids.length
@@ -6516,6 +6541,19 @@ function ppFlags(p) {
   return f;
 }
 
+/* Paid so far, shown PRE-TAX so it sits beside the contract value (also
+   pre-tax) like for like: the bank amount (incl. VAT) is divided by 1 + the
+   project's VAT rate as its invoices show it — 8% (÷ 1.08) when it has no
+   invoice yet. Comparing the gross figure with the net contract made a fully
+   paid project look ~8% over. */
+function ppPaid(p) {
+  const m = PM.prj.money && PM.prj.money.get(p.code);
+  if (!m || !(Number(m.paid_gross) > 0)) return null;
+  const vat = Number(m.invoiced_net) > 0 ? Number(m.invoiced_vat) / Number(m.invoiced_net) : 0.08;
+  const paid = Number(m.paid_gross) / (1 + vat);
+  const base = p.contract_value != null && Number(p.contract_value) > 0 ? Number(p.contract_value) : null;
+  return { paid, base, pct: base ? paid / base : null };
+}
 function ppRender() {
   MONEY.year = +$('#ppYear').value || null;
   const head = $('#ppGrid thead'), body = $('#ppGrid tbody');
@@ -6526,9 +6564,14 @@ function ppRender() {
   const bar = $('#ppMsg');
   const rows = ppFiltered();
   const cols = [['#', 'num idx'], ['pm.col.code'], ['pm.col.name'], ['pm.col.dept'], ['pm.col.budgeted'],
-    ['pm.col.estimate', 'num'], ['pm.col.contract', 'num'], ['pm.col.variance', 'num'], ['pm.col.vendor'],
+    ['pm.col.estimate', 'num'], ['pm.col.contract', 'num'], ['pm.col.variance', 'num'],
+    ...(PM.prj.money ? [['pm.col.paid', 'num']] : []), ['pm.col.vendor'],
     ['pm.col.request'], ['pm.col.approve'], ['pm.col.purchase'], ['pm.col.handover'], ['pm.col.status']];
-  head.append(el('tr', {}, cols.map(([k, c]) => el('th', { className: c || '', textContent: k === '#' ? '#' : t(k) }))));
+  head.append(el('tr', {}, cols.map(([k, c]) => el('th', { className: c || '', textContent: k === '#' ? '#' : t(k),
+    title: k === 'pm.col.paid' ? t('pm.col.paidHint') : '' }))));
+  const paidCell = pd => el('td', { className: 'num paidc', title: t('pm.col.paidHint') }, pd ? [
+    document.createTextNode(fmtMoney(pd.paid)),
+    el('small', { className: 'pp' + (pd.pct > 1.0001 ? ' neg' : ''), textContent: pd.pct != null ? fmtPct(pd.pct, 0) : '—' })] : []);
   rows.forEach((p, i) => {
     const v = p.contract_value != null && p.estimated_value ? (p.contract_value - p.estimated_value) / p.estimated_value : null;
     const flags = ppFlags(p);
@@ -6543,6 +6586,7 @@ function ppRender() {
       el('td', { className: 'num', textContent: p.estimated_value != null ? fmtMoney(p.estimated_value) : '' }),
       el('td', { className: 'num', textContent: p.contract_value != null ? fmtMoney(p.contract_value) : '' }),
       el('td', { className: 'num' + (v > 0 ? ' neg' : ''), textContent: v == null ? '' : (v > 0 ? '+' : '') + fmtPct(v) }),
+      ...(PM.prj.money ? [paidCell(ppPaid(p))] : []),
       el('td', { textContent: p.chosen_vendor || '' }),
       el('td', { textContent: fmtDate(p.request_date) }),
       el('td', { textContent: fmtDate(p.approve_date) }),
@@ -6561,7 +6605,11 @@ function ppRender() {
       el('td', { colSpan: 5, textContent: t('pm.total', { n: fmtInt(rows.length) }) }),
       el('td', { className: 'num', textContent: fmtMoney(pmSum(rows, 'estimated_value')) }),
       el('td', { className: 'num', textContent: fmtMoney(pmSum(rows, 'contract_value')) }),
-      el('td', { colSpan: 7 })]));
+      ...(PM.prj.money ? (() => {
+        const ps = rows.map(ppPaid).filter(Boolean);
+        const paid = ps.reduce((a, x) => a + x.paid, 0), base = ps.reduce((a, x) => a + (x.base || 0), 0);
+        return [el('td'), paidCell(ps.length ? { paid, pct: base ? paid / base : null } : null), el('td', { colSpan: 6 })];
+      })() : [el('td', { colSpan: 7 })])]));
   }
   // Tools ride in the message line's slot, above the grid.
   let tb = $('#ppTools');
@@ -6753,6 +6801,11 @@ function ppExport() {
     o[t('pm.col.entity')] = pmEntity(p.dept_code);
     o[t('pm.col.budgeted')] = p.budgeted ? 'Y' : 'N';
     o[t('pm.col.status')] = t('pm.st.' + p.status);
+    if (PM.prj.money) {
+      const pd = ppPaid(p);
+      o[t('pm.col.paid')] = pd ? Math.round(pd.paid) : null;
+      o[t('pm.col.paidPct')] = pd && pd.pct != null ? Math.round(pd.pct * 1000) / 10 : null;
+    }
     return o;
   });
   const wb = XLSX.utils.book_new();
@@ -6767,7 +6820,7 @@ function ppExport() {
    lists every series, and a table view behind every chart. */
 // SVG presentation attributes take literal colours; CSS variables are only
 // dependable inside CSS and style="". Same values as the .viz tokens.
-const VZ = { grid: '#e1e0d9', axis: '#c3c2b7', ink3: '#898781', surface: '#ffffff' };
+const VZ = { grid: '#e2e6ee', axis: '#c3cad6', ink3: '#6b7280', surface: '#ffffff' };
 const SVGNS = 'http://www.w3.org/2000/svg';
 const sv = (tag, attrs = {}, kids = []) => {
   const n = document.createElementNS(SVGNS, tag);
@@ -6980,7 +7033,7 @@ function gantt(W, items, year) {
     if (tpos != null) track.append(el('div', { className: 'today', style: `left:${tpos}%` }));
     const show = ev => tipShow(ev, `${it.code} — ${it.name || ''}`, [
       { color: 'var(--track)', label: t('pm.viz.planned'), value: `${fmtDate(it.ps) || '—'} → ${fmtDate(it.pe) || '—'}` },
-      { color: 'var(--series-1)', label: t('pm.viz.actual'), value: `${fmtDate(it.as) || '—'} → ${fmtDate(it.ae) || (it.open ? t('pm.viz.ongoing') : '—')}` },
+      { color: 'var(--series-2)', label: t('pm.viz.actual'), value: `${fmtDate(it.as) || '—'} → ${fmtDate(it.ae) || (it.open ? t('pm.viz.ongoing') : '—')}` },
       { label: t('pm.col.status'), value: t('pm.st.' + it.status) }]);
     track.addEventListener('pointermove', show); track.addEventListener('focus', show);
     track.addEventListener('pointerleave', tipHide); track.addEventListener('blur', tipHide);
@@ -7138,7 +7191,7 @@ function pdRender() {
   for (const p of committedSet) cV.set(p.dept_code, (cV.get(p.dept_code) || 0) + (Number(p.contract_value) || 0));
   depKeys.sort((a, b) => (bV.get(b) || 0) - (bV.get(a) || 0));
   const depCats = depKeys.map(k => ({ key: k, label: k }));
-  const s1 = [{ label: t('pm.viz.budget'), color: '#2a78d6', values: bV }, { label: t('pm.viz.committed'), color: '#eb6834', values: cV }];
+  const s1 = [{ label: t('pm.viz.budget'), color: '#9fb8dc', values: bV }, { label: t('pm.viz.committed'), color: '#0b1f3a', values: cV }];
   charts.append(chartCard(t('pm.viz.byDept'), null, [{ label: s1[0].label, color: C1 }, { label: s1[1].label, color: C2 }],
     W => hbarChart(W, depCats, s1),
     () => [[t('pm.col.dept'), s1[0].label, s1[1].label], ...depKeys.map(k => [k, fmtMoney(bV.get(k) || 0), fmtMoney(cV.get(k) || 0)])]));
@@ -7147,7 +7200,7 @@ function pdRender() {
   for (const l of lines) { const k = l.project_category || t('pm.viz.uncategorised'); catV.set(k, (catV.get(k) || 0) + (Number(l.estimated_value) || 0)); }
   const catKeys = [...catV.keys()].sort((a, b) => catV.get(b) - catV.get(a));
   charts.append(chartCard(t('pm.viz.byCat'), null, null,
-    W => hbarChart(W, catKeys.map(k => ({ key: k, label: k })), [{ label: t('pm.viz.budget'), color: '#2a78d6', values: catV }]),
+    W => hbarChart(W, catKeys.map(k => ({ key: k, label: k })), [{ label: t('pm.viz.budget'), color: '#9fb8dc', values: catV }]),
     () => [[t('pm.col.projCat'), t('pm.viz.budget'), t('pm.viz.share')], ...catKeys.map(k => [k, fmtMoney(catV.get(k)), fmtPct(catV.get(k) / (budget || 1))])]));
   // 3. Plan vs committed, cumulative by month.
   const plan = [], act = [];
@@ -7159,17 +7212,17 @@ function pdRender() {
   }
   const mNames = Array.from({ length: 12 }, (_, i) => pmMonthName(i + 1));
   const hasPlan = pc > 0;
-  const s3 = [{ label: t('pm.viz.plannedCum'), color: '#2a78d6', values: plan }, { label: t('pm.viz.committedCum'), color: '#eb6834', values: act }];
+  const s3 = [{ label: t('pm.viz.plannedCum'), color: '#9fb8dc', values: plan }, { label: t('pm.viz.committedCum'), color: '#0b1f3a', values: act }];
   charts.append(chartCard(t('pm.viz.overTime'), hasPlan ? null : t('pm.viz.noPhasing'),
     [{ label: s3[0].label, color: C1, line: true }, { label: s3[1].label, color: C2, line: true }],
     W => lineChart(W, mNames, s3, months),
     () => [[t('pm.viz.month'), s3[0].label, s3[1].label], ...mNames.map((m, i) => [m, fmtMoney(plan[i]), fmtMoney(act[i])])], true));
   // 4. Risk mix — ordered, so an ordinal ramp, darkest = most severe.
-  const ramp = [['Critical', '#0d366b', '#fff'], ['High', '#1c5cab', '#fff'], ['Medium', '#3987e5', '#fff'], ['Low', '#86b6ef', '#0b0b0b']];
+  const ramp = [['Critical', '#0d366b', '#fff'], ['High', '#1c5cab', '#fff'], ['Medium', '#3987e5', '#fff'], ['Low', '#86b6ef', '#1f2937']];
   const parts = ramp.map(([k, c, ink]) => ({ label: k, color: c, ink, n: lines.filter(l => l.risk_level === k).length,
     v: pmSum(lines.filter(l => l.risk_level === k), 'estimated_value') }));
   const other = lines.filter(l => !PM_RISK.includes(l.risk_level));
-  if (other.length) parts.push({ label: t('pm.viz.notAssessed'), color: '#cfcdc4', ink: '#0b0b0b', n: other.length, v: pmSum(other, 'estimated_value') });
+  if (other.length) parts.push({ label: t('pm.viz.notAssessed'), color: '#d5dbe6', ink: '#1f2937', n: other.length, v: pmSum(other, 'estimated_value') });
   const riskCard = chartCard(t('pm.viz.risk'), t('pm.viz.riskSub', { n: fmtInt(lines.length) }),
     parts.filter(p => p.n).map(p => ({ label: `${p.label} · ${fmtInt(p.n)}`, color: p.color })),
     W => stackBar(W, parts),
@@ -7186,7 +7239,7 @@ function pdRender() {
   const cap40 = 40;
   let showAll = false;
   const gCard = chartCard(t('pm.viz.timeline'), t('pm.viz.timelineSub', { n: fmtInt(items.length) }),
-    [{ label: t('pm.viz.planned'), color: 'var(--track)' }, { label: t('pm.viz.actual'), color: C1 }],
+    [{ label: t('pm.viz.planned'), color: 'var(--track)' }, { label: t('pm.viz.actual'), color: C2 }],
     W => {
       const w = el('div');
       w.append(gantt(W, showAll ? items : items.slice(0, cap40), y));
@@ -7682,7 +7735,7 @@ function wfRender() {
   const tb = el('table');
   tb.append(el('tr', {}, ['wf.h.at', 'wf.h.who', 'wf.h.action', 'wf.h.step', 'wf.h.note'].map(k => el('th', { textContent: t(k) }))));
   for (const e of WF.events) tb.append(el('tr', {}, [
-    el('td', { textContent: new Date(e.at).toLocaleString(pmLoc(), { hour12: false }) }),
+    el('td', { textContent: fmtDateTime(e.at) }),
     el('td', { textContent: e.actor_email || '' }), el('td', { textContent: t('wf.a.' + e.action) }),
     el('td', { textContent: e.step != null ? String(e.step) : '' }), el('td', { style: 'white-space:normal', textContent: e.comment || '' })]));
   hist.append(el('div', { className: 'wrap' }, tb));
@@ -8805,7 +8858,7 @@ function ntRender() {
       el('span', { className: 'dot' }),
       el('div', {}, [document.createTextNode(ntText(r)),
         ...(r.comment ? [el('i', { textContent: '“' + r.comment + '”' })] : []),
-        el('small', { textContent: `${r.project_code || ''} · ${new Date(r.created_at).toLocaleString(pmLoc(), { hour12: false, dateStyle: 'short', timeStyle: 'short' })}` })])]);
+        el('small', { textContent: `${r.project_code || ''} · ${fmtDateTime(r.created_at)}` })])]);
     it.onclick = () => ntOpen(r);
     p.append(it);
   }
