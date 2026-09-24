@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260924p';
+const APP_VERSION = '20260924r';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -6491,6 +6491,22 @@ async function ppLoad() {
     ]);
     PM.prj.rows = rows;
     PM.prj.money = money ? new Map(money.map(m => [m.project_code, m])) : null;
+    // Documents and the step each one waits at (19_pm_workflow.sql), for the
+    // "current step" column. Missing tables: the column is left out.
+    PM.prj.docs = null;
+    try {
+      await wfLookups();
+      const docs = await pmSelectAll('pm_doc', 'select=id,project_code,doc_type,doc_no,status,current_step,final:data->final');
+      const open = docs.filter(d => d.status === 'in_review').map(d => d.id);
+      const steps = open.length ? await pmSelectAll('pm_doc_step', `select=doc_id,step,role_code&doc_id=in.(${open.join(',')})`) : [];
+      PM.prj.docs = new Map();
+      for (const d of docs) {
+        const st = steps.find(x => x.doc_id === d.id && x.step === d.current_step);
+        d.role = st ? st.role_code : null;
+        d.final = d.final === true || d.final === 'true';
+        (PM.prj.docs.get(d.project_code) || PM.prj.docs.set(d.project_code, []).get(d.project_code)).push(d);
+      }
+    } catch { PM.prj.docs = null; }
     PM.prj.vendors = vendors;
     const ids = finals.map(f => f.id);
     const fl = ids.length
@@ -6498,7 +6514,19 @@ async function ppLoad() {
       : [];
     PM.prj.finalLines = fl.map(l => Object.assign(l, { year: (finals.find(f => f.id === l.round_id) || {}).year }));
     PM.prj.finalCodes = new Set(fl.flatMap(l => [l.project_code, l.current_code]).filter(Boolean));
-    const ys = [...new Set(rows.map(r => r.year))].sort((a, b) => b - a);
+    /* Final-budget lines nobody has opened a project for yet: shown in the list
+       too, as "not started", so the list covers the whole approved budget and
+       not only the projects that already have a dossier. Split lines count as
+       opened once any sub-project exists (main_code). */
+    const opened = new Set(rows.flatMap(r => [r.code, r.main_code]));
+    PM.prj.virtual = PM.prj.finalLines
+      .filter(l => l.project_code && !opened.has(l.project_code) && !(l.current_code && opened.has(l.current_code)))
+      .map(l => ({ code: l.project_code, main_code: l.project_code, year: l.year, dept_code: pmDept(l.dept_code),
+                   name: l.name, budgeted: true, estimated_value: l.estimated_value, contract_value: null,
+                   status: 'pending', virtual: true, planned_start: l.start_date, planned_end: l.end_date,
+                   investment_type: l.investment_type, risk_level: l.risk_level, reason: l.reason,
+                   asset_item: l.asset_item, location: l.location, project_category: l.project_category }));
+    const ys = [...new Set([...rows, ...PM.prj.virtual].map(r => r.year))].sort((a, b) => b - a);
     const ySel = $('#ppYear');
     const keep = ySel.value;
     ySel.innerHTML = '';
@@ -6524,7 +6552,7 @@ function ppFiltered() {
   const y = $('#ppYear').value, bud = $('#ppBud').value;
   const ent = msValues('ppEnt'), dep = msValues('ppDept'), sts = msValues('ppStatus');
   const q = hnorm($('#ppQ').value);
-  return PM.prj.rows.filter(p =>
+  return [...PM.prj.rows, ...(PM.prj.virtual || [])].filter(p =>
     (!y || String(p.year) === y)
     && (bud === '' || String(Number(p.budgeted)) === bud)
     && (!ent.length || ent.includes(pmEntity(p.dept_code)))
@@ -6554,68 +6582,162 @@ function ppPaid(p) {
   const base = p.contract_value != null && Number(p.contract_value) > 0 ? Number(p.contract_value) : null;
   return { paid, base, pct: base ? paid / base : null };
 }
+/* Where each project stands in the document chain, from pm_doc: the furthest
+   live document, and whom it waits for — or, once it is approved, the next
+   document still to be drawn up. Empty until 19_pm_workflow.sql exists. */
+function ppStage(p) {
+  if (!PM.prj.docs) return null;
+  const seq = ty => ((WF.types.find(x => x.code === ty) || {}).seq) || WF_ORDER.indexOf(ty) * 10;
+  const docs = (PM.prj.docs.get(p.code) || []).filter(d => d.status !== 'cancelled');
+  const d = docs.slice().sort((a, b) => seq(b.doc_type) - seq(a.doc_type) || b.id - a.id)[0];
+  const replacement = /replace/i.test(p.investment_type || '');
+  const nextOf = ty => WF_ORDER.find(x => seq(x) > seq(ty) && x !== 'CT' && (x !== 'RR' || replacement));
+  if (!d) return { type: 'PR', state: 'none' };
+  if (d.status === 'in_review') return { type: d.doc_type, state: 'review', who: d.role ? wfRoleName(d.role) : '', no: d.doc_no };
+  if (d.status === 'approved') {
+    if (d.doc_type === 'AH' && d.final) return { type: 'AH', state: 'done', no: d.doc_no };
+    const nx = d.doc_type === 'AH' ? 'AH' : nextOf(d.doc_type);
+    return nx ? { type: nx, state: 'none' } : { type: d.doc_type, state: 'done', no: d.doc_no };
+  }
+  return { type: d.doc_type, state: d.status, no: d.doc_no };           // draft / returned / rejected
+}
+const ppStageText = s => !s ? '' : s.state === 'done' ? t('pm.stage.done')
+  : `${s.type} · ${s.state === 'review' ? t('pm.stage.review', { who: s.who || '?' }) : t('pm.stage.' + s.state)}`;
+
+/* Filter text per column, like the Đối chiếu hoá đơn grid: words match
+   anywhere; on figures ">100000000", "<0", "1..5" or "=0" compare the value. */
+function ppCfMatch(col, p, q) {
+  q = q.trim();
+  if (!q) return true;
+  if (col.num) {
+    const v = col.val(p);
+    const n = s => xlNum(String(s).replace(/%$/, ''));
+    let m;
+    if ((m = /^(>=|<=|>|<|=)\s*(.+)$/.exec(q)) && n(m[2]) != null) {
+      if (v == null) return false;
+      const x = n(m[2]);
+      return m[1] === '>' ? v > x : m[1] === '<' ? v < x : m[1] === '>=' ? v >= x : m[1] === '<=' ? v <= x : v === x;
+    }
+    if ((m = /^(.+?)\.\.(.+)$/.exec(q)) && n(m[1]) != null && n(m[2]) != null) return v != null && v >= n(m[1]) && v <= n(m[2]);
+  }
+  return hnorm(col.txt(p)).includes(hnorm(q));
+}
+
+// The grid's columns: header, sort value, filter text and cell, in one place.
+function ppCols() {
+  const money = (k, lbl) => ({ k, lbl, num: true, val: p => p[k] != null ? Number(p[k]) : null,
+    txt: p => p[k] != null ? fmtMoney(p[k]) : '', td: p => el('td', { className: 'num', textContent: p[k] != null ? fmtMoney(p[k]) : '' }) });
+  const date = (k, lbl) => ({ k, lbl, val: p => p[k] || '', txt: p => fmtDate(p[k]), td: p => el('td', { className: 'nw', textContent: fmtDate(p[k]) }) });
+  const varOf = p => p.contract_value != null && p.estimated_value ? (p.contract_value - p.estimated_value) / p.estimated_value : null;
+  const cols = [
+    { k: 'status', lbl: 'pm.col.status', val: p => PM_STATUS.indexOf(p.status), txt: p => t('pm.st.' + p.status), td: p => el('td', { className: 'nw' }, pmStatusChip(p.status)) },
+    ...(PM.prj.docs ? [{ k: 'stage', lbl: 'pm.col.stage', val: p => ppStageText(ppStage(p)), txt: p => ppStageText(ppStage(p)),
+      td: p => { const s = ppStage(p); return el('td', { className: 'nw' }, s ? el('span', { className: 'stg stg-' + s.state, title: s.no || '' }, [
+        ...(s.state === 'done' ? [] : [el('b', { textContent: s.type })]),
+        document.createTextNode(s.state === 'done' ? t('pm.stage.done') : ' ' + (s.state === 'review' ? t('pm.stage.review', { who: s.who || '?' }) : t('pm.stage.' + s.state)))]) : ''); } }] : []),
+    { k: 'code', lbl: 'pm.col.code', val: p => p.code, txt: p => p.code, td: p => {
+      const flags = ppFlags(p), td = el('td', { className: 'nw' }, el('code', { textContent: p.code }));
+      if (flags.length) td.append(el('span', { className: 'flag', textContent: '⚠', title: flags.join('\n') }));
+      if (p.virtual) td.append(el('span', { className: 'virt', textContent: t('pm.prj.budgetOnly'), title: t('pm.prj.budgetOnlyHint') }));
+      return td; } },
+    { k: 'name', lbl: 'pm.col.name', val: p => p.name || '', txt: p => p.name || '', td: p => el('td', { className: 'wrapname', textContent: p.name || '' }) },
+    { k: 'dept', lbl: 'pm.col.dept', val: p => p.dept_code, txt: p => p.dept_code || '', td: p => el('td', { textContent: p.dept_code }) },
+    { k: 'budgeted', lbl: 'pm.col.budgeted', val: p => p.budgeted ? 1 : 0, txt: p => p.budgeted ? '✔ ' + t('pm.f.budgetedOnly') : '— ' + t('pm.f.unbudgetedOnly'),
+      td: p => el('td', { className: 'c', textContent: p.budgeted ? '✔' : '—' }) },
+    money('estimated_value', 'pm.col.estimate'), money('contract_value', 'pm.col.contract'),
+    { k: 'variance', lbl: 'pm.col.variance', num: true, val: p => { const v = varOf(p); return v == null ? null : v * 100; },
+      txt: p => { const v = varOf(p); return v == null ? '' : fmtPct(v); },
+      td: p => { const v = varOf(p); return el('td', { className: 'num' + (v > 0 ? ' neg' : ''), textContent: v == null ? '' : (v > 0 ? '+' : '') + fmtPct(v) }); } },
+    ...(PM.prj.money ? [{ k: 'paid', lbl: 'pm.col.paid', hint: 'pm.col.paidHint', num: true,
+      val: p => { const pd = ppPaid(p); return pd ? pd.paid : null; }, txt: p => { const pd = ppPaid(p); return pd ? fmtMoney(pd.paid) : ''; },
+      td: p => ppPaidCell(ppPaid(p)) }] : []),
+    { k: 'vendor', lbl: 'pm.col.vendor', val: p => p.chosen_vendor || '', txt: p => p.chosen_vendor || '', td: p => el('td', { textContent: p.chosen_vendor || '' }) },
+    date('request_date', 'pm.col.request'), date('approve_date', 'pm.col.approve'),
+    date('purchase_date', 'pm.col.purchase'), date('handover_date', 'pm.col.handover')
+  ];
+  return cols;
+}
+const ppPaidCell = pd => el('td', { className: 'num paidc', title: t('pm.col.paidHint') }, pd ? [
+  document.createTextNode(fmtMoney(pd.paid)),
+  el('small', { className: 'pp' + (pd.pct > 1.0001 ? ' neg' : ''), textContent: pd.pct != null ? fmtPct(pd.pct, 0) : '—' })] : []);
+
+// Filtered by the bar above AND the column filters, then sorted.
+function ppRows(cols = ppCols()) {
+  const cf = PM.prj.cf || {};
+  let rows = ppFiltered().filter(p => cols.every(c => ppCfMatch(c, p, cf[c.k] || '')));
+  const s = PM.prj.sort;
+  const col = s && cols.find(c => c.k === s.k);
+  if (col) {
+    const dir = s.dir === 'desc' ? -1 : 1;
+    rows = rows.slice().sort((a, b) => {
+      const x = col.val(a), y = col.val(b);
+      if (x == null || x === '') return 1;
+      if (y == null || y === '') return -1;
+      return (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), pmLoc())) * dir;
+    });
+  }
+  return rows;
+}
+
 function ppRender() {
   MONEY.year = +$('#ppYear').value || null;
-  const head = $('#ppGrid thead'), body = $('#ppGrid tbody');
-  head.innerHTML = ''; body.innerHTML = '';
+  const head = $('#ppGrid thead');
+  head.innerHTML = '';
+  const cols = ppCols();
+  PM.prj.cf = PM.prj.cf || {};
+  // Header: click to sort (again to reverse), and a filter box under each title.
+  const hr = el('tr', {}, [el('th', { className: 'num idx', textContent: '#' }), ...cols.map(c => {
+    const s = PM.prj.sort && PM.prj.sort.k === c.k ? PM.prj.sort.dir : null;
+    const th = el('th', { className: 'srt' + (c.num ? ' num' : '') + (s ? ' on' : ''), title: c.hint ? t(c.hint) : t('pm.sortHint') },
+      [document.createTextNode(t(c.lbl)), el('span', { className: 'arr', textContent: s === 'asc' ? '▲' : s === 'desc' ? '▼' : '⇅' })]);
+    th.onclick = () => { PM.prj.sort = { k: c.k, dir: s === 'asc' ? 'desc' : 'asc' }; ppRender(); };
+    return th; })]);
+  const fr = el('tr', { className: 'frow' }, [el('th', {}, el('button', { className: 'btn tiny', textContent: '↺', title: t('pm.cfClear'),
+    onclick: () => { PM.prj.cf = {}; ppRender(); } })), ...cols.map(c => {
+    const i = el('input', { className: 'cfin' + (PM.prj.cf[c.k] ? ' on' : ''), value: PM.prj.cf[c.k] || '', spellcheck: false,
+      placeholder: c.num ? '>0 · <0 · 1..9' : t('pm.cfPh') });
+    i.oninput = () => { PM.prj.cf[c.k] = i.value; i.classList.toggle('on', !!i.value); ppRenderBody(cols); };
+    return el('th', {}, i); })]);
+  head.append(hr, fr);
+  ppRenderBody(cols);
+  // Tools ride in the message line's slot, above the grid.
   const tools = [];
   if (can('project', 'create')) tools.push(['pm.prj.new', () => ppNew()]);
   tools.push(['reg.xlsx', ppExport]);
-  const bar = $('#ppMsg');
-  const rows = ppFiltered();
-  const cols = [['#', 'num idx'], ['pm.col.code'], ['pm.col.name'], ['pm.col.dept'], ['pm.col.budgeted'],
-    ['pm.col.estimate', 'num'], ['pm.col.contract', 'num'], ['pm.col.variance', 'num'],
-    ...(PM.prj.money ? [['pm.col.paid', 'num']] : []), ['pm.col.vendor'],
-    ['pm.col.request'], ['pm.col.approve'], ['pm.col.purchase'], ['pm.col.handover'], ['pm.col.status']];
-  head.append(el('tr', {}, cols.map(([k, c]) => el('th', { className: c || '', textContent: k === '#' ? '#' : t(k),
-    title: k === 'pm.col.paid' ? t('pm.col.paidHint') : '' }))));
-  const paidCell = pd => el('td', { className: 'num paidc', title: t('pm.col.paidHint') }, pd ? [
-    document.createTextNode(fmtMoney(pd.paid)),
-    el('small', { className: 'pp' + (pd.pct > 1.0001 ? ' neg' : ''), textContent: pd.pct != null ? fmtPct(pd.pct, 0) : '—' })] : []);
-  rows.forEach((p, i) => {
-    const v = p.contract_value != null && p.estimated_value ? (p.contract_value - p.estimated_value) / p.estimated_value : null;
-    const flags = ppFlags(p);
-    const codeTd = el('td', {}, el('code', { textContent: p.code }));
-    if (flags.length) codeTd.append(el('span', { className: 'flag', textContent: '⚠', title: flags.join('\n') }));
-    const tr = el('tr', { className: PM.prj.pick === p.code ? 'pick' : '' }, [
-      el('td', { className: 'num idx', textContent: fmtInt(i + 1) }),
-      codeTd,
-      el('td', { textContent: p.name || '' }),
-      el('td', { textContent: p.dept_code }),
-      el('td', { textContent: p.budgeted ? '✔' : '—' }),
-      el('td', { className: 'num', textContent: p.estimated_value != null ? fmtMoney(p.estimated_value) : '' }),
-      el('td', { className: 'num', textContent: p.contract_value != null ? fmtMoney(p.contract_value) : '' }),
-      el('td', { className: 'num' + (v > 0 ? ' neg' : ''), textContent: v == null ? '' : (v > 0 ? '+' : '') + fmtPct(v) }),
-      ...(PM.prj.money ? [paidCell(ppPaid(p))] : []),
-      el('td', { textContent: p.chosen_vendor || '' }),
-      el('td', { textContent: fmtDate(p.request_date) }),
-      el('td', { textContent: fmtDate(p.approve_date) }),
-      el('td', { textContent: fmtDate(p.purchase_date) }),
-      el('td', { textContent: fmtDate(p.handover_date) }),
-      el('td', {}, pmStatusChip(p.status))
-    ]);
-    tr.onclick = () => { PM.prj.pick = p.code; ppRender(); ppDetail(p); };
-    body.append(tr);
-  });
-  if (!rows.length)
-    body.append(el('tr', {}, el('td', { colSpan: cols.length, style: 'color:var(--dim);padding:14px',
-      textContent: PM.prj.rows.length ? t('pm.none.filter') : t('pm.prj.empty') })));
-  else {
-    body.append(el('tr', { className: 'tot' }, [
-      el('td', { colSpan: 5, textContent: t('pm.total', { n: fmtInt(rows.length) }) }),
-      el('td', { className: 'num', textContent: fmtMoney(pmSum(rows, 'estimated_value')) }),
-      el('td', { className: 'num', textContent: fmtMoney(pmSum(rows, 'contract_value')) }),
-      ...(PM.prj.money ? (() => {
-        const ps = rows.map(ppPaid).filter(Boolean);
-        const paid = ps.reduce((a, x) => a + x.paid, 0), base = ps.reduce((a, x) => a + (x.base || 0), 0);
-        return [el('td'), paidCell(ps.length ? { paid, pct: base ? paid / base : null } : null), el('td', { colSpan: 6 })];
-      })() : [el('td', { colSpan: 7 })])]));
-  }
-  // Tools ride in the message line's slot, above the grid.
   let tb = $('#ppTools');
-  if (!tb) { tb = el('div', { id: 'ppTools', className: 'row', style: 'margin:10px 0 0;justify-content:flex-end' }); bar.before(tb); }
+  if (!tb) { tb = el('div', { id: 'ppTools', className: 'row', style: 'margin:10px 0 0;justify-content:flex-end' }); $('#ppMsg').before(tb); }
   tb.innerHTML = '';
   for (const [k, fn] of tools) { const b = el('button', { className: 'btn' + (k === 'pm.prj.new' ? ' pri' : ''), textContent: t(k) }); b.onclick = fn; tb.append(b); }
+}
+
+// Rows only, so typing in a column filter keeps the cursor where it is.
+function ppRenderBody(cols = ppCols()) {
+  const body = $('#ppGrid tbody');
+  body.innerHTML = '';
+  const rows = ppRows(cols);
+  rows.forEach((p, i) => {
+    const tr = el('tr', { className: (PM.prj.pick === p.code ? 'pick' : '') + (p.virtual ? ' virtrow' : '') }, [el('td', { className: 'num idx', textContent: fmtInt(i + 1) }), ...cols.map(c => c.td(p))]);
+    tr.onclick = () => { PM.prj.pick = p.code; ppRenderBody(cols); if (p.virtual) ppVirtualDetail(p); else ppDetail(p); };
+    body.append(tr);
+  });
+  if (!rows.length) {
+    body.append(el('tr', {}, el('td', { colSpan: cols.length + 1, style: 'color:var(--dim);padding:14px',
+      textContent: PM.prj.rows.length ? t('pm.none.filter') : t('pm.prj.empty') })));
+    return;
+  }
+  // Totals of what is shown: estimate, contract, paid (with its share).
+  const tot = el('tr', { className: 'tot' }, [el('td', { className: 'num idx' })]);
+  cols.forEach((c, ci) => {
+    if (ci === 0) return tot.append(el('td', { textContent: t('pm.total', { n: fmtInt(rows.length) }) }));
+    if (c.k === 'estimated_value' || c.k === 'contract_value') return tot.append(el('td', { className: 'num', textContent: fmtMoney(pmSum(rows, c.k)) }));
+    if (c.k === 'paid') {
+      const ps = rows.map(ppPaid).filter(Boolean);
+      const paid = ps.reduce((a, x) => a + x.paid, 0), base = ps.reduce((a, x) => a + (x.base || 0), 0);
+      return tot.append(ppPaidCell(ps.length ? { paid, pct: base ? paid / base : null } : null));
+    }
+    tot.append(el('td'));
+  });
+  body.append(tot);
 }
 
 const PM_PROJ_SHOW = [['code', 'pm.col.code'], ['main_code', 'pm.f.mainCode'], ['name', 'pm.col.name'],
@@ -6729,11 +6851,32 @@ function ppEditForm(p) {
 /* New project: from an approved budget line (the usual case — everything is
    copied over) or unbudgeted, which needs its own code. The database refuses
    an unbudgeted code that a budget line already owns. */
-function ppNew() {
+/* A budget line with no project yet: what the budget says, and a button to
+   open the project from it (the same form as '+ New project', pre-filled). */
+function ppVirtualDetail(p) {
+  const box = $('#ppDetail');
+  box.innerHTML = '';
+  MONEY.year = p.year;
+  const card = el('div', { className: 'card pmdet' });
+  card.append(el('h2', { textContent: ` 2014 ` }),
+    el('div', { className: 'msg info', textContent: t('pm.prj.budgetOnlyHint') }),
+    pmDl(p, [['code', 'pm.col.code'], ['name', 'pm.col.name'], ['dept_code', 'pm.col.dept'], ['estimated_value', 'pm.col.estimate'],
+             ['investment_type', 'pm.col.invest'], ['risk_level', 'pm.col.risk'], ['planned_start', 'pm.f.plannedStart'],
+             ['planned_end', 'pm.f.plannedEnd'], ['asset_item', 'pm.f.assetItem'], ['location', 'pm.f.location'], ['reason', 'pm.f.reason']]));
+  if (can('project', 'create')) {
+    const b = el('button', { className: 'btn pri', textContent: t('pm.prj.openFromLine') });
+    b.onclick = () => ppNew(p.code, p.year);
+    card.append(el('div', { className: 'acts', style: 'margin-top:10px' }, b));
+  }
+  box.append(card);
+  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function ppNew(preCode, preYear) {
   const box = $('#ppDetail');
   box.innerHTML = '';
   PM.prj.pick = null;
-  const y = +$('#ppYear').value || new Date().getFullYear();
+  const y = preYear || +$('#ppYear').value || new Date().getFullYear();
   const taken = new Set(PM.prj.rows.map(r => r.main_code));
   const free = (PM.prj.finalLines || []).filter(l => l.year === y && !taken.has(l.project_code));
   const card = el('div', { className: 'card pmdet' });
@@ -6790,13 +6933,16 @@ function ppNew() {
   row.append(acts);
   card.append(row);
   box.append(card);
+  // Opened from a not-started budget line: that line is already chosen.
+  if (preCode) { const i = free.findIndex(l => l.project_code === preCode); if (i >= 0) lineSel.value = String(i); }
   sync();
   card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function ppExport() {
-  const rows = ppFiltered().map((p, i) => {
+  const rows = ppRows().map((p, i) => {
     const o = { '#': i + 1 };
+    if (PM.prj.docs) o[t('pm.col.stage')] = ppStageText(ppStage(p));
     for (const [k, lbl] of PM_PROJ_SHOW) o[t(lbl)] = p[k];
     o[t('pm.col.entity')] = pmEntity(p.dept_code);
     o[t('pm.col.budgeted')] = p.budgeted ? 'Y' : 'N';

@@ -1014,6 +1014,30 @@
   .chartcard .ch h3 .sub{text-transform:none;letter-spacing:0;font-weight:400;color:var(--dim)}
   .chartcard{border-radius:8px;box-shadow:0 1px 2px rgba(15,30,58,.06)}
   .hero{border-radius:8px;box-shadow:0 1px 2px rgba(15,30,58,.06)}
+  /* Projects grid: fills the page, sortable titles, a filter box per column
+     (same pattern as the Đối chiếu hoá đơn grid), current-step pills. */
+  #v-projects .pmgrid{max-height:calc(100vh - 235px);min-height:300px}
+  #ppGrid{width:100%}
+  #ppGrid td{white-space:nowrap}
+  #ppGrid td.wrapname{white-space:normal;min-width:240px}
+  #ppGrid td.c{text-align:center}
+  #ppGrid th.srt{cursor:pointer;user-select:none;white-space:nowrap}
+  #ppGrid th.srt:hover{background:#e9edf5}
+  #ppGrid th .arr{color:var(--side-dim);font-size:10px;margin-left:4px}
+  #ppGrid th.srt.on,#ppGrid th.srt.on .arr{color:var(--gold)}
+  #ppGrid thead tr:first-child th{border-bottom:1px solid var(--line);top:0}
+  #ppGrid thead tr.frow th{top:30px;padding:3px 4px;border-bottom:2px solid var(--navy)}
+  .cfin{width:100%;min-width:60px;border:1px solid #d5dbe6;border-radius:4px;padding:3px 5px;font-size:11px;font-weight:400;
+        text-transform:none;letter-spacing:0;background:#fff;color:var(--ink)}
+  .cfin::placeholder{color:#b5bdcb}
+  .cfin.on{border-color:var(--gold);background:#fffaf0;font-weight:600}
+  .stg{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10.5px;font-weight:600;background:#eef1f6;color:#44506a}
+  .stg b{font-weight:800;margin-right:1px}
+  .stg-review{background:#e3ecf8;color:var(--blue)}
+  .stg-returned{background:#fdf0dc;color:#94600f}
+  .stg-rejected{background:#fbe5e2;color:var(--red)}
+  .stg-done{background:#e3f3ea;color:var(--green)}
+  .stg-none{background:#f3f4f6;color:var(--dim)}
 </style>
 </head>
 <body>
@@ -1823,7 +1847,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260924p"></script>
-<script src="app.js?v=20260924p"></script>
+<script src="i18n.js?v=20260924r"></script>
+<script src="app.js?v=20260924r"></script>
 </body>
 </html>
