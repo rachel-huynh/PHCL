@@ -14,7 +14,8 @@ $order = @('01_schema.sql', '02_seed_settings.sql',
            '06_seed_product.sql', '07_data_source.sql', '08_seed_counters.sql',
            '10_legacy_assets.sql', '11_suggest.sql', '13_suggest_terms.sql',
            '14_undo_intake.sql', '15_bulk_edit.sql', '16_reset_counters.sql',
-           '17_auth.sql', '18_pm_budget.sql', '19_pm_workflow.sql')
+           '17_auth.sql', '18_pm_budget.sql', '19_pm_workflow.sql',
+           '20_pm_notify.sql', '21_pm_payment.sql')
 
 # Nâng cấp một database ĐANG CHẠY lên đăng nhập bắt buộc. Chỉ gồm các file
 # không có seed — ALL_IN_ONE thì có, và chạy lại seed trên dữ liệu thật sẽ ghi

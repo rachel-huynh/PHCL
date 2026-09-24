@@ -86,6 +86,8 @@ create table if not exists pm_doc (
 );
 create index if not exists pm_doc_project_idx on pm_doc (project_code);
 create index if not exists pm_doc_status_idx  on pm_doc (status);
+-- Chữ ký tay của người lập khi gửi duyệt (giai đoạn 4). Người duyệt ký vào pm_doc_step.signature.
+alter table pm_doc add column if not exists prep_signature jsonb;
 comment on column pm_doc.version is 'Số lần đã gửi duyệt. Mỗi lần bị trả về rồi gửi lại tăng 1.';
 
 create table if not exists pm_doc_step (
@@ -323,14 +325,42 @@ begin
    where id = p_id;
 end $$;
 
--- Gửi duyệt: dựng chuỗi duyệt từ pm_chain tại thời điểm gửi.
-create or replace function pm_doc_submit(p_id bigint)
+/* Chữ ký tay (giai đoạn 4): ảnh PNG vẽ bằng ngón tay / bút trên iPad. Bắt buộc
+   khi GỬI DUYỆT và khi DUYỆT (trả về / từ chối thì không), trừ khi am_setting
+   'pm_require_signature' = false. Kết nối trực tiếp (SQL Editor) được miễn.
+   Chỉ giữ lại ảnh + thời điểm ký — trình duyệt không nhét thêm được gì khác. */
+create or replace function pm_sig_check(p_sig jsonb)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare v_png text := p_sig ->> 'png';
+begin
+  if v_png is null then
+    if app_trusted() or coalesce((select value from am_setting where key = 'pm_require_signature')
+                                 in ('false'::jsonb, '"false"'::jsonb), false) then
+      return null;
+    end if;
+    raise exception 'Cần ký xác nhận trước khi gửi / duyệt.' using errcode = '22023';
+  end if;
+  if v_png not like 'data:image/png;base64,%' or length(v_png) > 300000 then
+    raise exception 'Chữ ký không hợp lệ (phải là ảnh PNG, dưới 300 KB).' using errcode = '22023';
+  end if;
+  return jsonb_build_object('png', v_png, 'at', now());
+end $$;
+
+-- Gửi duyệt: dựng chuỗi duyệt từ pm_chain tại thời điểm gửi, kèm chữ ký người lập.
+-- Bản cũ một tham số phải bỏ: để lại thì PostgREST không biết chọn bản nào.
+drop function if exists pm_doc_submit(bigint);
+create or replace function pm_doc_submit(p_id bigint, p_signature jsonb default null)
 returns void
 language plpgsql
 security definer
 set search_path = public
 as $$
-declare d pm_doc; p pm_project; v_first int; v_from text;
+declare d pm_doc; p pm_project; v_first int; v_from text; v_sig jsonb;
 begin
   select * into d from pm_doc where id = p_id for update;
   if d.id is null then raise exception 'Không có chứng từ %', p_id; end if;
@@ -341,6 +371,7 @@ begin
   if not (d.created_by = auth.uid() or pm_can_prepare(d.doc_type, p.dept_code)) then
     raise exception 'Chỉ người lập mới gửi được %.', d.doc_no using errcode = '42501';
   end if;
+  v_sig := pm_sig_check(p_signature);
 
   delete from pm_doc_step where doc_id = p_id;
   insert into pm_doc_step (doc_id, step, role_code)
@@ -353,7 +384,7 @@ begin
 
   v_from := d.status;
   update pm_doc
-     set status = 'in_review', current_step = v_first, version = version + 1,
+     set status = 'in_review', current_step = v_first, version = version + 1, prep_signature = v_sig,
          submitted_at = now(), decided_at = null, updated_at = now()
    where id = p_id;
   -- Ngày đề xuất của dự án = lần đầu PR được gửi đi.
@@ -377,6 +408,7 @@ declare
   s      pm_doc_step;
   v_next int;
   v_to   text;
+  v_sig  jsonb;
 begin
   select * into d from pm_doc where id = p_id for update;
   if d.id is null then raise exception 'Không có chứng từ %', p_id; end if;
@@ -403,11 +435,12 @@ begin
   if p_action in ('return', 'reject') and coalesce(trim(p_comment), '') = '' then
     raise exception 'Trả về hoặc từ chối phải ghi lý do.';
   end if;
+  if p_action = 'approve' then v_sig := pm_sig_check(p_signature); end if;
 
   update pm_doc_step
      set status = case p_action when 'approve' then 'approved' when 'return' then 'returned' else 'rejected' end,
          acted_by = auth.uid(), acted_email = coalesce(app_claims() ->> 'email', 'sql:' || session_user),
-         acted_at = now(), comment = nullif(trim(p_comment), ''), signature = p_signature
+         acted_at = now(), comment = nullif(trim(p_comment), ''), signature = v_sig
    where id = s.id;
 
   if p_action = 'approve' then
@@ -618,18 +651,18 @@ revoke insert, update, delete on pm_doc, pm_doc_step, pm_doc_event from authenti
 revoke execute on function pm_entity(text), app_user_role_covers(uuid, text, text),
                            pm_doc_log(bigint, text, text, text, int, text), pm_can_prepare(text, text),
                            pm_doc_create(text, text, jsonb), pm_doc_save(bigint, jsonb),
-                           pm_doc_submit(bigint), pm_doc_act(bigint, text, text, jsonb),
-                           pm_doc_apply(bigint), pm_doc_cancel(bigint, text),
+                           pm_doc_submit(bigint, jsonb), pm_doc_act(bigint, text, text, jsonb),
+                           pm_sig_check(jsonb), pm_doc_apply(bigint), pm_doc_cancel(bigint, text),
                            pm_inbox(), pm_next_actors(bigint)
   from public, anon;
 grant execute on function pm_entity(text), pm_can_prepare(text, text),
                           pm_doc_create(text, text, jsonb), pm_doc_save(bigint, jsonb),
-                          pm_doc_submit(bigint), pm_doc_act(bigint, text, text, jsonb),
+                          pm_doc_submit(bigint, jsonb), pm_doc_act(bigint, text, text, jsonb),
                           pm_doc_cancel(bigint, text), pm_inbox(), pm_next_actors(bigint)
   to authenticated;
 -- Nội bộ: không gọi thẳng qua API (ghi nhật ký giả, hay áp mốc dự án khi chưa duyệt).
 revoke execute on function pm_doc_log(bigint, text, text, text, int, text), pm_doc_apply(bigint),
-                           app_user_role_covers(uuid, text, text)
+                           app_user_role_covers(uuid, text, text), pm_sig_check(jsonb)
   from authenticated;
 -- Lưới an toàn cho project dùng chung (xem app_lock_anon trong 17_auth.sql).
 select app_lock_anon();

@@ -727,6 +727,7 @@ begin
       -- Hàm nội bộ mà 19_pm_workflow.sql cố ý không cho gọi qua API — chạy lại
       -- file này sau 19 không được mở lại chúng.
       and  p.proname not in ('pm_doc_log', 'pm_doc_apply', 'app_user_role_covers',
+                             'pm_sig_check', 'pm_notify_trg',
                              'app_bootstrap_admin', 'app_lock_anon')
   loop
     execute format('grant execute on function %s to authenticated', r.n);

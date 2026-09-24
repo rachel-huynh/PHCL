@@ -254,6 +254,48 @@
   table.wfkv{margin-top:8px} table.wfkv th{width:32%;text-align:left;background:#f4f6f8}
   .wfsign{flex-wrap:wrap;gap:12px} .wfsign div{min-width:120px}
   .wfsign small{display:block;color:#444;font-size:10px}
+  /* Signature + notifications (phase 4) */
+  .login.sigmodal{background:rgba(15,23,42,.55);z-index:60}
+  .sigbox{background:var(--panel);border-radius:10px;padding:18px 20px;width:min(620px,calc(100vw - 32px));box-shadow:0 12px 40px rgba(0,0,0,.25)}
+  .sigbox h2{margin:0 0 4px;font-size:16px}
+  .siglead{margin:0 0 10px;color:var(--dim);font-size:12.5px}
+  .sigpadwrap{position:relative;border:1px dashed #9aa6b2;border-radius:8px;background:#fff}
+  #sigPad{display:block;width:100%;height:220px;touch-action:none;cursor:crosshair;border-radius:8px}
+  .sigline{position:absolute;left:18px;right:18px;bottom:44px;border-top:1px solid #c9d1da;font-size:10.5px;color:#9aa6b2;padding-top:3px;pointer-events:none}
+  .sigchk{display:flex;align-items:center;gap:6px;margin:10px 0 0;font-size:12.5px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink)}
+  .sigchk input{width:auto;margin:0}
+  .sigacts{display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap}
+  img.wfsig{display:block;max-height:34px;max-width:140px;margin-top:4px}
+  .doc-sign img.sigimg{display:block;height:58px;max-width:100%;object-fit:contain;object-position:left center}
+  .bellwrap{position:relative;flex:none}
+  .bell{position:relative;padding:5px 9px;line-height:0}
+  .bell .tag{position:absolute;top:-6px;right:-7px;background:var(--red);color:#fff;border-radius:9px;font-size:10.5px;line-height:1;padding:3px 5px;font-weight:700}
+  .bellpanel{position:absolute;right:0;top:calc(100% + 6px);width:min(380px,calc(100vw - 32px));max-height:70vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.18);z-index:20}
+  .bellpanel .bh{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel)}
+  .bellpanel .bh b{flex:1}
+  .bellpanel .it{display:flex;gap:9px;padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer;font-size:12.5px;line-height:1.35}
+  .bellpanel .it:hover{background:#f3f6fa}
+  .bellpanel .it.new{background:#eef4fc}
+  .bellpanel .it .dot{flex:none;width:8px;height:8px;border-radius:50%;margin-top:5px;background:var(--track)}
+  .bellpanel .it.k-todo .dot{background:#2a78d6} .bellpanel .it.k-approved .dot{background:#0ca30c}
+  .bellpanel .it.k-returned .dot{background:var(--amber)} .bellpanel .it.k-rejected .dot,.bellpanel .it.k-cancelled .dot{background:#d03b3b}
+  .bellpanel .it small{display:block;color:var(--dim);margin-top:2px}
+  .bellpanel .it i{display:block;color:var(--ink);margin-top:2px}
+  .bellpanel .empty{padding:18px 12px;color:var(--dim);text-align:center}
+  /* Payments (phase 5) */
+  #payGrid td.wrapcell,.paytrail td.wrapcell,.wflines td.wrapcell{white-space:normal;min-width:160px;max-width:280px}
+  #payGrid td.paydesc{max-width:420px;font-size:12px;color:var(--ink-2)}
+  p.paydesc{white-space:pre-wrap;color:var(--ink-2);font-size:12.5px;margin:6px 0 10px}
+  .paycodes code{font-size:11.5px} .paycodes{white-space:nowrap}
+  #payGrid tbody tr.pick td{background:#eef4fc}
+  tr.gone td{color:var(--dim);text-decoration:line-through}
+  .payneg{color:var(--red)}
+  .payempty{color:var(--dim);padding:14px;text-align:center}
+  .payimp{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:11.5px;color:var(--dim)}
+  .st.pay-queue::before{background:var(--amber)} .st.pay-auto::before{background:#2a78d6}
+  .st.pay-manual::before{background:#0ca30c} .st.pay-ignore::before{background:var(--track)}
+  .st.pay-gone::before{background:#d03b3b}
+  .paytrail{margin-top:8px}
   .pmyear{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
   .pmsheets td{vertical-align:middle}
 
@@ -649,6 +691,11 @@
     .tape:last-child{page-break-after:auto;break-after:auto}
     #v-doc.on > :not(#wdPrint){display:none!important}
     #v-doc.on #wdPrint{display:block}
+    #wdPrint .fsheet{min-width:0 !important;max-width:none}
+    #wdPrint .fpage{border:none;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    #wdPrint .fpage + .fpage{break-before:page;margin-top:0}
+    #wdPrint .ftable tr,#wdPrint .fsig,#wdPrint .fcell{break-inside:avoid}
+    #wdPrint .fbar,#wdPrint .ftable th,#wdPrint .fqc td.fnav,#wdPrint .fcode th{-webkit-print-color-adjust:exact;print-color-adjust:exact}
   }
 
   @media (max-width:860px){
@@ -664,6 +711,227 @@
     nav a{border-left:none;border-bottom:3px solid transparent;padding:6px 12px}
     nav a.on{border-left:none;border-bottom-color:var(--gold)}
   }
+
+  /* ================================================================ THEME
+     Same look as the other PHCL apps (SSP BOD dashboard, Đối chiếu hoá đơn),
+     so moving between them feels like one system: slate-blue sidebar with an
+     amber marker, navy titles in small caps, navy-ruled table heads, pill
+     status chips, tinted message boxes. Placed last so it overrides the base
+     rules above without touching the layout. */
+  :root{--navy:#0B1F3A; --navy-2:#243755; --navy-3:#081729;
+        --side:#2b3f5e; --side2:#243755; --sideline:#3a4f70;
+        --side-ink:#c9d3e4; --side-dim:#8ea0bd; --gold:#e8a33d;
+        --bg:#f1f3f7; --line:#e2e6ee; --line-2:#e2e6ee; --head:#f5f7fb;
+        --ink:#1f2937; --dim:#6B7280;
+        --red:#c0392b; --green:#1e7e4f; --amber:#b7791f; --blue:#2e5f9e; --steel:#2e5f9e;
+        --mono:"Segoe UI",Arial,sans-serif}
+  body{font:13px/1.45 "Segoe UI",Arial,sans-serif}
+  aside{background:var(--side)}
+  .brand{padding:18px 16px 12px;border-bottom:1px solid var(--sideline)}
+  .brand b{font-size:16px;font-weight:800;letter-spacing:.6px}
+  .brand span{color:#9fb0ca;font-size:10.5px}
+  nav .grp{color:var(--side-dim);letter-spacing:1.2px}
+  nav .kids{border-left-color:var(--sideline)}
+  nav a{color:var(--side-ink)}
+  @media (min-width:861px){ nav .grp{padding:14px 16px 5px} nav a{padding:8px 16px} }
+  nav a:hover{background:var(--side2);color:#fff}
+  nav a.on{background:var(--side2);color:#fff;font-weight:700;border-left-color:var(--gold)}
+  .foot{border-top:1px solid var(--sideline)}
+  .foot span,.foot .sidenote,.ver{color:#9fb0ca}
+
+  .top{padding:8px 16px;gap:8px}
+  .top h1{font-size:16px;color:var(--navy)}
+  .seg{border-color:#cfd6e2;border-radius:5px}
+  .seg button{color:var(--ink);font-size:12px}
+  .seg button + button{border-left-color:#cfd6e2}
+  .seg button.on{background:var(--navy);color:#fff;font-weight:700}
+  .seg[hidden]{display:none}
+  .live{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:5px;
+        font-size:12px;font-weight:700;background:#eef1f6;color:var(--dim);flex:none}
+  .live.ok{background:var(--navy);color:#fff}
+  .live i{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
+  main{padding:12px 16px 60px}
+
+  .card{border-radius:8px;padding:12px 14px;box-shadow:0 1px 2px rgba(15,30,58,.06)}
+  .card h2,.chead > h2{font-weight:700;color:var(--navy);font-size:13px;text-transform:uppercase;letter-spacing:.6px;
+                         border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:8px}
+  .chead{border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:8px}
+  .chead > h2{border-bottom:none;padding-bottom:0;margin-bottom:0}
+  .card h2:not(:first-child){margin-top:14px}
+  label{color:var(--dim);font-size:11px;letter-spacing:.4px}
+  input,select,textarea{border-color:#cfd6e2;border-radius:5px}
+  button{border-radius:5px;font-size:12px}
+  .btn{border-color:#cfd6e2}
+  .btn:hover{border-color:var(--navy)}
+  .btn.pri:hover{background:var(--navy-2)}
+  .btn.danger{border-color:#e7b7b1}
+
+  .wrap{border-radius:6px}
+  table{font-size:12px}
+  th{background:#f5f7fb;color:var(--navy);font-size:10.5px;letter-spacing:.4px;
+     padding:7px 8px;border-bottom:2px solid var(--navy)}
+  td{padding:6px 8px;border-bottom:1px solid var(--line)}
+  tbody tr:hover td{background:#fafbfe}
+  tr.tot td{font-weight:700;background:#f5f7fb;border-top:2px solid var(--navy)}
+  #regGrid tbody tr.sel td,#pbGrid tr.pick td,#ppGrid tr.pick td,#payGrid tbody tr.pick td{background:#fdf8ea}
+
+  .kpi,.stat{border-radius:8px;box-shadow:0 1px 2px rgba(15,30,58,.06)}
+  .kpi{border-left-width:5px;border-left-color:var(--navy)}
+  .kpi b{font-size:19px;font-weight:800;color:var(--navy)}
+  .kpi label{font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+
+  /* Messages: tinted boxes, one colour family per kind. */
+  .msg{border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.5}
+  .msg.ok{background:#e9f6ef;border-color:#b9e0c9;color:#155c39}
+  .msg.warn{background:#fff7e6;border-color:#f0d49b;color:#7a5200}
+  .msg.err{background:#fbeaea;border-color:#efc2bd;color:#8a1f14}
+  .msg.info{background:#eef3fa;border-color:#c9d8ec;color:#27466f}
+
+  /* Status: pill chips (text always inside, so colour is never the only cue). */
+  .st{padding:2px 8px;border-radius:10px;font-size:10.5px;font-weight:700;background:#eef1f6;color:#44506a}
+  .st::before{display:none}
+  .st.completed,.st.wf-approved,.st.pay-manual{background:#e3f3ea;color:var(--green)}
+  .st.in_progress,.st.wf-in_review,.st.pay-auto{background:#e3ecf8;color:var(--blue)}
+  .st.wf-returned,.st.pay-queue{background:#fdf0dc;color:#94600f}
+  .st.cancelled,.st.wf-rejected,.st.wf-cancelled,.st.pay-gone{background:#fbe5e2;color:var(--red)}
+  .login{background:var(--side)}
+
+  /* ============================================================ FORM SHEETS
+     The procurement documents drawn like the FFE workbook sheets: light-blue
+     page, navy bars, small-caps labels over white boxes, navy-headed tables.
+     Pale yellow = a box to fill in; white = computed / from earlier documents.
+     Colours are the workbook's (#1F3864 navy, #D9E1F2 page). */
+  .fscroll{overflow:auto;margin-top:6px;padding-bottom:4px}
+  .fsheet{--fn:#1f3864;--fp:#d9e1f2;--fb:#b4c6e7;color:#111;margin:0 auto;
+          font:11.5px/1.35 Calibri,"Segoe UI",Arial,sans-serif}
+  .fsheet.portrait{max-width:1000px;min-width:780px}
+  .fsheet.landscape{min-width:1120px}
+  .fsheet.edit.wide{min-width:2100px}
+  .fpage{background:var(--fp);padding:10px 12px 14px;border:1px solid var(--fb)}
+  .fpage + .fpage{margin-top:18px}
+  .fhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;background:#fff;
+         margin:-10px -12px 10px;padding:12px 14px 10px;border-bottom:1px solid var(--fb)}
+  .fco{font-size:10.5px;font-style:italic;line-height:1.4}
+  .fco .b{font-weight:700}
+  .fttl{text-align:right}
+  .fttl .t1,.fttl .t2{font-size:21px;font-weight:800;color:var(--fn);text-transform:uppercase;line-height:1.15}
+  .fcode{margin:6px 0 0 auto;border-collapse:collapse;font-size:11px}
+  .fsheet .fcode th{background:var(--fn);color:#fff;font-size:9.5px;font-weight:600;text-align:left;padding:2px 6px;
+                    border:1px solid var(--fn);position:static;letter-spacing:0;text-transform:uppercase}
+  .fsheet .fcode td{background:#fff;border:1px solid var(--fn);padding:2px 6px;min-width:130px;text-align:left}
+  .fbar{display:flex;justify-content:space-between;align-items:center;background:var(--fn);color:#fff;font-weight:700;
+        font-size:12px;text-transform:uppercase;padding:3px 8px;margin:10px 0 6px}
+  .fbar i{font-weight:700;text-transform:none}
+  .fgrid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:5px 8px}
+  .fcell .fl{font-size:9.5px;text-transform:uppercase;color:#1f2d4d;margin-bottom:1px;white-space:nowrap;
+             overflow:hidden;text-overflow:ellipsis;letter-spacing:.2px}
+  .fv{background:#fff;min-height:22px;padding:2px 6px;display:flex;align-items:center;justify-content:center;min-width:0;overflow-wrap:anywhere;
+      text-align:center;white-space:pre-wrap;word-break:break-word}
+  .fcell.num .fv{justify-content:flex-end}
+  .fcell.left .fv{justify-content:flex-start;text-align:left}
+  .fcell.tall .fv{min-height:64px;align-items:flex-start}
+  .fcell.plain .fv{background:transparent;justify-content:flex-start}
+  .fcell.strong .fv{font-weight:700}
+  .fcell.okv .fv{color:#155c39;background:#e9f6ef}
+  .fcell.badv .fv{color:#8a1f14;background:#fbeaea}
+  .fcell.nav .fl{background:var(--fn);color:#fff;padding:2px 6px;font-size:10.5px;font-weight:600}
+  .fsheet .fv input,.fsheet .fv select,.fsheet .fv textarea,.fsheet .ftable input,.fsheet .ftable select,.fsheet .ftable textarea,
+  .fsheet .fvbox input,.fsheet .fvbox select,.fsheet .fvbox textarea{border:none;background:transparent;width:100%;min-width:0;
+      padding:1px 2px;margin:0;font:inherit;color:#111;text-align:inherit;box-shadow:none;border-radius:0;height:auto}
+  .fsheet .fv input[type=checkbox],.fsheet .ftable input[type=checkbox]{width:auto}
+  .fsheet textarea{min-height:40px;resize:vertical;text-align:left}
+  .fsheet .fv textarea{min-height:56px}
+  /* Where to type: pale yellow, like the highlighted input cells of the workbook. */
+  .fsheet.edit .fv:has(input:not([type=checkbox]),select,textarea),
+  .fsheet.edit .ftable td:has(input,select,textarea),
+  .fsheet.edit .fvbox:has(input,select,textarea),
+  .fsheet.edit .fcode td:has(input){background:#fffbe6}
+  .fsheet .wfro{white-space:pre-wrap}
+  .frisk .frrow{display:flex;align-items:flex-end;gap:6px;margin-top:2px}
+  .frisk .frk{flex:1}
+  .frisk .frk .fl{text-transform:none;text-align:center}
+  .frisk .op{padding-bottom:3px;font-weight:700}
+  .frisk .lvl{align-items:center;margin-top:5px}
+  .frisk .lvl > span:first-child{flex:1;text-align:right}
+  .frisk .lvl .fv{flex:1}
+  .ftwrap{margin-top:4px}
+  .fsheet .ftable{width:100%;border-collapse:collapse;background:#fff;table-layout:fixed;font-size:11px}
+  .fsheet .ftable th{background:var(--fn);color:#fff;font-size:10.5px;font-weight:600;padding:4px 3px;border:1px solid #8ea9db;
+                     text-align:center;white-space:normal;position:static;letter-spacing:0;text-transform:none;vertical-align:middle}
+  .fsheet .ftable tr.fgrp th{background:#2f4b7c}
+  .fsheet .ftable td{border:1px solid var(--fb);padding:2px 4px;text-align:center;vertical-align:middle;white-space:pre-wrap;
+                     word-break:break-word;font-size:11px}
+  .fsheet .ftable td.n{text-align:right}
+  .fsheet .ftable td.l{text-align:left}
+  .fsheet .ftable td.del{padding:0;text-align:center}
+  .fsheet .ftable tr.ftot td{font-weight:700;background:#eef2fa}
+  .fsheet .ftable tbody tr:hover td,.fsheet .ftable tr:hover td{background:inherit}
+  .fsheet.landscape .ftable td,.fsheet.landscape .ftable th{font-size:10px}
+  .fsheet.wide:not(.edit) .ftable th,.fsheet.wide:not(.edit) .ftable td{font-size:8.5px;padding:2px 1px;overflow-wrap:anywhere}
+  .fgv{display:flex;align-items:center;gap:4px;justify-content:center}
+  .fgv input{background:#fffbe6 !important;color:#111 !important;max-width:170px}
+  .fadd{margin-top:4px}
+  .fnote{white-space:pre-wrap;font-size:10.5px;margin-top:8px;line-height:1.45}
+  .ftermrow{display:grid;grid-template-columns:3fr 2fr;gap:10px;margin-top:6px}
+  .fterms .fnh,.ftotbox .ftl b{display:block;background:var(--fn);color:#fff;font-weight:700;padding:2px 8px}
+  .fterms .ftr{display:grid;grid-template-columns:170px 1fr;gap:6px;align-items:center;margin-top:3px}
+  .fterms .ftr.tall .fv{min-height:40px}
+  .fterms .fv,.ftotbox .fv{justify-content:flex-start;text-align:left}
+  .ftotbox .ftl{display:grid;grid-template-columns:1fr 1fr;align-items:stretch;margin-bottom:3px}
+  .ftotbox .ftl .fv{justify-content:flex-end;font-weight:700}
+  .fkv{border-collapse:separate;border-spacing:6px 3px;margin:-3px -6px}
+  .fsheet .fkv td{border:none;padding:0}
+  .fkv td.k{text-align:right;white-space:nowrap;padding-right:2px;min-width:170px}
+  .fkv td.v{background:#fff;min-width:230px;padding:2px 6px}
+  .fkv td.v.n{text-align:right}
+  .fkv td.u{white-space:nowrap;padding:0 4px}
+  .fsheet.edit .fkv td.v:has(input,select){background:#fffbe6}
+  .fsheet .fkv td.v input,.fsheet .fkv td.v select{border:none;background:transparent;width:100%;padding:1px 2px;font:inherit}
+  .fqc{border-collapse:separate;border-spacing:6px 4px;margin:0 -6px;width:calc(100% + 12px)}
+  .fsheet .fqc td{border:none;padding:2px 6px;font-size:11px;vertical-align:middle}
+  .fqc td.fnav{background:var(--fn);color:#fff;font-weight:600;white-space:nowrap;text-transform:uppercase;width:170px}
+  .fqc td.fnav.sm{width:52px;text-align:center;text-transform:none}
+  .fqc td.fvbox{background:#fff;min-width:60px}
+  .fqc td.fvbox.n{text-align:right}
+  .fqc td.fvbox.l{text-align:left}
+  .fqc td.fvbox.wide{width:100%}
+  .fqc td.fvbox.strong,.fqc .strong{font-weight:700}
+  .fqc td.fvh{text-align:center;font-weight:700}
+  .fqc td.fvh small{display:block;font-weight:400;font-size:9.5px}
+  .fqc td.fvh input{text-align:center;background:#fffbe6;border:none;width:100%;font:inherit;font-weight:700}
+  .fqc td.fsub{text-align:right;font-size:10.5px}
+  .fsubl{display:flex;gap:4px}
+  .fsubl input{background:#fffbe6;border:none;text-align:right;font:inherit;font-size:10.5px;width:100%}
+  .fqc td.fconc{width:190px;padding:0;vertical-align:top}
+  .fconc .ch{background:var(--fn);color:#fff;text-align:center;font-weight:600;padding:2px}
+  .fconc .cb{padding:10px 8px;text-align:center;font-weight:700;min-height:70px;display:flex;align-items:center;justify-content:center}
+  .fconc.ok .cb{background:#e2efd9;color:#155c39}
+  .fconc.warn .cb{background:#f8cbad;color:#7a2e0e}
+  .fap tr.fbh td{padding-top:8px}
+  .fvbox.inl{display:inline-block;width:60px;background:#fffbe6;color:#111;margin-left:4px}
+  .flinks{background:#fff;padding:6px 8px}
+  .flinks .fl2{display:grid;grid-template-columns:1fr 2fr auto auto;gap:6px;align-items:center;margin-bottom:4px}
+  .flinks .fl2.p{display:block}
+  .flinks .fl2 .fv{justify-content:flex-start}
+  .flinks .fl2 input{border:none;background:#fffbe6;width:100%;font:inherit;padding:2px 4px}
+  .fconsent{margin-top:14px}
+  .fconsent .fct{font-weight:700;font-style:italic;margin-bottom:4px}
+  .fsigs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+  .fsig{background:#fff;border:1px solid var(--fb);padding:5px 6px;text-align:center;min-height:118px;display:flex;flex-direction:column}
+  .fsig .sr{font-weight:700;font-size:10.5px}
+  .fsig .ss{font-size:9.5px;color:#555}
+  .fsig .simg{flex:1;display:flex;align-items:center;justify-content:center;min-height:52px}
+  .fsig .simg img{max-height:52px;max-width:100%}
+  .fsig .sn{font-size:10px;border-top:1px dotted #999;padding-top:2px}
+  .fsig .sd{font-size:9.5px;color:#555}
+  .fref td{font-size:9.5px}
+  .fsmall{margin-top:12px}
+  .fpdfhost{position:fixed;left:-12000px;top:0;background:#fff}
+  .fqctabs{margin:0 0 8px}
+  .fqc td.flink{cursor:pointer}
+  .fqc td.flink:hover{outline:2px solid #e8a33d}
+  .fhint{font-size:11px;color:#27466f;background:#eef3fa;border:1px solid #c9d8ec;padding:4px 8px;margin:4px 0}
+  .fsheet.pdf{min-width:0 !important;max-width:none !important;width:100%}
 </style>
 </head>
 <body>
@@ -671,6 +939,26 @@
      Enter submits and the browser offers to remember the password. The same
      box doubles as "set a new password" — after the reset e-mail, or from the
      sidebar. -->
+<!-- Hand-drawn signature (phase 4): finger or Apple Pencil on an iPad, mouse on
+     a PC. The drawing is copied into the approval step it signs. -->
+<div class="login sigmodal" id="sigModal" hidden>
+  <div class="sigbox">
+    <h2 id="sigTitle"></h2>
+    <p class="siglead" data-i18n="sig.lead"></p>
+    <div class="sigpadwrap"><canvas id="sigPad"></canvas><span class="sigline" data-i18n="sig.here"></span></div>
+    <div id="sigMsg"></div>
+    <label class="sigchk"><input type="checkbox" id="sigSave"> <span data-i18n="sig.save"></span></label>
+    <div class="sigacts">
+      <button class="btn" id="sigUseSaved" type="button" data-i18n="sig.useSaved" hidden></button>
+      <button class="btn" id="sigClear" type="button" data-i18n="sig.clear"></button>
+      <span style="flex:1"></span>
+      <button class="btn" id="sigSkip" type="button" data-i18n="sig.skip" hidden></button>
+      <button class="btn" id="sigCancel" type="button" data-i18n="sig.cancel"></button>
+      <button class="btn pri" id="sigOk" type="button" data-i18n="sig.ok"></button>
+    </div>
+  </div>
+</div>
+
 <div class="login" id="login" hidden>
   <form class="lcard" id="loginForm" autocomplete="on" novalidate>
     <div class="lhead">
@@ -736,6 +1024,18 @@
     <!-- Next to the title, because that is where the text it reveals appears. -->
     <button class="btn help" id="btnHelp">?</button>
     <div class="tools" id="tools"></div>
+    <!-- Notifications (phase 4). Hidden until 20_pm_notify.sql exists and the
+         user may see projects or approvals. -->
+    <div class="bellwrap" id="bellWrap" hidden>
+      <button class="btn bell" id="btnBell" type="button">
+        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3.6L4.3 15.4A1 1 0 0 0 5.2 17h13.6a1 1 0 0 0 .9-1.6L18 12.6V9a6 6 0 0 0-6-6Zm0 19a2.6 2.6 0 0 0 2.5-2h-5A2.6 2.6 0 0 0 12 22Z" fill="currentColor"/></svg>
+        <span class="tag" id="bellN" hidden></span>
+      </button>
+      <div class="bellpanel" id="bellPanel" hidden></div>
+    </div>
+    <!-- VND / USD for the project screens; money is stored in VND. -->
+    <div class="seg" id="curSeg" hidden><button data-cur="VND">VND</button><button data-cur="USD">USD</button></div>
+    <span class="live" id="liveTop" title=""><i></i><span id="liveTxt">Offline</span></span>
     <div class="seg" id="langSeg">
       <button data-lang="en">EN</button><button data-lang="vi">VI</button>
     </div>
@@ -1354,6 +1654,33 @@
       </div>
     </section>
 
+    <section id="v-payments">
+      <p class="lead" data-i18n-html="pay.lead_html"></p>
+      <div class="card">
+        <div class="row" style="align-items:flex-end;flex-wrap:wrap">
+          <div class="fld grow" style="max-width:520px"><label data-i18n="pay.files"></label>
+            <input type="file" id="payFile" multiple accept=".xlsx,.xls"></div>
+          <button class="btn" id="btnPayRead" data-i18n="pay.read"></button>
+          <button class="btn pri" id="btnPayGo" disabled data-perm="payment:create" data-i18n="pay.go"></button>
+          <span style="flex:1"></span>
+          <button class="btn" id="btnPayExport" data-i18n="reg.xlsx"></button>
+        </div>
+        <div id="payReadOut"></div>
+        <div id="payImports"></div>
+      </div>
+      <div class="seg permtabs" id="payTabs"></div>
+      <div class="card" style="margin-top:10px">
+        <div class="row" style="align-items:flex-end;flex-wrap:wrap">
+          <div class="fld" style="max-width:120px"><label data-i18n="pm.f.year"></label><select id="payYear"></select></div>
+          <div class="fld" style="max-width:170px" id="payStWrap"><label data-i18n="pay.c.status"></label><select id="paySt"></select></div>
+          <div class="fld grow" style="max-width:320px"><label data-i18n="pm.f.search"></label><input id="payQ" spellcheck="false"></div>
+        </div>
+      </div>
+      <div id="payMsg"></div>
+      <div class="wrap pmgrid"><table id="payGrid"><thead></thead><tbody></tbody></table></div>
+      <div id="payDetail"></div>
+    </section>
+
     <section id="v-inbox">
       <p class="lead" data-i18n="wf.i.lead"></p>
       <div id="wiMsg"></div>
@@ -1414,7 +1741,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260924c"></script>
-<script src="app.js?v=20260924c"></script>
+<script src="i18n.js?v=20260924h"></script>
+<script src="app.js?v=20260924h"></script>
 </body>
 </html>
