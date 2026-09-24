@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260924h';
+const APP_VERSION = '20260924j';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -2421,6 +2421,14 @@ function initAuthUi() {
     ev.stopImmediatePropagation();
   }, true);
 
+  // An open filter list closes when clicking anywhere else, like a drop-down.
+  document.addEventListener('click', ev => {
+    // composedPath, not contains(): a click on a choice redraws the list, so the
+    // clicked row is already detached by the time this runs.
+    const path = ev.composedPath();
+    for (const d of $$('details.ms[open]')) if (!path.includes(d)) d.open = false;
+  });
+
   // Signed out in another tab: this one follows instead of failing request by
   // request.
   window.addEventListener('storage', ev => {
@@ -3518,10 +3526,12 @@ function msRender(id) {
   const n = st.sel.size;
   host.querySelector('.ms-sum').textContent =
     n === 0 ? t('reg.all')
-    : n === 1 ? [...st.sel][0]
+    : n === 1 ? ((st.opts.find(o => o.v === [...st.sel][0]) || {}).t || [...st.sel][0])
     : t('ms.nChosen', { n });
   host.classList.toggle('picked', n > 0);
   host.querySelector('.ms-q').placeholder = t('ms.search');
+  // A short list needs no search box, just like a plain drop-down.
+  host.querySelector('.ms-q').hidden = st.opts.length <= 8;
   const acts = host.querySelector('.ms-acts');
   acts.innerHTML = '';
   const clr = el('button', { className: 'btn tiny', textContent: t('ms.clear') });
@@ -3535,17 +3545,26 @@ function msList(id) {
   const box = host.querySelector('.ms-list');
   const q = st.q.trim().toLowerCase();
   box.innerHTML = '';
-  // Chosen entries stay on top so they never scroll out of reach of the search.
   const hit = st.opts.filter(o => !q || o.t.toLowerCase().includes(q));
-  const shown = [...hit.filter(o => st.sel.has(o.v)), ...hit.filter(o => !st.sel.has(o.v))]
+  // While searching, chosen entries stay on top so they never scroll out of
+  // reach; otherwise rows keep their place, so a click never moves the list.
+  const shown = (q ? [...hit.filter(o => st.sel.has(o.v)), ...hit.filter(o => !st.sel.has(o.v))] : hit)
     .slice(0, 300);
+  /* Drawn like an open drop-down list (same look as the other PHCL apps):
+     "— all —" first, then the choices; a click toggles one, a ✓ marks what is
+     chosen. Several can be chosen, so the list stays open until clicked away. */
+  if (!q) {
+    const all = el('div', { className: 'ms-i all' + (st.sel.size ? '' : ' cur') }, el('span', { textContent: t('reg.all') }));
+    all.onclick = () => { st.sel.clear(); msRender(id); st.onChange?.(); };
+    box.append(all);
+  }
   for (const o of shown) {
-    const cb = el('input', { type: 'checkbox', checked: st.sel.has(o.v) });
-    cb.onchange = () => {
-      if (cb.checked) st.sel.add(o.v); else st.sel.delete(o.v);
+    const it = el('div', { className: 'ms-i' + (st.sel.has(o.v) ? ' on' : ''), title: o.t }, el('span', { textContent: o.t }));
+    it.onclick = () => {
+      if (st.sel.has(o.v)) st.sel.delete(o.v); else st.sel.add(o.v);
       msRender(id); st.onChange?.();
     };
-    box.append(el('label', { className: 'ms-i' }, [cb, el('span', { textContent: o.t })]));
+    box.append(it);
   }
   if (!shown.length)
     box.append(el('div', { className: 'ms-none', textContent: t('ms.none') }));

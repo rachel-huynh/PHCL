@@ -214,7 +214,7 @@ declare
   r      jsonb;
   v_id   bigint;
   v_new  boolean;
-  n_new  int := 0; n_upd int := 0; n_auto int := 0; n_queue int := 0; n_gone int := 0;
+  c_new  int := 0; c_upd int := 0; c_auto int := 0; c_queue int := 0; c_gone int := 0;
   v_from date := p_from; v_to date := p_to;
 begin
   perform app_require('payment', 'create');
@@ -242,7 +242,7 @@ begin
             vat_rate = excluded.vat_rate, description = excluded.description,
             import_id = v_imp, gone = false, updated_at = now()
       returning t.id, (t.xmax = 0) into v_id, v_new;
-      if pm_auto_alloc('invoice', v_id, r ->> 'description') then n_auto := n_auto + 1; else n_queue := n_queue + 1; end if;
+      if pm_auto_alloc('invoice', v_id, r ->> 'description') then c_auto := c_auto + 1; else c_queue := c_queue + 1; end if;
     else
       if coalesce(r ->> 'voucher_no', '') = '' then continue; end if;
       insert into pm_payment as t (voucher_no, line_no, voucher_date, post_date, description, amount,
@@ -259,14 +259,14 @@ begin
             bank_account = excluded.bank_account, reason = excluded.reason,
             voucher_type = excluded.voucher_type, import_id = v_imp, gone = false, updated_at = now()
       returning t.id, (t.xmax = 0) into v_id, v_new;
-      if pm_auto_alloc('payment', v_id, r ->> 'description') then n_auto := n_auto + 1; else n_queue := n_queue + 1; end if;
+      if pm_auto_alloc('payment', v_id, r ->> 'description') then c_auto := c_auto + 1; else c_queue := c_queue + 1; end if;
       -- Nhà cung cấp mới gặp lần đầu: thêm vào danh mục (mã = mã đối tượng kế toán).
       if coalesce(r ->> 'vendor_code', '') <> '' then
         insert into pm_vendor (code, name) values (r ->> 'vendor_code', coalesce(nullif(r ->> 'vendor_name', ''), r ->> 'vendor_code'))
         on conflict (code) do nothing;
       end if;
     end if;
-    if v_new then n_new := n_new + 1; else n_upd := n_upd + 1; end if;
+    if v_new then c_new := c_new + 1; else c_upd := c_upd + 1; end if;
   end loop;
 
   -- Kỳ của file: truyền vào (bảng kê ghi "Từ ngày … đến ngày …"), không thì
@@ -280,14 +280,14 @@ begin
     update pm_payment set gone = true
      where import_id is distinct from v_imp and not gone and post_date between v_from and v_to;
   end if;
-  get diagnostics n_gone = row_count;
+  get diagnostics c_gone = row_count;
 
   update pm_pay_import
-     set period_from = v_from, period_to = v_to, n_rows = n_new + n_upd, n_new = n_new, n_updated = n_upd,
-         n_auto = n_auto, n_queue = n_queue, n_gone = n_gone
+     set period_from = v_from, period_to = v_to, n_rows = c_new + c_upd, n_new = c_new, n_updated = c_upd,
+         n_auto = c_auto, n_queue = c_queue, n_gone = c_gone
    where id = v_imp;
-  return jsonb_build_object('import_id', v_imp, 'rows', n_new + n_upd, 'new', n_new, 'updated', n_upd,
-                            'auto', n_auto, 'queue', n_queue, 'gone', n_gone,
+  return jsonb_build_object('import_id', v_imp, 'rows', c_new + c_upd, 'new', c_new, 'updated', c_upd,
+                            'auto', c_auto, 'queue', c_queue, 'gone', c_gone,
                             'from', v_from, 'to', v_to);
 end $$;
 
