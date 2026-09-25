@@ -1105,6 +1105,19 @@
   .paybulk{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0 0;padding:8px 12px;border:1px solid #bcd0ea;
            border-left:4px solid var(--navy);border-radius:8px;background:#f3f7fd}
   .paybulk b{margin-right:6px;color:var(--navy)}
+  /* Dashboard top row: the budget card (value + FF&E reserve meter) and the
+     projects card (in budget / unbudgeted / completed), side by side. */
+  .dashtop{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:12px;margin:12px 0 0}
+  .dashtop .hero{margin:0;align-items:baseline;align-content:flex-start}
+  .dcap{flex:1 1 100%;margin-top:4px}
+  .dcap .meter{height:10px;margin-top:5px}
+  .dcap .meter:not(.over) > i{background:var(--navy)}
+  .dcap small,.dfig small{display:block;font-size:11px;color:var(--ink-3);margin-top:4px;font-variant-numeric:tabular-nums}
+  .dfigs{flex:1 1 100%;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:6px}
+  .dfig{border-left:3px solid var(--line);padding-left:10px}
+  .dfig .sl{display:block;font-size:10px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+  .dfig b{display:block;font-size:26px;font-weight:800;color:var(--navy);line-height:1.2;font-variant-numeric:tabular-nums}
+  @media (max-width:900px){ .dashtop{grid-template-columns:1fr} }
 </style>
 </head>
 <body>
@@ -1922,7 +1935,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260925c"></script>
-<script src="app.js?v=20260925c"></script>
+<script src="i18n.js?v=20260925d"></script>
+<script src="app.js?v=20260925d"></script>
 </body>
 </html>

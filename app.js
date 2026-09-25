@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260925c';
+const APP_VERSION = '20260925d';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -7367,15 +7367,6 @@ function pdRender() {
   const perLabel = ($('#pdPeriod').selectedOptions[0] || {}).text || '';
 
   box.innerHTML = '';
-  // Hero: the one number this page leads with.
-  box.append(el('div', { className: 'hero' }, [
-    el('span', { className: 'hl', textContent: t('pm.dash.budget', { y }) }),
-    el('span', { className: 'hv', textContent: fmtM(budget) }),
-    el('span', { className: 'hs', textContent: t('pm.dash.budgetSub', {
-      n: fmtInt(new Set(lines.map(l => l.project_code)).size),
-      planned: fullYear ? '' : t('pm.dash.plannedIn', { p: perLabel, v: fmtM(planned) }) }) })]));
-
-  const stats = el('div', { className: 'stats' });
   const tile = (label, value, sub, cls, meter) => {
     const d = el('div', { className: 'stat' }, [el('span', { className: 'sl', textContent: label }),
                                                   el('span', { className: 'sv', textContent: value })]);
@@ -7384,16 +7375,38 @@ function pdRender() {
       el('i', { style: `width:${Math.min(100, Math.max(0, meter * 100))}%` })));
     return d;
   };
-  if (cap && (!ent.length || ent.includes('SSP')))
-    stats.append(tile(t('pm.dash.cap'), fmtPct(sspBudget / cap), t('pm.dash.capSub', { v: fmtM(sspBudget), cap: fmtM(cap) }), null, sspBudget / cap));
+  // Top row, two cards. The budget: the one number this page leads with, and
+  // (SSP in view) how much of the FF&E reserve cap it takes.
+  const nBudget = new Set(lines.map(l => l.project_code)).size;
+  const budCard = el('div', { className: 'hero dtop' }, [
+    el('span', { className: 'hl', textContent: t('pm.dash.budget', { y }) }),
+    el('span', { className: 'hv', textContent: fmtM(budget) }),
+    ...(fullYear ? [] : [el('span', { className: 'hs', textContent: t('pm.dash.plannedIn', { p: perLabel, v: fmtM(planned) }).replace(/^ · /, '') })])]);
+  if (cap && (!ent.length || ent.includes('SSP'))) {
+    const r = sspBudget / cap;
+    budCard.append(el('div', { className: 'dcap' }, [
+      el('div', { className: 'pgh' }, [el('span', { textContent: t('pm.dash.cap') }), el('b', { textContent: fmtPct(r) })]),
+      el('div', { className: 'meter' + (r > 1 ? ' over' : '') }, el('i', { style: `width:${Math.min(100, Math.max(0, r * 100))}%` })),
+      el('small', { textContent: t('pm.dash.capSub', { v: fmtM(sspBudget), cap: fmtM(cap) }) })]));
+  }
+  // The projects: in the budget, outside it, and how many are done.
+  const fig = (label, value, sub) => el('div', { className: 'dfig' }, [el('span', { className: 'sl', textContent: label }),
+    el('b', { textContent: value }), el('small', { textContent: sub || '' })]);
+  const prjCard = el('div', { className: 'hero dtop' }, [
+    el('span', { className: 'hl', textContent: t('pm.dash.projectsH', { y }) }),
+    el('div', { className: 'dfigs' }, [
+      fig(t('pm.dash.budgetedN'), fmtInt(nBudget), t('pm.dash.budgetedSub', { v: fmtM(budget) })),
+      fig(t('pm.dash.unbudgeted'), fmtInt(unb.length), fmtM(pmSum(unb, p => p.contract_value ?? p.estimated_value))),
+      fig(t('pm.dash.completed'), projects.length ? fmtPct(done / projects.length, 0) : '—',
+          t('pm.dash.completedSub', { done: fmtInt(done), n: fmtInt(projects.length) }))])]);
+  box.append(el('div', { className: 'dashtop' }, [budCard, prjCard]));
+
+  const stats = el('div', { className: 'stats' });
   stats.append(tile(fullYear ? t('pm.dash.committed') : t('pm.dash.committedIn', { p: perLabel }), fmtM(committed),
     budget ? t('pm.dash.ofBudget', { pct: fmtPct(committed / budget) }) : null));
   if (fullYear) stats.append(tile(t('pm.dash.remaining'), fmtM(budget - committed), null));
   stats.append(tile(t('pm.dash.overrun'), fmtM(overrun), t('pm.dash.overrunSub', { n: fmtInt(overrunRows.length) }), overrun > 0 ? 'down' : null));
   stats.append(tile(t('pm.dash.carried'), fmtInt(carried.length), t('pm.dash.carriedSub', { v: fmtM(pmSum(carried, 'estimated_value')) })));
-  stats.append(tile(t('pm.dash.completed'), projects.length ? fmtPct(done / projects.length, 0) : '—',
-    t('pm.dash.completedSub', { done: fmtInt(done), n: fmtInt(projects.length) })));
-  stats.append(tile(t('pm.dash.unbudgeted'), fmtInt(unb.length), t('pm.dash.unbudgetedSub', { v: fmtM(pmSum(unb, p => p.contract_value ?? p.estimated_value)) })));
   box.append(stats);
 
   // Cycle time between the dated steps — the approval clock before phase 3
