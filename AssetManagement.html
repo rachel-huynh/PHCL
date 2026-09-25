@@ -1269,6 +1269,11 @@
   /* A missing RR of a replacement package: its dot draws it up. */
   .wfdot.add{border-style:dashed;color:var(--navy);background:#fff;cursor:pointer}
   .wfdot i.plus{background:var(--navy);color:#fff;font:700 9px/7px var(--font);font-style:normal;text-align:center}
+  /* Earlier packages' documents (reference): lighter dots, then a divider before this package's. */
+  .wfdots{align-items:center}
+  .wfdot.ref{border-color:#9fb0c9;color:#5b6f8f;background:#f4f7fb}
+  .wfdot.ref.on{background:#5b6f8f;border-color:#5b6f8f;color:#fff}
+  .wfsep{width:1px;height:26px;background:#c9d1de;margin:0 4px}
 </style>
 </head>
 <body>
@@ -2125,7 +2130,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260925l"></script>
-<script src="app.js?v=20260925l"></script>
+<script src="i18n.js?v=20260925n"></script>
+<script src="app.js?v=20260925n"></script>
 </body>
 </html>

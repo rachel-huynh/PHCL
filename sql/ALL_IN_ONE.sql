@@ -5692,6 +5692,25 @@ end $$;
 -- 4. VÒNG ĐỜI BỘ HỒ SƠ
 -- =====================================================================
 
+-- Tự duyệt (giai đoạn thử nghiệm, 25/09/2026): mặc định NGƯỜI LẬP không được
+-- kiểm tra / duyệt bộ hồ sơ của chính mình. Khi thử một mình với nhiều vai trò,
+-- đặt am_setting 'pm_allow_self_approve' = true (Hệ thống → Ngưỡng); đặt lại
+-- false khi dùng thật.
+insert into am_setting (key, value, note) values
+  ('pm_allow_self_approve', 'false',
+   'true = người lập được tự kiểm tra / duyệt bộ hồ sơ của mình (chỉ để thử nghiệm). false khi dùng thật.')
+on conflict (key) do nothing;
+
+create or replace function pm_self_ok()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce((select value from am_setting where key = 'pm_allow_self_approve') in ('true'::jsonb, '"true"'::jsonb), false)
+$$;
+
 -- Tên hiển thị của một người (Người dùng → Họ tên), để dưới chữ ký.
 create or replace function pm_user_name(p_uid uuid)
 returns text
@@ -6021,7 +6040,7 @@ begin
     if not app_user_role_covers(auth.uid(), s.role_code, p.dept_code) then
       raise exception 'Bước này cần vai trò % cho phòng ban %.', s.role_code, p.dept_code using errcode = '42501';
     end if;
-    if k.created_by = auth.uid() then
+    if k.created_by = auth.uid() and not pm_self_ok() then
       raise exception 'Người lập không được tự duyệt bộ hồ sơ của mình.' using errcode = '42501';
     end if;
   end if;
@@ -6243,7 +6262,7 @@ as $$
   join   pm_project p  on p.code = k.project_code
   join   pm_pkg_step s on s.pkg_id = k.id and s.step = k.current_step
   where  k.status = 'in_review'
-    and  k.created_by is distinct from auth.uid()
+    and  (k.created_by is distinct from auth.uid() or pm_self_ok())
     and  app_can('approval', 'approve')
     and  app_user_role_covers(auth.uid(), s.role_code, p.dept_code)
   union all
@@ -6267,7 +6286,7 @@ as $$
   join   pm_pkg k      on k.id = d.pkg_id
   join   pm_project p  on p.code = k.project_code
   join   pm_pkg_step s on s.pkg_id = k.id and s.step = k.current_step
-  join   app_user u    on u.active and u.id is distinct from k.created_by
+  join   app_user u    on u.active and (u.id is distinct from k.created_by or pm_self_ok())
   where  d.id = p_id and k.status = 'in_review'
     and  app_user_role_covers(u.id, s.role_code, p.dept_code)
     -- Hàm chạy vượt RLS, nên tự kiểm tra: chỉ trả lời người thấy được dự án.
@@ -6411,7 +6430,11 @@ select 'Trình duyệt ghi thẳng chứng từ / bộ hồ sơ (phải = 0)',
        count(*)::text, '0', case when count(*) = 0 then '✔' else '✘ HỎNG' end
 from   information_schema.role_table_grants
 where  grantee = 'authenticated' and table_name in ('pm_doc', 'pm_doc_step', 'pm_doc_event', 'pm_pkg', 'pm_pkg_step', 'pm_pkg_event')
-  and  privilege_type in ('INSERT', 'UPDATE', 'DELETE');
+  and  privilege_type in ('INSERT', 'UPDATE', 'DELETE')
+union all
+select 'Công tắc tự duyệt pm_allow_self_approve (Ngưỡng) — hiện tại',
+       coalesce((select value::text from am_setting where key = 'pm_allow_self_approve'), '—'), 'false khi dùng thật',
+       case when exists (select 1 from am_setting where key = 'pm_allow_self_approve') then '✔' else '✘ HỎNG' end;
 
 
 -- ####################################################################
@@ -6523,7 +6546,7 @@ begin
     select u.id, v_first, k.id, 'todo', v_nos, v_lead, k.project_code, new.actor_email,
            case when new.action = 'return_am' then new.comment end
     from   app_user u
-    where  u.active and u.id is distinct from k.created_by
+    where  u.active and (u.id is distinct from k.created_by or pm_self_ok())
       and  app_user_role_covers(u.id, s.role_code, p.dept_code)
       and  exists (select 1 from app_user_role ur
                    join app_permission ap on ap.role_code = ur.role_code

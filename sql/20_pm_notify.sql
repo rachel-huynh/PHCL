@@ -103,7 +103,7 @@ begin
     select u.id, v_first, k.id, 'todo', v_nos, v_lead, k.project_code, new.actor_email,
            case when new.action = 'return_am' then new.comment end
     from   app_user u
-    where  u.active and u.id is distinct from k.created_by
+    where  u.active and (u.id is distinct from k.created_by or pm_self_ok())
       and  app_user_role_covers(u.id, s.role_code, p.dept_code)
       and  exists (select 1 from app_user_role ur
                    join app_permission ap on ap.role_code = ur.role_code

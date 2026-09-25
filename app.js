@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260925l';
+const APP_VERSION = '20260925n';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -8098,6 +8098,9 @@ async function wfLoad() {
       SB.select('pm_budget_year', `select=*&year=eq.${project ? project.year : 0}`)
     ]);
     const line = project ? await wfFinalLine(project) : null;
+    // Testing switch (am_setting 'pm_allow_self_approve'): the preparer may check / approve their own package.
+    WF.selfOk = await SB.select('am_setting', 'select=value&key=eq.pm_allow_self_approve')
+      .then(([r]) => !!r && (r.value === true || r.value === 'true')).catch(() => false);
     let pkg = pkgs[0] || null;
     // Documents of the same group still in another package being drawn up (split
     // before packages existed): shown, signed and sent with this one — submitting
@@ -8114,6 +8117,29 @@ async function wfLoad() {
     Object.assign(WF, { pkg, pdocs, project, steps, events, docs, year: years[0] || null, line: line || null, dirty: false });
     WF.drafts = new Map(pdocs.map(d => [d.id, JSON.parse(JSON.stringify(d.data || {}))]));
     WF.dirtyIds = new Set();
+    // The approved documents of the EARLIER packages, for reference on the same
+    // screen (QC · MC shows PR · RR · PA first; PO shows those and QC · MC …),
+    // each with its own package's signatures. Read-only.
+    const prevRef = WF.ref && WF.ref.d.id;
+    WF.refs = []; WF.ref = null;
+    if (pkg) {
+      const first = Math.min(...wfPkgTypes(pkg.grp).map(wfSeq)), pick = new Map();
+      for (const x of docs)      // the latest approved one of each earlier type
+        if (x.pkg_id !== pkg.id && x.status === 'approved' && wfSeq(x.doc_type) < first
+            && (!pick.has(x.doc_type) || pick.get(x.doc_type).id < x.id)) pick.set(x.doc_type, x);
+      if (pick.size) {
+        const ids = [...pick.values()].map(x => x.id), pids = [...new Set([...pick.values()].map(x => x.pkg_id))];
+        const [rdocs, rpkgs, rsteps] = await Promise.all([
+          SB.select('pm_doc', `select=*&id=in.(${ids.join(',')})`),
+          SB.select('pm_pkg', `select=*&id=in.(${pids.join(',')})`),
+          SB.select('pm_pkg_step', `select=*&pkg_id=in.(${pids.join(',')})&order=step`)]);
+        rdocs.sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type));
+        WF.refs = rdocs.map(d => ({ d, pkg: rpkgs.find(k => k.id === d.pkg_id) || {}, steps: rsteps.filter(s => s.pkg_id === d.pkg_id),
+                                    pdocs: rdocs.filter(o => o.pkg_id === d.pkg_id) }));
+        for (const r of WF.refs) WF.drafts.set(r.d.id, JSON.parse(JSON.stringify(r.d.data || {})));
+        WF.ref = WF.refs.find(r => r.d.id === prevRef) || null;
+      }
+    }
     // Keep showing the document that was on screen (after a save or an action).
     const keep = WF.lastOpen === WF.openId && WF.doc && pdocs.find(d => d.doc_type === WF.doc.doc_type && WF.doc.pkg_id === pkg.id);
     WF.lastOpen = WF.openId;
@@ -8141,7 +8167,7 @@ async function wfLoad() {
       try {
         const who = await SB.rpc('pm_next_actors', { p_id: WF.doc.id });
         const n = $('#wdWho');
-        if (n) n.textContent = who.length ? who.map(w => w.full_name || w.email).join(', ') : t('wf.nobody');
+        if (n) n.textContent = who.length ? who.map(w => w.full_name || w.email).join(', ') : t(WF.selfOk ? 'wf.nobody' : 'wf.nobodyElse');
       } catch {}
     }
   } catch (e) { msg(out, 'err', e.message); }
@@ -8157,7 +8183,7 @@ const wfCurStep = () => WF.pkg && WF.steps.find(s => s.step === WF.pkg.current_s
 function wfCanActPkg() {
   const s = wfCurStep();
   return !!(WF.pkg && WF.pkg.status === 'in_review' && s && can('approval', 'approve')
-    && WF.pkg.created_by !== (ME && ME.id) && wfHasRoleFor(s.role_code, WF.project.dept_code));
+    && (WF.pkg.created_by !== (ME && ME.id) || WF.selfOk) && wfHasRoleFor(s.role_code, WF.project.dept_code));
 }
 // The small tag after a role: approves / checks.
 const wfKindTag = (kind, ownerPrep) => el('span', { className: 'kt kt-' + (kind || 'approve'),
@@ -8207,6 +8233,9 @@ function wfRender() {
                 document.createTextNode(' '), wfKindTag(step.kind, step.owner_prep), document.createTextNode(' '), el('b', { id: 'wdWho', textContent: '…' }));
   }
   head.append(info);
+  // The preparer holds the role of the step too: they may not check / approve their own package.
+  if (k.status === 'in_review' && step && !WF.selfOk && k.created_by === (ME && ME.id) && wfHasRoleFor(step.role_code, p.dept_code))
+    head.append(el('div', { className: 'msg warn', style: 'margin-top:10px', textContent: t('wf.selfBlocked', { role: wfRoleName(step.role_code) }) }));
   // Why it came back, in the words of whoever sent it.
   const lastBack = [...WF.events].reverse().find(e => ['return', 'return_am', 'reject'].includes(e.action));
   if (lastBack && (k.status === 'returned' || k.status === 'rejected' || (k.status === 'in_review' && k.returned_to === 'am' && step && step.owner_prep)))
@@ -8319,16 +8348,25 @@ function wfDotTypes() {
   });
 }
 function wfDots() {
-  const list = wfDotTypes();
-  if (list.length < 2) return '';
-  return el('div', { className: 'wfdots' }, list.map(({ ty, d, why, add }) => {
-    const b = el('button', { className: 'wfdot' + (d && d.doc_type === WF.doc.doc_type ? ' on' : '') + (d ? '' : add ? ' add' : ' off'),
+  const list = wfDotTypes(), refs = WF.refs || [];
+  if (list.length + refs.length < 2) return '';
+  // Earlier packages first (for reference, lighter), a divider, then this package.
+  const refDots = refs.map(r => {
+    const b = el('button', { className: 'wfdot ref' + (WF.ref === r ? ' on' : ''),
+      title: `${r.d.doc_no} — ${wfTypeName(r.d.doc_type)} · ${t('wf.refDoc')}` },
+      [el('b', { textContent: r.d.doc_type }), el('i', { className: 'st wf-' + r.d.status })]);
+    b.onclick = () => wfShow('ref:' + r.d.id);
+    return b;
+  });
+  return el('div', { className: 'wfdots' }, [...refDots, refs.length ? el('span', { className: 'wfsep', title: t('wf.refSep') }) : '',
+    ...list.map(({ ty, d, why, add }) => {
+    const b = el('button', { className: 'wfdot' + (d && !WF.ref && d.doc_type === WF.doc.doc_type ? ' on' : '') + (d ? '' : add ? ' add' : ' off'),
       title: d ? `${d.doc_no} — ${wfTypeName(ty)}` : `${ty} — ${why}`, disabled: !d && !add },
       [el('b', { textContent: ty }), d ? el('i', { className: 'st wf-' + d.status }) : add ? el('i', { className: 'plus', textContent: '+' }) : '']);
     if (d) b.onclick = () => wfShow(ty);
     else if (add) b.onclick = () => wfAddToPkg(ty);
     return b;
-  }));
+  })]);
 }
 // Adds a missing document to the package being drawn up, then turns to it.
 async function wfAddToPkg(ty) {
@@ -8341,24 +8379,46 @@ async function wfAddToPkg(ty) {
     await wfLoad();
   } catch (e) { msg('#wdMsg', 'err', e.message); }
 }
+/* Everything that can be on screen, earliest first: the earlier packages'
+   documents ("ref:<id>"), then this package's (by type). */
+const wfShownKey = () => WF.ref ? 'ref:' + WF.ref.d.id : WF.doc.doc_type;
+const wfShown = () => WF.ref ? WF.ref.d : WF.doc;
+function wfPages() {
+  return [...(WF.refs || []).map(r => ({ key: 'ref:' + r.d.id, d: r.d })),
+          ...wfDotTypes().filter(x => x.d).map(x => ({ key: x.ty, d: x.d }))];
+}
 function wfArrows() {
-  const list = wfDotTypes().filter(x => x.d);
+  const list = wfPages();
   if (list.length < 2) return '';
-  const i = list.findIndex(x => x.ty === WF.doc.doc_type);
+  const i = list.findIndex(x => x.key === wfShownKey());
   const prev = el('button', { className: 'btn wfarrow', textContent: '‹', title: list[i - 1] ? list[i - 1].d.doc_no : '', disabled: i <= 0 });
   const next = el('button', { className: 'btn wfarrow', textContent: '›', title: list[i + 1] ? list[i + 1].d.doc_no : '', disabled: i >= list.length - 1 });
-  prev.onclick = () => wfShow(list[i - 1].ty);
-  next.onclick = () => wfShow(list[i + 1].ty);
+  prev.onclick = () => wfShow(list[i - 1].key);
+  next.onclick = () => wfShow(list[i + 1].key);
   return el('div', { className: 'wfnav' }, [el('span', { className: 'wfpg', textContent: `${i + 1} / ${list.length}` }), prev, next]);
 }
 
-// Turn the page to another document of the package, the way a binder turns.
-function wfShow(type) {
-  if (!WF.doc || type === WF.doc.doc_type) return;
-  const order = wfPkgTypes(WF.pkg.grp);
-  const fwd = order.indexOf(type) > order.indexOf(WF.doc.doc_type);
+/* Draws an earlier package's document in ITS package's context (chain,
+   signatures), read-only, then puts this package back. */
+function wfOnScreen(fn) {
+  const r = WF.ref;
+  if (!r || WF.inRef) return fn();
+  const keep = { pkg: WF.pkg, steps: WF.steps, pdocs: WF.pdocs, doc: WF.doc, data: WF.data, adminEdit: WF.adminEdit };
+  Object.assign(WF, { pkg: r.pkg, steps: r.steps, pdocs: r.pdocs, doc: r.d, data: WF.drafts.get(r.d.id), adminEdit: false, inRef: true });
+  try { return fn(); } finally { Object.assign(WF, keep, { inRef: false }); }
+}
+
+// Turn the page to another document (this package's, or an earlier one's), the way a binder turns.
+function wfShow(key) {
+  if (!WF.doc || key === wfShownKey()) return;
+  const order = wfPages().map(x => x.key);
+  const fwd = order.indexOf(key) > order.indexOf(wfShownKey());
   const wrap = document.querySelector('#wdBody .flipwrap');
-  const swap = () => { wfSetDoc(type); wfRender(); };
+  const swap = () => {
+    if (key.startsWith('ref:')) WF.ref = WF.refs.find(r => 'ref:' + r.d.id === key) || null;
+    else { WF.ref = null; wfSetDoc(key); }
+    wfRender();
+  };
   if (!wrap || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return swap();
   wrap.classList.add(fwd ? 'turn-out-fwd' : 'turn-out-back');
   setTimeout(() => {
@@ -8629,6 +8689,8 @@ const wfMarkDirty = () => { WF.dirty = true; if (WF.dirtyIds && WF.doc) WF.dirty
 /* The sheet for the open document. Re-drawn after every change, so computed
    boxes follow what is typed. */
 function fsSheet(type, edit, mode = 'screen') {
+  // An earlier package's document on screen: drawn in its own package's context, read-only.
+  if (WF.ref && !WF.inRef) return wfOnScreen(() => fsSheet(WF.ref.d.doc_type, false, mode));
   const form = WF_FORMS[type];
   const d = WF.data, c = wfCtx();
   form.derive(d, c);
@@ -8648,6 +8710,7 @@ function wfWarnRender() {
   const box = $('#wdWarn');
   if (!box || !WF.doc) return;
   box.innerHTML = '';
+  if (WF.ref) return box.append(el('div', { className: 'msg info', textContent: t('wf.refNote', { no: WF.ref.d.doc_no }) }));
   const d = WF.data, c = wfCtx(), ty = WF.doc.doc_type;
   const put = (kind, text) => box.append(el('div', { className: 'msg ' + kind, textContent: text }));
   if (wfEditable()) put('info', t('wf.fillHint'));
@@ -9638,7 +9701,7 @@ function xsFit(sheet, pageW, ratio) {
 }
 
 function wfPrint() {
-  const root = $('#wdPrint'), type = WF.doc.doc_type, form = WF_FORMS[type];
+  const root = $('#wdPrint'), type = wfShown().doc_type, form = WF_FORMS[type];
   root.innerHTML = '';
   wfCollect();
   const sheet = fsSheet(type, false, 'print');
@@ -9661,7 +9724,7 @@ function wfLoadPdfLib() {
 }
 
 async function wfPdf() {
-  const type = WF.doc.doc_type, form = WF_FORMS[type];
+  const shown = wfShown(), type = shown.doc_type, form = WF_FORMS[type];
   msg('#wdMsg', 'info', t('wf.pdfMaking'));
   let host;
   try {
@@ -9678,13 +9741,13 @@ async function wfPdf() {
     host.append(form.xs ? xsFit(sheet, 748, 1.42) : sheet);
     document.body.append(host);
     await window.html2pdf().set({
-      margin: 6, filename: `${WF.doc.doc_no}.pdf`,
+      margin: 6, filename: `${shown.doc_no}.pdf`,
       image: { type: 'jpeg', quality: 0.95 },
       html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
       jsPDF: { unit: 'mm', format: 'a4', orientation: form.orient },
       pagebreak: form.xs ? { mode: 'css' } : { mode: ['css', 'legacy'], before: '.fbreak', avoid: ['tr', '.fsig', '.fcell', '.fbar'] }
     }).from(host.firstChild).save();
-    msg('#wdMsg', 'ok', t('wf.pdfDone', { file: `${WF.doc.doc_no}.pdf` }));
+    msg('#wdMsg', 'ok', t('wf.pdfDone', { file: `${shown.doc_no}.pdf` }));
   } catch (e) {
     msg('#wdMsg', 'err', t('wf.pdfFail') + ' ' + (e && e.message || e));
   } finally { if (host) host.remove(); }
