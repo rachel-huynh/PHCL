@@ -1126,6 +1126,21 @@
   .dfig .sl{display:block;font-size:10px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .dfig b{display:block;font-size:19px;font-weight:800;color:var(--navy);line-height:1.25;font-variant-numeric:tabular-nums}
   .wfwhy{font-size:10.5px;color:var(--dim);margin-top:4px;line-height:1.35}   /* why a document box has no Create button yet */
+  /* Admin tools: reset groups as tick cards; admin all-fields editors. */
+  .adgroups{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px;margin-top:12px}
+  .adg{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:9px 11px;cursor:pointer;font-weight:400}
+  .adg:hover{border-color:var(--navy)}
+  .adg input{margin-top:3px}
+  .adg b{display:block;color:var(--navy);font-size:12.5px}
+  .adg small{display:block;color:var(--dim);font-size:11px;line-height:1.4;margin-top:2px}
+  .adtbl{width:auto;min-width:420px}
+  .adh3{font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.5px;margin:12px 0 6px}
+  .adlist{display:flex;flex-wrap:wrap;gap:6px}
+  .adedit{font-size:12.5px;line-height:1.55}
+  .adall{align-items:flex-end;flex-wrap:wrap;gap:8px 12px}
+  .adall .fld input{width:170px}
+  .adall .fld.wide{flex:1 1 100%}
+  .adall .fld.wide textarea{width:100%;min-height:54px}
   @media (max-width:1200px){ .dkpis{grid-template-columns:repeat(4,minmax(0,1fr))} }
   @media (max-width:700px){ .dkpis{grid-template-columns:repeat(2,minmax(0,1fr))} .dkpis .span4{grid-column:span 2} }
 </style>
@@ -1467,6 +1482,34 @@
     </div>
 
     <div id="printRoot"></div>
+  </section>
+
+  <!-- ============================================ ADMIN TOOLS (testing) -->
+  <section id="v-admin">
+    <p class="lead" data-i18n-html="ad.lead_html"></p>
+    <div class="card" id="adResetCard">
+      <h2 data-i18n="ad.reset.h"></h2>
+      <div class="msg warn" data-i18n-html="ad.reset.warn_html"></div>
+      <div id="adGroups" class="adgroups"></div>
+      <div class="row" style="align-items:flex-end;flex-wrap:wrap;margin-top:12px">
+        <button class="btn" id="btnAdCount" data-i18n="ad.count"></button>
+        <div class="fld"><label data-i18n="ad.type"></label>
+          <input id="adConfirm" spellcheck="false" autocomplete="off" style="width:150px"></div>
+        <button class="btn danger" id="btnAdReset" disabled data-i18n="ad.go"></button>
+        <span style="flex:1"></span>
+        <button class="btn" id="btnAdBackup" data-i18n="ad.backupFirst"></button>
+      </div>
+      <div id="adOut"></div>
+    </div>
+    <div class="card">
+      <h2 data-i18n="ad.edit.h"></h2>
+      <div class="adedit" data-i18n-html="ad.edit.p_html"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="btnAdUsers" data-i18n="ad.openUsers"></button>
+        <button class="btn" id="btnAdPerms" data-i18n="ad.openPerms"></button>
+      </div>
+      <div id="adEditors"></div>
+    </div>
   </section>
 
   <section id="v-backup">
@@ -1945,7 +1988,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260925f"></script>
-<script src="app.js?v=20260925f"></script>
+<script src="i18n.js?v=20260925g"></script>
+<script src="app.js?v=20260925g"></script>
 </body>
 </html>

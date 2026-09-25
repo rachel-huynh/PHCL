@@ -70,6 +70,8 @@ set search_path = public
 as $$
 declare d pm_doc; p pm_project; s pm_doc_step;
 begin
+  -- Quản trị sửa nội dung (22_admin_tools.sql): không đổi ai phải làm gì — không báo.
+  if new.action = 'admin_edit' then return null; end if;
   select * into d from pm_doc where id = new.doc_id;
   if d.id is null then return null; end if;
   select * into p from pm_project where code = d.project_code;

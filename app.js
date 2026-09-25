@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260925f';
+const APP_VERSION = '20260925g';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -1798,7 +1798,7 @@ const NAV = [
   ['nav.system', [
     ['tbl:am_setting', null],
     ['backup', 'nav.backup'],
-    ['users', 'nav.users'], ['perms', 'nav.perms'], ['audit', 'nav.audit'],
+    ['users', 'nav.users'], ['perms', 'nav.perms'], ['audit', 'nav.audit'], ['admin', 'nav.admin'],
     ['setup', 'nav.setup']
   ]]
 ];
@@ -1812,6 +1812,7 @@ function viewModule(v) {
   if (!v || v === 'setup') return null;
   if (['register', 'intake', 'alr', 'counter'].includes(v)) return 'assets';
   if (['users', 'perms', 'audit'].includes(v)) return 'security';
+  if (v === 'admin') return 'override';
   if (v === 'pmdash') return 'report';
   if (v === 'budget' || v === 'pmimport') return 'budget';
   if (v === 'projects' || v === 'tbl:pm_vendor' || v === 'doc') return 'project';
@@ -2182,6 +2183,7 @@ function showView(view) {
     if (view === 'chains' && SB.ready()) wfChainsLoad();
     if (view === 'doc' && SB.ready()) wfLoad();
     if (view === 'payments' && SB.ready()) payLoad();
+    if (view === 'admin' && SB.ready()) adLoad();
   }
 }
 
@@ -2356,6 +2358,7 @@ function init() {
   initSecurity();
   initPm();
   initWf();
+  initAdmin();
   initSig();
   initNotices();
   initPay();
@@ -5770,6 +5773,28 @@ function xlNum(v) {
   const n = Number(s);
   return s !== '' && isFinite(n) ? n : null;
 }
+/* A number TYPED on screen, in either way of writing it. The boxes show
+   numbers in the UI language (vi "510.000.000" / "12,5"; en "510,000,000" /
+   "12.5") and people type both, so the separator is read, not assumed:
+   both "." and "," present → the last one is the decimal point; one kind used
+   several times → thousands; used once with exactly three digits after it →
+   thousands; otherwise the decimal point. (xlNum is for cells read from Excel.) */
+function numIn(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  let s = String(v).replace(/[\s ]/g, '').replace(/%$/, '');
+  if (s === '') return null;
+  const dot = s.split('.').length - 1, com = s.split(',').length - 1;
+  if (dot && com) {
+    const dec = s.lastIndexOf('.') > s.lastIndexOf(',') ? '.' : ',';
+    s = s.split(dec === '.' ? ',' : '.').join('').replace(',', '.');
+  } else if (dot + com) {
+    const sep = dot ? '.' : ',', n = dot || com;
+    s = n > 1 || /^[-+]?\d{1,3}[.,]\d{3}$/.test(s) ? s.split(sep).join('') : s.replace(',', '.');
+  }
+  const n = Number(s);
+  return isFinite(n) ? n : null;
+}
 // A formula that found nothing leaves 0 in a text column; that is "empty".
 const xlText = v => {
   if (v == null || v === 0) return null;
@@ -6360,7 +6385,7 @@ function pbYearBox() {
 async function pbSaveYear(row) {
   const patch = { year: PM.bud.year };
   for (const i of row.querySelectorAll('input[data-k]')) {
-    const n = xlNum(i.value);
+    const n = numIn(i.value);
     patch[i.dataset.k] = n;
   }
   if (!(patch.fx_rate > 0)) return msg('#pbMsg', 'err', t('pm.bud.fxNeeded'));
@@ -6485,8 +6510,45 @@ function pbDetail(l) {
   box.innerHTML = '';
   const card = el('div', { className: 'card pmdet' });
   card.append(el('h2', { textContent: `${l.project_code} — ${l.name || ''}` }), pmDl(l, PM_LINE_SHOW));
+  // Admin override: correct any field of the line (testing phase), logged in the change log.
+  if (canOverride() && can('budget', 'edit')) {
+    const b = el('button', { className: 'btn', style: 'margin-top:10px', textContent: t('wf.adminEdit') });
+    b.onclick = () => { b.remove(); card.append(pbLineForm(l)); };
+    card.append(b);
+  }
   box.append(card);
   card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function pbLineForm(l) {
+  const NUM = ['estimated_value', 'gm_approved', 'quantity', 'unit_price', 'possibility', 'impact', 'assessment'];
+  const DATE = ['start_date', 'end_date'], LONG = ['reason', 'rationale', 'tech_standard', 'details'];
+  const wrap = el('div', { className: 'ppedit', style: 'margin-top:12px' }, [el('h2', { textContent: t('pm.bud.editLine') })]);
+  const all = el('div', { className: 'row adall' });
+  for (const [k, lbl] of PM_LINE_SHOW) {
+    const type = DATE.includes(k) ? 'date' : NUM.includes(k) ? 'num' : 'text';
+    const val = l[k] == null ? '' : type === 'num' ? fmtNum(l[k]) : String(l[k]);
+    const i = LONG.includes(k) ? el('textarea', { value: val, rows: 3 })
+      : el('input', { type: type === 'date' ? 'date' : 'text', value: val, inputMode: type === 'num' ? 'decimal' : 'text' });
+    i.dataset.k = k; i.dataset.type = type;
+    all.append(el('div', { className: 'fld' + (LONG.includes(k) ? ' wide' : '') }, [el('label', { textContent: t(lbl) }), i]));
+  }
+  const out = el('div');
+  const save = el('button', { className: 'btn pri', textContent: t('wf.adminSave') });
+  save.onclick = async () => {
+    const patch = {};
+    for (const i of all.querySelectorAll('[data-k]')) {
+      const v = i.value.trim();
+      patch[i.dataset.k] = i.dataset.type === 'num' ? numIn(v) : (v || null);
+    }
+    try {
+      await SB.patch('pm_budget_line', `id=eq.${l.id}`, patch);
+      await pbRoundChanged();
+      msg('#pbMsg', 'ok', t('pm.bud.lineSaved', { code: patch.project_code || l.project_code }));
+    } catch (e) { msg(out, 'err', e.message); }
+  };
+  wrap.append(all, el('div', { className: 'acts' }, save), out);
+  return wrap;
 }
 
 function pbExport() {
@@ -6667,7 +6729,7 @@ function ppCfMatch(col, p, q) {
   if (!q) return true;
   if (col.num) {
     const v = col.val(p);
-    const n = s => xlNum(String(s).replace(/%$/, ''));
+    const n = s => numIn(String(s).replace(/%$/, ''));
     let m;
     if ((m = /^(>=|<=|>|<|=)\s*(.+)$/.exec(q)) && n(m[2]) != null) {
       if (v == null) return false;
@@ -6902,10 +6964,10 @@ function ppEditForm(p) {
   const save = el('button', { className: 'btn pri', textContent: t('tool.save') });
   save.onclick = async () => {
     const patch = {};
-    for (const i of row.querySelectorAll('[data-k]')) {
+    for (const i of wrap.querySelectorAll('[data-k]')) {
       const k = i.dataset.k, ty = i.dataset.type, v = i.value.trim();
       patch[k] = ty === 'date' ? (v || null) : ty === 'select' ? (v || null)
-        : /value|volume/.test(k) ? xlNum(v) : (v || null);
+        : ty === 'num' || /value|volume/.test(k) ? numIn(v) : (v || null);
     }
     try {
       await SB.patch('pm_project', `code=eq.${encodeURIComponent(p.code)}`, patch);
@@ -6925,9 +6987,28 @@ function ppEditForm(p) {
     };
     acts.append(del);
   }
-  row.append(acts);
   wrap.append(row);
+  if (canOverride()) wrap.append(ppAllFields(p, row));
+  wrap.append(acts);
   return wrap;
+}
+
+/* Admin override: every other field of the project as well — what the budget
+   line and the dossier filled in — for the testing phase's corrections. */
+function ppAllFields(p, row) {
+  const shown = new Set(['code', ...[...row.querySelectorAll('[data-k]')].map(i => i.dataset.k)]);
+  const LONG = ['reason', 'rationale', 'tech_standard', 'evaluation'];
+  const all = el('div', { className: 'row adall' });
+  for (const [k, lbl] of PM_PROJ_SHOW) {
+    if (shown.has(k) || k === 'source_file') continue;
+    const type = PM_DATES.includes(k) ? 'date' : PM_NUMS.includes(k) ? 'num' : 'text';
+    const val = p[k] == null ? '' : type === 'num' ? fmtNum(p[k]) : String(p[k]);
+    const i = LONG.includes(k) ? el('textarea', { value: val, rows: 3 })
+      : el('input', { type: type === 'date' ? 'date' : 'text', value: val, inputMode: type === 'num' ? 'decimal' : 'text' });
+    i.dataset.k = k; i.dataset.type = type;
+    all.append(el('div', { className: 'fld' + (LONG.includes(k) ? ' wide' : '') }, [el('label', { textContent: t(lbl) }), i]));
+  }
+  return el('div', {}, [el('h3', { className: 'adh3', textContent: t('pm.prj.allFields') }), all]);
 }
 
 /* New project: from an approved budget line (the usual case — everything is
@@ -6995,7 +7076,7 @@ function ppNew(preCode, preYear) {
       area_category: l.area_category, asset_item: l.asset_item, location: l.location, reason: l.reason,
       planned_start: l.start_date, planned_end: l.end_date } : {}, {
       code: c, main_code: pmMain(c), dept_code: dept.value, name: name.value.trim() || null,
-      estimated_value: xlNum(est.value), budgeted: !unb.checked, source: 'app',
+      estimated_value: numIn(est.value), budgeted: !unb.checked, source: 'app',
       request_date: new Date().toISOString().slice(0, 10) });
     try {
       await SB.insert('pm_project', [rec]);
@@ -8013,7 +8094,7 @@ async function wfLoad() {
       SB.select('pm_budget_year', `select=*&year=eq.${project ? project.year : 0}`)
     ]);
     const line = project ? await wfFinalLine(project) : null;
-    if (!WF.doc || WF.doc.id !== doc.id) WF.qcTab = null;   // a different document opens on its default tab
+    if (!WF.doc || WF.doc.id !== doc.id) { WF.qcTab = null; WF.adminEdit = false; }   // a different document opens on its default tab, not in admin edit
     Object.assign(WF, { doc, project, steps, events, docs, year: years[0] || null, line: line || null, dirty: false });
     WF.data = JSON.parse(JSON.stringify(doc.data || {}));
     WF.pair = await wfGroupState(doc, steps.find(s => s.step === doc.current_step), docs, project).catch(() => null);
@@ -8061,8 +8142,12 @@ async function wfGroupState(doc, cur, docs, project) {
 const wfKindTag = (kind, pair) => el('span', { className: 'kt kt-' + (kind || 'approve'),
   textContent: t('wf.k.' + (kind || 'approve'), { pair: pair || '' }) });
 
-const wfEditable = () => WF.doc && ['draft', 'returned'].includes(WF.doc.status)
+// The preparer's own editing: a draft or a returned document.
+const wfOwnEditable = () => WF.doc && ['draft', 'returned'].includes(WF.doc.status)
   && (WF.doc.created_by === (ME && ME.id) || wfCanPrepare(WF.doc.doc_type, WF.project.dept_code));
+// Admin override (22_admin_tools.sql): content of a document in any state but cancelled, switched on with ✎.
+const wfAdminMode = () => !!(WF.adminEdit && WF.doc && WF.doc.status !== 'cancelled' && can('override', 'edit'));
+const wfEditable = () => wfOwnEditable() || wfAdminMode();
 
 function wfRender() {
   const box = $('#wdBody');
@@ -8104,13 +8189,21 @@ function wfRender() {
     head.append(jb);
   }
 
+  if (wfAdminMode()) head.append(el('div', { className: 'msg warn', style: 'margin-top:10px', textContent: t('wf.adminBanner') }));
   const acts = el('div', { className: 'row', style: 'margin-top:10px;align-items:flex-end;flex-wrap:wrap' });
   const note = el('textarea', { id: 'wdNote', placeholder: t('wf.notePh'), style: 'min-height:38px;width:340px' });
   const btn = (k, cls, fn) => { const b = el('button', { className: 'btn ' + (cls || ''), textContent: t(k) }); b.onclick = fn; acts.append(b); return b; };
-  if (edit) {
+  if (wfOwnEditable()) {
     btn('wf.save', '', () => wfSave(false));
     btn('wf.submit', 'pri', () => wfSubmit());
+  } else if (wfAdminMode()) {
+    btn('wf.adminSave', 'pri', () => wfSave(false));
+    btn('wf.adminStop', '', () => { if (WF.dirty && !confirm(t('wf.leave'))) return; WF.adminEdit = false; wfLoad(); });
+  } else if (d.status !== 'cancelled' && can('override', 'edit')) {
+    btn('wf.adminEdit', '', () => { WF.adminEdit = true; wfRender(); });
   }
+  // Admin override: back to draft, so the preparer can change it and send it again.
+  if (can('override', 'edit') && !['draft', 'cancelled'].includes(d.status)) btn('wf.adminReopen', '', () => wfAdminReopen());
   if (wfCanAct(d, step, p.dept_code)) {
     acts.prepend(el('div', { className: 'fld' }, [el('label', { textContent: t('wf.note') }), note]));
     // AM team CHECKS (and may send back to the preparer) — it does not approve or reject.
@@ -8224,9 +8317,9 @@ function wfInput(f, obj, edit, onChange, ctxRow) {
   }
   i.onchange = () => {
     let nv = f.t === 'bool' ? i.checked : i.value;
-    if (['money', 'num'].includes(f.t)) nv = xlNum(nv);
-    if (f.t === 'int15') nv = xlNum(nv) == null ? null : Math.max(1, Math.min(5, Math.round(xlNum(nv))));
-    if (f.t === 'pct') nv = xlNum(nv) == null ? null : xlNum(nv) / 100;
+    if (['money', 'num'].includes(f.t)) nv = numIn(nv);
+    if (f.t === 'int15') nv = numIn(nv) == null ? null : Math.max(1, Math.min(5, Math.round(numIn(nv))));
+    if (f.t === 'pct') nv = numIn(nv) == null ? null : numIn(nv) / 100;
     obj[f.k] = nv === '' ? null : nv;
     onChange();
   };
@@ -8919,7 +9012,8 @@ function wfCollect() {
 
 async function wfSave(quiet) {
   try {
-    await SB.rpc('pm_doc_save', { p_id: WF.doc.id, p_data: wfCollect() });
+    // Admin override saves through its own function (any state, logged as an admin edit).
+    await SB.rpc(wfOwnEditable() ? 'pm_doc_save' : 'pm_doc_admin_save', { p_id: WF.doc.id, p_data: wfCollect() });
     WF.dirty = false;
     if (!quiet) { await wfLoad(); msg('#wdMsg', 'ok', t('wf.saved')); }
     return true;
@@ -8963,6 +9057,16 @@ async function wfAct(action) {
     const k = action !== 'approve' ? action : to === 'approved' ? 'final' : check ? 'check' : 'approve';
     msg('#wdMsg', 'ok', t('wf.acted.' + k, { no }));
   } catch (e) { msg('#wdMsg', 'err', e.message); }
+}
+
+// Admin override: the document goes back to draft (its approval chain for this
+// submission is dropped); milestones already pushed to the project stay.
+async function wfAdminReopen() {
+  const why = prompt(t('wf.adminReopenWhy', { no: WF.doc.doc_no }));
+  if (why === null) return;
+  try { await SB.rpc('pm_doc_admin_reopen', { p_id: WF.doc.id, p_comment: why || null }); await wfLoad(); wfBadge();
+        msg('#wdMsg', 'ok', t('wf.adminReopened', { no: WF.doc.doc_no })); }
+  catch (e) { msg('#wdMsg', 'err', e.message); }
 }
 
 async function wfCancel() {
@@ -9466,6 +9570,100 @@ async function wfChainSave(type, prep, steps) {
 function initWf() {
   // Leaving a form with unsaved edits asks first.
   window.addEventListener('beforeunload', ev => { if (VIEW === 'doc' && WF.dirty && wfEditable()) { ev.preventDefault(); ev.returnValue = ''; } });
+}
+
+/* =========================================================== ADMIN TOOLS
+   For the testing phase (22_admin_tools.sql). Permission area "override":
+     view  = this screen
+     edit  = edit ANY content — a document in any state, every project field,
+             every budget line field — each change kept in the history
+     admin = reset (delete) test data, group by group
+   System Admin has all three; a user given the "Content editor" role has
+   view + edit. The database checks each call; the screen only hides what
+   someone cannot do. */
+const AD_GROUPS = ['docs', 'payments', 'projects', 'budget', 'vendors', 'notices', 'signatures', 'assets', 'audit'];
+const AD = { sel: new Set(), counts: null };
+const canOverride = () => can('override', 'edit');
+
+function adLoad() {
+  const box = $('#adGroups');
+  box.innerHTML = '';
+  $('#adResetCard').hidden = !can('override', 'admin');
+  for (const g of AD_GROUPS) {
+    const cb = el('input', { type: 'checkbox', checked: AD.sel.has(g) });
+    cb.onchange = () => { if (cb.checked) AD.sel.add(g); else AD.sel.delete(g); AD.counts = null; $('#adOut').innerHTML = ''; adSync(); };
+    box.append(el('label', { className: 'adg' }, [cb, el('span', {}, [el('b', { textContent: t('ad.g.' + g) }),
+      el('small', { textContent: t('ad.gd.' + g) })])]));
+  }
+  adSync();
+  wfLookups().catch(() => {}).then(adEditors);   // role names come with the lookups
+}
+
+// The reset button needs groups ticked and the word typed.
+function adSync() {
+  $('#btnAdReset').disabled = !AD.sel.size || $('#adConfirm').value.trim().toUpperCase() !== 'RESET';
+}
+
+const adGroups = () => AD_GROUPS.filter(g => AD.sel.has(g));
+function adTable(rows) {
+  const tb = el('table', { className: 'adtbl' });
+  tb.append(el('tr', {}, [el('th', { textContent: t('ad.col.group') }), el('th', { textContent: t('ad.col.table') }),
+                          el('th', { className: 'num', textContent: t('ad.col.rows') })]));
+  for (const r of rows) tb.append(el('tr', {}, [el('td', { textContent: t('ad.g.' + r.grp) }), el('td', {}, el('code', { textContent: r.tbl })),
+                                                el('td', { className: 'num', textContent: fmtInt(Number(r.n)) })]));
+  return el('div', { className: 'wrap', style: 'margin-top:10px' }, tb);
+}
+
+async function adCount() {
+  const out = $('#adOut');
+  if (!AD.sel.size) return msg(out, 'err', t('ad.pick'));
+  try {
+    const rows = await SB.rpc('app_reset_data', { p_groups: adGroups(), p_dry: true });
+    msg(out, 'info', t('ad.counted'));
+    out.append(adTable(rows));
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+async function adReset() {
+  const out = $('#adOut');
+  const gs = adGroups();
+  if (!gs.length || $('#adConfirm').value.trim().toUpperCase() !== 'RESET') return;
+  if (!confirm(t('ad.confirm', { list: gs.map(g => t('ad.g.' + g)).join(', ') }))) return;
+  $('#btnAdReset').disabled = true;
+  try {
+    const rows = await SB.rpc('app_reset_data', { p_groups: gs, p_dry: false });
+    $('#adConfirm').value = '';
+    AD.sel.clear();
+    // Cached lists of the project screens would show what is gone.
+    WF.types = []; PAY.inv = []; PAY.pay = [];
+    adLoad();
+    msg(out, 'ok', t('ad.done'));
+    out.append(adTable(rows));
+    wfBadge();
+  } catch (e) { msg(out, 'err', e.message); adSync(); }
+}
+
+// Who may edit any content now: System Admins and Content editors.
+async function adEditors() {
+  const box = $('#adEditors');
+  box.innerHTML = '';
+  try {
+    const rows = await SB.select('app_user_role', 'select=role_code,app_user(email,full_name,active)&role_code=in.(SYS_ADMIN,CONTENT_EDITOR)');
+    const list = rows.filter(r => r.app_user && r.app_user.active);
+    if (!list.length) return;
+    box.append(el('h3', { className: 'adh3', textContent: t('ad.editors') }),
+      el('div', { className: 'adlist' }, list.map(r => el('span', { className: 'st in_progress',
+        textContent: `${r.app_user.full_name || r.app_user.email} · ${wfRoleName(r.role_code)}` }))));
+  } catch {}
+}
+
+function initAdmin() {
+  $('#btnAdCount').onclick = adCount;
+  $('#btnAdReset').onclick = adReset;
+  $('#adConfirm').oninput = adSync;
+  $('#btnAdBackup').onclick = () => showView('backup');
+  $('#btnAdUsers').onclick = () => showView('users');
+  $('#btnAdPerms').onclick = () => showView('perms');
 }
 
 /* ============================================================== PAYMENTS
@@ -9973,7 +10171,7 @@ function payBulkEdit(items) {
       code.setAttribute('list', 'payProjList');
       code.onchange = () => { l.code = pmCode(code.value); draw(); };
       const pct = el('input', { value: l.pct, style: 'width:80px', inputMode: 'decimal' });
-      pct.onchange = () => { l.pct = xlNum(pct.value) || 0; draw(); };
+      pct.onchange = () => { l.pct = numIn(pct.value) || 0; draw(); };
       const x = el('button', { className: 'xbtn', textContent: '×' });
       x.onclick = () => { lines.splice(i, 1); draw(); };
       const p = PAY.byCode.get(l.code);
@@ -10048,7 +10246,7 @@ function payEdit(kind, r) {
       code.setAttribute('list', 'payProjList');
       code.onchange = () => { l.code = pmCode(code.value); draw(); };
       const pct = el('input', { value: l.pct, style: 'width:80px', inputMode: 'decimal' });
-      pct.onchange = () => { l.pct = xlNum(pct.value) || 0; draw(); };
+      pct.onchange = () => { l.pct = numIn(pct.value) || 0; draw(); };
       const x = el('button', { className: 'xbtn', textContent: '×' });
       x.onclick = () => { lines.splice(i, 1); draw(); };
       const p = PAY.byCode.get(l.code);
