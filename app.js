@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260926d';
+const APP_VERSION = '20260926e';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -4437,7 +4437,8 @@ function inExpand(ln) {
     in_use_date: $('#inDate').value || null,
     purchase_year: Number(($('#inDate').value || '').slice(0, 4)) || new Date().getFullYear(),
     origin_iso2: ln.origin_iso2 || null,
-    status_code: null,
+    // Received, not yet accepted: "Chờ duyệt" until the handover (AH) is approved (user 26/09/2026).
+    status_code: kind === 'low' ? '119' : '120',
     // Each spec lands in its own column, which is what the label receipt and
     // the Beetrack sheet read. A blank one stays null rather than ''.
     ...Object.fromEntries(SPEC_FIELDS.map(f =>
@@ -4566,9 +4567,6 @@ async function inCheck() {
       ln._review.push({ field: 'unit_price', reason: 'from_contract' });
     }
 
-    W(n, t('in.warnStatus', { i: n }));
-    ln._review.push({ field: 'status_code', reason: 'no_source' });
-
     rows += inExpand(ln).length;
   }
 
@@ -4696,10 +4694,29 @@ async function inConfirm() {
                                    : 'JVC.' + String(v).padStart(9, '0');
       });
     }
+    // One delivery = one batch (am_shipment, 26_alr_project.sql): the project and the PO it came from,
+    // so the label receipt (AL) and the handover (AH) can take exactly these assets.
+    // Before 26 has run the columns are missing: the assets are written without a batch, as before.
+    let shipId = null;
+    const proj = $('#inPurpose').value.trim();
+    if (proj) {
+      try {
+        const now = new Date(), z = n => String(n).padStart(2, '0');
+        const [sh] = await SB.insert('am_shipment', [{
+          code: `${proj}/${now.getFullYear()}${z(now.getMonth() + 1)}${z(now.getDate())}-${z(now.getHours())}${z(now.getMinutes())}${z(now.getSeconds())}`,
+          delivery_date: $('#inDate').value || null, supplier: $('#inSupplier').value.trim() || null,
+          invoice_no: $('#inInvoice').value.trim() || null, purpose_code: proj, project_code: proj,
+          po_doc_no: (IN.src && IN.src.project === proj && IN.src.po) || null, contract_ref: (IN.src && IN.src.project === proj && IN.src.po) || null,
+          company_code: $('#inCompany').value || null, dept_code: $('#inDept').value || null, status: 'confirmed',
+          created_by: (ME && (ME.full_name || ME.email)) || null }]);
+        shipId = sh && sh.id;
+      } catch (e) { console.warn('shipment not recorded', e); }
+    }
     const payload = all.map(r => {
       const o = { ...r };
       delete o._review;
       o.needs_review = r.needs_review || [];
+      if (shipId) o.shipment_id = shipId;
       return o;
     });
     const saved = await SB.insert('am_asset', payload);
@@ -8354,9 +8371,20 @@ function wfCreateState(p, type, docs, pkgs = []) {
 async function wfPrepTodos() {
   if (!ME || !can('project', 'create')) return [];
   await wfLookups();
-  const next = ['QC', 'PO', 'AH'].filter(ty => PM_ENTITIES.some(e => { const c = wfChain(e, ty).find(c => c.step === 0);
+  const next = ['QC', 'PO', 'AL', 'AH'].filter(ty => WF.types.some(x => x.code === ty) && PM_ENTITIES.some(e => { const c = wfChain(e, ty).find(c => c.step === 0);
     return c && ME.roles.some(r => r.role === c.role_code); }));
   if (!next.length) return [];
+  // AL: projects with received assets (status 120 / 119) that no live AL holds yet.
+  const alOpen = new Set();
+  if (next.includes('AL')) {
+    try {
+      const [recv, alDocs] = await Promise.all([
+        pmSelectAll('am_asset', 'select=id,purpose_code&status_code=in.(119,120)&purpose_code=not.is.null'),
+        pmSelectAll('pm_doc', 'select=project_code,ids:data->asset_ids&doc_type=eq.AL&status=not.in.(cancelled,rejected)')]);
+      const held = new Set(alDocs.flatMap(d => d.ids || []));
+      for (const a of recv) if (!held.has(a.id)) alOpen.add(a.purpose_code);
+    } catch {}
+  }
   const [docs, pkgs, projects] = await Promise.all([
     pmSelectAll('pm_doc', 'select=id,project_code,doc_type,doc_no,status,pkg_id,decided_at,final:data->final&status=not.in.(cancelled,rejected)'),
     pmSelectAll('pm_pkg', 'select=id,project_code,grp,status&status=not.in.(cancelled,rejected)'),
@@ -8369,11 +8397,33 @@ async function wfPrepTodos() {
     const pd = by.get(p.code) || [];
     if (!pd.length) continue;
     for (const ty of next) {
+      if (ty === 'AL' && !alOpen.has(p.code)) continue;
+      // The handover waits while a label receipt is still on its way to the hotel.
+      if (ty === 'AH' && pd.some(d => d.doc_type === 'AL' && d.status !== 'approved')) continue;
       if (!wfCreateState(p, ty, pd, pby.get(p.code) || []).ok) continue;
       const basis = pd.filter(d => d.status === 'approved' && wfSeq(d.doc_type) < wfSeq(ty)).sort((a, b) => wfSeq(b.doc_type) - wfSeq(a.doc_type))[0];
       out.push({ kind: 'prepare', doc_type: ty, doc_id: basis ? basis.id : null, doc_no: basis ? basis.doc_no : '', project_code: p.code,
                  project_name: p.name, dept_code: p.dept_code, total_value: null, submitted_at: basis ? basis.decided_at : null });
     }
+  }
+  // Labels received but photos missing (for whoever draws up the handover): open the AL to take them.
+  if (next.includes('AH')) {
+    try {
+      const als = await pmSelectAll('pm_doc', 'select=id,project_code,doc_no,decided_at,ids:data->asset_ids&doc_type=eq.AL&status=eq.approved');
+      const ahs = await pmSelectAll('pm_doc', 'select=al:data->al_ids&doc_type=eq.AH&status=not.in.(cancelled,rejected)');
+      const handed = new Set(ahs.flatMap(d => d.al || []));
+      const pmap = new Map(projects.map(p => [p.code, p]));
+      for (const a of als.filter(a => !handed.has(a.id) && pmap.has(a.project_code))) {
+        const ids = a.ids || [];
+        const photos = await phLoad(ids).catch(() => null);
+        if (!photos) break;                                 // 26_alr_project.sql not run yet
+        const missing = ids.filter(id => PH_KINDS.some(k => !photos.some(p => p.asset_id === id && p.kind === k))).length;
+        if (!missing) continue;
+        const p = pmap.get(a.project_code);
+        out.push({ kind: 'photo', doc_type: 'AL', doc_id: a.id, doc_no: a.doc_no, project_code: p.code, project_name: p.name,
+                   dept_code: p.dept_code, total_value: null, submitted_at: a.decided_at, missing });
+      }
+    } catch {}
   }
   return out;
 }
@@ -8690,6 +8740,8 @@ function wfRender() {
   btn('wf.pdf', '', () => wfPdf());
   // Goods are received before the handover: an approved PO sends its lines to a new delivery.
   if (d.doc_type === 'PO' && d.status === 'approved') btn('wf.toIntake', '', () => wfToIntake());
+  // The label receipt prints its labels on the label screen (tape or sheet).
+  if (d.doc_type === 'AL' && d.status !== 'cancelled') btn('al.print', '', () => alPrintLabels(d));
   head.append(acts);
   box.append(head);
 
@@ -8734,6 +8786,9 @@ function wfRender() {
   // A QC in the package: its tender (vendors quote on the portal, bids load into the appendix).
   const qcDoc = WF.pdocs.find(x => x.doc_type === 'QC');
   if (qcDoc && qcDoc.id) box.append(tdPanel(qcDoc));
+  // The photos of the attached labels: on the received AL, and on the AH of those assets.
+  const ph = phForPackage();
+  if (ph) box.append(ph);
 
   // History of the package.
   const hist = el('details', { className: 'card' });
@@ -9243,7 +9298,25 @@ async function wfPrefill(p, type, docs) {
   if (type === 'CT') { const poDoc = get('PO');
     return { signed_date: '', value: poDoc ? n0(poDoc.total_value) : null, supplier: po.supplier || '',
              lines: [{ milestone: 'Deposit', pct: 50 }, { milestone: 'Handover', pct: 50 }] }; }
+  if (type === 'AL') return alPrefill(p, docs, today, get('PO'));
   if (type === 'AH') {
+    // Labels received (AL) and not handed over yet: the handover is of exactly those assets (user 26/09/2026).
+    const covered = new Set(docs.filter(d => d.doc_type === 'AH' && !['cancelled', 'rejected'].includes(d.status))
+      .flatMap(d => (d.data && d.data.al_ids) || []));
+    const als = docs.filter(d => d.doc_type === 'AL' && d.status === 'approved' && !covered.has(d.id));
+    if (als.length) {
+      const assets = als.flatMap(d => (d.data && d.data.assets) || []);
+      const lines = new Map();
+      for (const a of assets) {
+        const k = [a.name, a.unit, a.location, n0(a.unit_price)].join('|');
+        const l = lines.get(k) || { asset_item: a.name, unit: a.unit || null, location: a.location || null, unit_price: n0(a.unit_price) || null, qty: 0, spec: {} };
+        l.qty += n0(a.qty) || 1;
+        lines.set(k, l);
+      }
+      return { handover_date: today, final: true, evaluation: 'Satisfactory', supplier: po.supplier || '', warranty_term: po.warranty_term || '',
+               lines: [...lines.values()], al_ids: als.map(d => d.id), al_nos: als.map(d => d.doc_no),
+               asset_ids: assets.map(a => a.id), hide_cols: po.hide_cols || [], evidence: [] };
+    }
     // The PO's lines, each with the location its PR line named (Location list).
     const locOf = item => (prLines.find(l => l.asset_item && l.asset_item === item) || {}).location || null;
     return { handover_date: today, final: true, evaluation: 'Satisfactory', supplier: po.supplier || '', warranty_term: po.warranty_term || '',
@@ -9251,6 +9324,27 @@ async function wfPrefill(p, type, docs) {
              hide_cols: po.hide_cols || [], evidence: [] };
   }
   return {};
+}
+
+/* A label receipt (AL) for one delivery: the assets received for the project
+   (status "Chờ duyệt" 120 / 119) that no live AL holds yet — the earliest
+   delivery batch first; another AL takes the next one. */
+async function alPrefill(p, docs, today, poDoc) {
+  const used = new Set(docs.filter(d => d.doc_type === 'AL' && !['cancelled', 'rejected'].includes(d.status))
+    .flatMap(d => (d.data && d.data.asset_ids) || []));
+  const all = (await pmSelectAll('am_asset', 'select=id,asset_code,barcode,name_vi,name_en,qty,unit_code,unit_price,location_code,dept_code,asset_kind,shipment_id' +
+    `&purpose_code=eq.${encodeURIComponent(p.code)}&status_code=in.(119,120)&order=asset_code`)).filter(a => !used.has(a.id));
+  if (!all.length) throw new Error(t('al.noDelivery', { p: p.code }));
+  const ships = [...new Set(all.map(a => a.shipment_id))].sort((a, b) => (a == null) - (b == null) || a - b);
+  const shipId = ships[0];
+  const list = all.filter(a => a.shipment_id === shipId);
+  let ship = null;
+  if (shipId) { try { [ship] = await SB.select('am_shipment', `select=id,code,delivery_date,po_doc_no,dept_code&id=eq.${shipId}`); } catch {} }
+  return { date: today, shipment_id: shipId || null, shipment_code: ship ? ship.code : '', delivery_date: ship ? ship.delivery_date : null,
+           po_no: (ship && ship.po_doc_no) || (poDoc && poDoc.doc_no) || '', dept_code: (ship && ship.dept_code) || list[0].dept_code || p.dept_code,
+           notes: ALR_NOTES, asset_ids: list.map(a => a.id),
+           assets: list.map(a => ({ id: a.id, asset_code: a.asset_code, barcode: a.barcode, name: [a.name_vi, a.name_en].filter(Boolean).join('/'),
+                                    qty: n0(a.qty) || 1, unit: a.unit_code, unit_price: a.unit_price, location: a.location_code, kind: a.asset_kind })) };
 }
 
 
@@ -9856,8 +9950,10 @@ function fsConsent(x, label = 'Consent by:') {
   }
   // The MC shows no JVC GM box: the JVC GM approves QC and MC together, and signs on the QC.
   if (doc.doc_type === 'MC') boxes = boxes.filter(b => b.role !== 'JVC_GM');
+  // The label receipt's last signature is the hotel taking the labels.
+  if (doc.doc_type === 'AL' && boxes.length > 1) boxes[boxes.length - 1].lbl = 'Received by';
   // Two rows: up to the AM team, and from the AM team on (a PA / MC starts with them: one row).
-  const split = wfSide(doc.doc_type) === 'owner' ? -1 : boxes.findIndex((b, i) => i > 0 && wfBand(b.role) !== 'op');
+  const split = wfSide(doc.doc_type) === 'owner' || doc.doc_type === 'AL' ? -1 : boxes.findIndex((b, i) => i > 0 && wfBand(b.role) !== 'op');
   const rows = split > 0 ? [boxes.slice(0, split), boxes.slice(split)] : [boxes];
   const cols = Math.max(4, ...rows.map(r => r.length));
   return el('div', { className: 'fconsent' }, [el('div', { className: 'fct', textContent: label }),
@@ -10179,6 +10275,36 @@ const WF_FORMS = {
         fsConsent(x)])];
     } },
 
+  /* -------------------------------------------------------------- AL
+     Asset label receipt (26_alr_project.sql): the labels of one delivery,
+     handed to the hotel. Prepared by the AM Coordinator, checked by the AM
+     Executive, approved by the JVC Chief Accountant, received by the Hotel
+     Asset Manager. The assets are fixed when it is drawn up (the delivery's
+     codes); the photos of the attached labels are taken after it is received. */
+  AL: { orient: 'portrait', title: ['Asset Label Receipt', 'Biên bản bàn giao tem tài sản'],
+    derive(d) {
+      const a = d.assets || [];
+      d.total_qty = a.reduce((s, r) => s + (n0(r.qty) || 1), 0);
+      d.total = a.reduce((s, r) => s + n0(r.unit_price) * (n0(r.qty) || 1), 0);
+    },
+    build(x) {
+      const { d, p } = x; d.assets = d.assets || [];
+      const cols = [{ h: 'Asset Code', get: r => r.asset_code, t: 'text', w: '23%' }, { h: 'Barcode', get: r => r.barcode, t: 'text', w: '14%' },
+        { h: 'Asset Item', get: r => r.name, t: 'text', w: '27%', left: true }, { h: 'Qnt', get: r => r.qty, t: 'num', w: '6%' },
+        { h: 'Unit', get: r => r.unit, t: 'text', w: '7%' }, { h: 'Location', get: r => r.location, t: 'text', w: '18%' }];
+      return [fsPage([
+        fsHead(x, 'ISSUE DATE', I(x, d, 'date', 'date')),
+        fsBar('GENERAL INFORMATION'),
+        fsGrid([fc('PROJECT CODE', fsR(p.code), 4), fc('PROJECT NAME', fsR(p.name), 8, 'fit'),
+                fc('PURCHASE ORDER', fsR(d.po_no), 4),
+                fc('DELIVERY', fsR([d.shipment_code, d.delivery_date && fmtDate(d.delivery_date)].filter(Boolean).join(' · ')), 4, 'fit'),
+                fc('DEPARTMENT', fsR(deptName(d.dept_code || p.dept_code)), 4, 'fit')]),
+        fsBar('ASSET LABELS', t('al.count', { n: fmtInt(d.assets.length) })),
+        fsTable(x, cols, d.assets, { noDel: true }),
+        x.edit ? fsGrid([fc('PROCESS & NOTES', I(x, d, 'notes', 'area'), 12, 'tall left')]) : fsNote(d.notes || ALR_NOTES),
+        fsConsent(x)])];
+    } },
+
   /* -------------------------------------------------------------- AH
      Portrait A4, English only (the title and the signers' titles keep their
      Vietnamese), no total row in the table, location from the Location list. */
@@ -10492,6 +10618,17 @@ async function wfSubmit() {
   const mine = WF.pdocs.filter(d => wfSide(d.doc_type) !== 'owner');
   const probs = mine.flatMap(wfProblems);
   if (WF.pkg.grp === 'PR' && wfIsReplacement(WF.project) && !WF.pdocs.some(d => d.doc_type === 'RR')) probs.unshift(t('wf.chk.needRR'));
+  // A handover of labelled assets (from AL): every asset needs its two photos first.
+  const ah = mine.find(d => d.doc_type === 'AH');
+  const ahIds = ah && ((WF.drafts.get(ah.id) || ah.data || {}).asset_ids || []);
+  if (ahIds && ahIds.length) {
+    try {
+      const assets = [];
+      for (let i = 0; i < ahIds.length; i += 200) assets.push(...await SB.select('am_asset', `select=id,asset_code&id=in.(${ahIds.slice(i, i + 200).join(',')})`));
+      const gaps = await phGaps(assets);
+      if (gaps.length) probs.push(t('ph.gaps', { n: gaps.length, list: gaps.slice(0, 12).join(', ') + (gaps.length > 12 ? '…' : '') }));
+    } catch (e) { probs.push(e.message); }
+  }
   if (probs.length) return msg('#wdMsg', 'err', probs.join('\n'));
   if (!(await wfSave(true))) return;
   const nos = mine.map(d => d.doc_no).join(' + ');
@@ -10592,6 +10729,7 @@ function wfToIntake() {
     return ln;
   });
   IN.checked = null; IN.sugRan = false;
+  IN.src = { project: p.code, po: WF.doc.doc_no };      // the delivery batch records the PO it came from
   showView('intake');
   $('#inPurpose').value = p.code || '';
   $('#inSupplier').value = d.supplier || p.chosen_vendor || '';
@@ -10830,9 +10968,9 @@ function wfInboxRender() {
   for (const r of rows) {
     const done = r.kind === 'done';
     const owners = wfPkgTypes(r.grp).filter(ty2 => wfSide(ty2) === 'owner').join('/');
-    const band = done ? 'ok' : r.kind === 'returned' ? 'bad' : r.kind === 'prepare' ? 'op' : wfBand(r.role_code);
+    const band = done ? 'ok' : r.kind === 'returned' ? 'bad' : r.kind === 'prepare' || r.kind === 'photo' ? 'op' : wfBand(r.role_code);
     const what = done ? '✓ ' + (r.action === 'approve' && r.step_kind === 'check' ? t('wf.st.checked') : t('wf.a.' + r.action))
-      : r.kind === 'prepare' ? t('wf.i.prepare', { t: r.doc_type }) : r.kind === 'returned' ? t('wf.i.returned')
+      : r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'prepare' ? t('wf.i.prepare', { t: r.doc_type }) : r.kind === 'returned' ? t('wf.i.returned')
       : r.owner_prep ? t(r.returned_to === 'am' ? 'wf.i.redoOwner' : 'wf.i.checkPrep', { t: owners })
       : t(r.step_kind === 'check' ? 'wf.i.check' : 'wf.i.approve');
     const nos = String(r.doc_no || '').split(' + ').filter(Boolean);
@@ -10918,7 +11056,7 @@ function sigDown(ev) {
   ev.preventDefault();
   if (SIG.fromSaved) sigClear();
   msg('#sigMsg', '', '');
-  $('#sigPad').setPointerCapture(ev.pointerId);
+  try { $('#sigPad').setPointerCapture(ev.pointerId); } catch {}   // a pointer that is already gone
   SIG.drawing = true;
   SIG.last = sigPoint(ev);
   const { x, y, w } = SIG.last;
@@ -12589,8 +12727,8 @@ function tbInboxCards(rows) {
   if (!todo.length) box.append(el('div', { className: 'tbempty', textContent: t('tb.nothing') }));
   for (const r of todo) {
     const owners = wfPkgTypes(r.grp).filter(ty => wfSide(ty) === 'owner').join('/');
-    const band = r.kind === 'returned' ? 'bad' : wfBand(r.role_code);
-    const what = r.kind === 'returned' ? t('wf.i.returned')
+    const band = r.kind === 'returned' ? 'bad' : r.kind === 'photo' ? 'op' : wfBand(r.role_code);
+    const what = r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'returned' ? t('wf.i.returned')
       : r.owner_prep ? t(r.returned_to === 'am' ? 'wf.i.redoOwner' : 'wf.i.checkPrep', { t: owners })
       : t(r.step_kind === 'check' ? 'wf.i.check' : 'wf.i.approve');
     const c = el('button', { className: 'tbcard band-' + band, type: 'button', onclick: () => { if (r.doc_id) wfOpen(r.doc_id); } }, [
@@ -12636,6 +12774,8 @@ function tbDocRender() {
   const count = el('span', { className: 'tbcount' });
   const stage = el('div', { className: 'tbstage' });
   box.append(head, el('div', { className: 'tbnavrow' }, [tabs, count]), stage, tbActs(step));
+  const ph = phForPackage();                 // label photos, taken with the tablet's camera
+  if (ph) box.append(ph);
   Object.assign(TB, { stage, tabs, count });
   tbSwipe(stage);
   requestAnimationFrame(() => tbShowPage(TB.i));
@@ -12757,4 +12897,170 @@ function tbSwipe(stage) {
   };
   stage.addEventListener('pointerup', up);
   stage.addEventListener('pointercancel', up);
+}
+
+/* ============================================================ LABEL PHOTOS (AL → AH)
+   After the labels of a delivery are received (AL approved), the department
+   attaches them and takes two photos of each asset: the label close up, and
+   the asset with the label in view (26_alr_project.sql). Two ways side by side
+   while the cloud plan is decided (user 26/09/2026): the photo taken straight
+   in the app (Supabase Storage, bucket "am-photo", shrunk in the browser to
+   1600 px JPEG), or a link to the photo on OneDrive / SharePoint. The AH of
+   those assets cannot be sent until every asset has both. */
+const PH = { urls: new Map() };
+const PH_KINDS = ['label', 'overall'];
+
+async function phLoad(ids) {
+  if (!ids.length) return [];
+  const out = [];
+  for (let i = 0; i < ids.length; i += 200)
+    out.push(...await SB.select('am_asset_photo', `select=*&asset_id=in.(${ids.slice(i, i + 200).join(',')})&order=taken_at.desc`));
+  return out;
+}
+// The assets of a list still missing a photo of one kind: their codes.
+async function phGaps(assets) {
+  const photos = await phLoad(assets.map(a => a.id));
+  return assets.filter(a => PH_KINDS.some(k => !photos.some(p => p.asset_id === a.id && p.kind === k))).map(a => a.asset_code || '#' + a.id);
+}
+// A stored photo, fetched with the signed-in person's token (the bucket is private).
+async function phUrl(path) {
+  if (PH.urls.has(path)) return PH.urls.get(path);
+  const tok = await authToken();
+  const r = await fetch(`${CFG.url}/storage/v1/object/authenticated/am-photo/${path.split('/').map(encodeURIComponent).join('/')}`,
+    { headers: { apikey: CFG.key, Authorization: 'Bearer ' + tok } });
+  if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+  const u = URL.createObjectURL(await r.blob());
+  PH.urls.set(path, u);
+  return u;
+}
+// A camera photo is 3–12 MB: shrink to 1600 px on the long side, JPEG 0.82 (~300–600 KB).
+function phShrink(file) {
+  return new Promise((ok, no) => {
+    const img = new Image(), u = URL.createObjectURL(file);
+    img.onload = () => {
+      const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(u);
+      c.toBlob(b => b ? ok(b) : no(new Error('image')), 'image/jpeg', 0.82);
+    };
+    img.onerror = () => { URL.revokeObjectURL(u); no(new Error(t('ph.badImage'))); };
+    img.src = u;
+  });
+}
+async function phUpload(asset, kind, file, docId) {
+  const blob = await phShrink(file);
+  const path = `${asset.id}/${kind}-${Date.now()}.jpg`;
+  const tok = await authToken();
+  const r = await fetch(`${CFG.url}/storage/v1/object/am-photo/${path}`, { method: 'POST',
+    headers: { apikey: CFG.key, Authorization: 'Bearer ' + tok, 'Content-Type': 'image/jpeg', 'x-upsert': 'false' }, body: blob });
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).message || m; } catch {} throw new Error(m); }
+  await SB.insert('am_asset_photo', [{ asset_id: asset.id, kind, source: 'storage', storage_path: path, pm_doc_id: docId || null,
+                                       taken_name: (ME && (ME.full_name || ME.email)) || null }]);
+}
+async function phAddLink(asset, kind, url, docId) {
+  if (!/^https:\/\//i.test(url || '')) throw new Error(t('ph.badLink'));
+  await SB.insert('am_asset_photo', [{ asset_id: asset.id, kind, source: 'link', url: url.trim(), pm_doc_id: docId || null,
+                                       taken_name: (ME && (ME.full_name || ME.email)) || null }]);
+}
+
+/* The panel: one row per asset, two boxes (label · overall), each with the
+   photo (or the link) and the buttons to take one / paste a link / remove. */
+function phPanel(assets, docId, title) {
+  const card = el('div', { className: 'card phcard' });
+  const head = el('div', { className: 'chead' }, [el('h2', { textContent: title || t('ph.h') }), el('span', { className: 'phprog' })]);
+  const body = el('div', { className: 'phlist', textContent: t('table.loading') });
+  const out = el('div');
+  card.append(head, el('div', { className: 'tdnote', textContent: t('ph.hint') }), out, body);
+  const draw = async () => {
+    let photos = [];
+    try { photos = await phLoad(assets.map(a => a.id)); } catch (e) { body.textContent = ''; return msg(out, 'err', /am_asset_photo|PGRST205|404/.test(e.message) ? t('ph.notInstalled') : e.message); }
+    body.innerHTML = '';
+    let done = 0;
+    for (const a of assets) {
+      const mine = k => photos.filter(p => p.asset_id === a.id && p.kind === k);
+      if (PH_KINDS.every(k => mine(k).length)) done++;
+      const row = el('div', { className: 'phrow' + (PH_KINDS.every(k => mine(k).length) ? ' ok' : '') }, [
+        el('div', { className: 'phwho' }, [el('code', { textContent: a.asset_code || '' }), el('small', { textContent: `${a.barcode || ''} · ${a.name || ''}` })])]);
+      for (const k of PH_KINDS) {
+        const box = el('div', { className: 'phbox' }, [el('span', { className: 'phk', textContent: t('ph.k.' + k) })]);
+        const list = mine(k);
+        const shot = el('div', { className: 'phshot' });
+        if (list.length) {
+          const p = list[0];
+          if (p.source === 'storage') {
+            const img = el('img', { alt: t('ph.k.' + k) });
+            phUrl(p.storage_path).then(u => { img.src = u; img.onclick = () => window.open(u, '_blank'); }).catch(() => { img.alt = '⚠'; });
+            shot.append(img);
+          } else shot.append(el('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer', className: 'phlink', textContent: '🔗 ' + t('ph.linkOpen') }));
+          const del = el('button', { className: 'xbtn', type: 'button', textContent: '×', title: t('ph.remove'), onclick: async () => {
+            if (!confirm(t('ph.removeQ'))) return;
+            try { await SB.remove('am_asset_photo', `id=eq.${p.id}`); draw(); } catch (e) { msg(out, 'err', e.message); } } });
+          shot.append(del);
+        } else shot.append(el('span', { className: 'phnone', textContent: '—' }));
+        const file = el('input', { type: 'file', accept: 'image/*', hidden: true });
+        file.setAttribute('capture', 'environment');        // straight to the camera on a phone / tablet
+        file.onchange = async () => {
+          if (!file.files[0]) return;
+          msg(out, 'info', t('ph.uploading'));
+          try { await phUpload(a, k, file.files[0], docId); msg(out, '', ''); draw(); } catch (e) { msg(out, 'err', e.message); }
+        };
+        box.append(shot, el('div', { className: 'phbtns' }, [file,
+          el('button', { className: 'btn tiny', type: 'button', textContent: '📷 ' + t('ph.take'), onclick: () => file.click() }),
+          el('button', { className: 'btn tiny', type: 'button', textContent: '🔗 ' + t('ph.link'), onclick: async () => {
+            const u = prompt(t('ph.linkQ'));
+            if (!u) return;
+            try { await phAddLink(a, k, u, docId); draw(); } catch (e) { msg(out, 'err', e.message); } } })]));
+        row.append(box);
+      }
+      body.append(row);
+    }
+    head.querySelector('.phprog').textContent = t('ph.progress', { n: done, of: assets.length });
+    head.querySelector('.phprog').className = 'phprog' + (done === assets.length ? ' ok' : '');
+  };
+  draw();
+  return card;
+}
+
+/* On the document screen: the label receipt once received (AL approved), and
+   the handover of those assets while it is being drawn up (AH with asset_ids). */
+function phForPackage() {
+  const al = WF.pdocs.find(d => d.doc_type === 'AL' && d.status === 'approved');
+  if (al) { const data = WF.drafts.get(al.id) || al.data || {}; return phPanel(data.assets || [], al.id, t('ph.h')); }
+  const ah = WF.pdocs.find(d => d.doc_type === 'AH' && ['draft', 'returned'].includes(d.status));
+  const ids = ah && ((WF.drafts.get(ah.id) || ah.data || {}).asset_ids || []);
+  if (!ids || !ids.length) return null;
+  const card = el('div');
+  (async () => {
+    try {
+      const assets = [];
+      for (let i = 0; i < ids.length; i += 200)
+        assets.push(...(await SB.select('am_asset', `select=id,asset_code,barcode,name_vi,name_en&id=in.(${ids.slice(i, i + 200).join(',')})&order=asset_code`))
+          .map(a => ({ id: a.id, asset_code: a.asset_code, barcode: a.barcode, name: [a.name_vi, a.name_en].filter(Boolean).join('/') })));
+      card.replaceWith(phPanel(assets, ah.id, t('ph.hAh')));
+    } catch (e) { card.textContent = e.message; }
+  })();
+  return card;
+}
+
+// "Print the labels": the label screen, loaded with exactly the assets of this AL.
+async function alPrintLabels(alDoc) {
+  const data = WF.drafts.get(alDoc.id) || alDoc.data || {};
+  const ids = data.asset_ids || [];
+  if (!ids.length) return;
+  showView('alr');
+  try {
+    await fillAlrPickers();
+    $('#alProject').value = WF.project.code || '';
+    $('#alCode').value = alDoc.doc_no;
+    const rows = [];
+    for (let i = 0; i < ids.length; i += 200) rows.push(...await SB.select('am_asset', `select=*&id=in.(${ids.slice(i, i + 200).join(',')})&order=asset_code`));
+    const locs = await lookup('am_location').catch(() => []);
+    const lmap = new Map(locs.map(l => [l.v, l.t]));
+    ALR.rows = rows.map(r => ({ ...r, _pick: true, location_name: (lmap.get(r.location_code) || '').split(' — ')[1] || '' }));
+    ALR.demo = false;
+    msg('#alListMsg', 'ok', t('al.loadedFor', { n: rows.length, no: alDoc.doc_no }));
+    renderAlrList();
+  } catch (e) { msg('#alListMsg', 'err', e.message); }
 }
