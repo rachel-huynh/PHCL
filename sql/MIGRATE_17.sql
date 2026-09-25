@@ -2052,10 +2052,11 @@ begin
     from   pg_proc p join pg_namespace s on s.oid = p.pronamespace
     where  s.nspname = 'public' and p.proname ~ '^(am|app|pm)_'
       and  p.proowner = (select oid from pg_roles where rolname = current_user)
-      -- Hàm nội bộ mà 19_pm_workflow.sql cố ý không cho gọi qua API — chạy lại
-      -- file này sau 19 không được mở lại chúng.
+      -- Hàm nội bộ mà 19 / 20 / 21 cố ý không cho gọi qua API — chạy lại
+      -- file này sau các file đó không được mở lại chúng.
       and  p.proname not in ('pm_doc_log', 'pm_doc_apply', 'app_user_role_covers',
-                             'pm_sig_check', 'pm_notify_trg',
+                             'pm_sig_check', 'pm_notify_trg', 'pm_step_pass', 'pm_pair_state',
+                             'pm_pay_alloc_cleanup', 'pm_code_project', 'pm_auto_alloc',
                              'app_bootstrap_admin', 'app_lock_anon')
   loop
     execute format('grant execute on function %s to authenticated', r.n);

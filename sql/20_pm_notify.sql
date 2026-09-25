@@ -1,8 +1,8 @@
 -- =====================================================================
 -- 20_pm_notify.sql — QUẢN LÝ DỰ ÁN, GIAI ĐOẠN 4: THÔNG BÁO + CHỮ KÝ ĐÃ LƯU
 --
--- Chạy SAU 19_pm_workflow.sql (bản có chữ ký — chạy lại 19 trước nếu đã chạy
--- bản cũ).
+-- Chạy SAU 19_pm_workflow.sql (bản có bước kiểm tra / duyệt cùng 25/09/2026 —
+-- chạy lại 19 trước nếu đã chạy bản cũ).
 --
 --   pm_notice     thông báo trong app (chuông ở góc trên): "có chứng từ chờ bạn
 --                 duyệt", "chứng từ của bạn đã được duyệt / bị trả về / bị từ
@@ -79,9 +79,14 @@ begin
   update pm_notice set read_at = now()
    where doc_id = d.id and kind = 'todo' and read_at is null;
 
-  -- Đang chờ duyệt: báo cho mọi người duyệt được bước hiện tại.
+  -- Đang chờ duyệt: báo cho mọi người duyệt được bước hiện tại. Bước "duyệt
+  -- cùng" (PR + RR + PA, QC + MC) chỉ báo khi cả nhóm đã tới — trước đó
+  -- JVC chưa làm được gì.
   if d.status = 'in_review' then
     select * into s from pm_doc_step where doc_id = d.id and step = d.current_step;
+    if s.kind = 'joint' and exists (select 1 from pm_pair_state(d.id) x where x.wait is not null) then
+      return null;
+    end if;
     insert into pm_notice (user_id, doc_id, kind, doc_no, doc_type, project_code, actor_email)
     select u.id, d.id, 'todo', d.doc_no, d.doc_type, d.project_code, new.actor_email
     from   app_user u
@@ -165,4 +170,8 @@ from   pg_proc where proname = 'pm_doc_submit' and pronargs = 2
 union all
 select 'Bản gửi duyệt cũ đã bỏ (phải = 0)', count(*)::text, '0',
        case when count(*) = 0 then '✔' else '✘ Chạy lại 19_pm_workflow.sql' end
-from   pg_proc where proname = 'pm_doc_submit' and pronargs = 1;
+from   pg_proc where proname = 'pm_doc_submit' and pronargs = 1
+union all
+select 'Bước kiểm tra / duyệt cùng (25/09)', count(*)::text, '1',
+       case when count(*) = 1 then '✔' else '✘ Chạy lại 19_pm_workflow.sql trước' end
+from   information_schema.columns where table_schema = 'public' and table_name = 'pm_doc_step' and column_name = 'kind';

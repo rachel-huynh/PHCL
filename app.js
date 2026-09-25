@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260925a';
+const APP_VERSION = '20260925c';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -1762,23 +1762,28 @@ function initAlr() {
    under the catalogue (it is master data like the rest) and backup under the
    system (it is plumbing, not daily work). */
 const NAV = [
+  // Budget and projects first: the dashboard, because it is what the people who
+  // approve open this for, then their to-do list.
+  ['nav.pm', [
+    ['pmdash', 'nav.pmdash'],
+    ['inbox', 'nav.inbox'],
+    ['budget', 'nav.budget'],
+    ['projects', 'nav.projects'],
+    ['payments', 'nav.payments'],
+    ['tbl:pm_vendor', null],
+    ['chains', 'nav.chains']
+  ]],
   ['nav.assets', [
     ['register', 'nav.register'],
     ['intake', 'nav.intake'],
     ['alr', 'nav.alr'],
     ['counter', 'nav.counter']
   ]],
-  // Budget and projects: the dashboard first, because it is what the people who
-  // approve open this for; import last, because it is done once in a while.
-  ['nav.pm', [
-    ['inbox', 'nav.inbox'],
-    ['pmdash', 'nav.pmdash'],
-    ['budget', 'nav.budget'],
-    ['projects', 'nav.projects'],
-    ['payments', 'nav.payments'],
-    ['tbl:pm_vendor', null],
+  // Every file that is uploaded from time to time, in one place: the budget
+  // workbook, the dossiers, the accounting exports, the master-data templates.
+  ['nav.import', [
     ['pmimport', 'nav.pmimport'],
-    ['chains', 'nav.chains']
+    ['sources', 'nav.sources']
   ]],
   ['nav.catalog', [
     ['tbl:am_org', null, [['tbl:am_org_alias', null]]],
@@ -1791,7 +1796,7 @@ const NAV = [
                               ['tbl:am_origin_rejected', null]]]
   ]],
   ['nav.system', [
-    ['sources', 'nav.sources'], ['tbl:am_setting', null],
+    ['tbl:am_setting', null],
     ['backup', 'nav.backup'],
     ['users', 'nav.users'], ['perms', 'nav.perms'], ['audit', 'nav.audit'],
     ['setup', 'nav.setup']
@@ -1816,7 +1821,9 @@ function viewModule(v) {
   if (v === 'cat' || v.startsWith('tbl:')) return 'master';
   return null;
 }
-const canView = v => { const m = viewModule(v); return !m || can(m, 'view'); };
+// The import page holds budget, dossier and accounting files: open to anyone who may see one of them.
+const canView = v => { if (v === 'pmimport') return ['budget', 'project', 'payment'].some(m => can(m, 'view'));
+                      const m = viewModule(v); return !m || can(m, 'view'); };
 
 /* Where to land after signing in: the register for anyone allowed to see it,
    otherwise the first screen the menu offers them. */
@@ -2167,7 +2174,7 @@ function showView(view) {
     if (view === 'pmdash' && SB.ready()) pdLoad();
     if (view === 'budget' && SB.ready()) pbLoad();
     if (view === 'projects' && SB.ready()) ppLoad();
-    if (view === 'pmimport' && SB.ready()) pmLookups().catch(() => {});
+    if (view === 'pmimport' && SB.ready()) { pmLookups().catch(() => {}); piShow(); }
     if (view === 'users' && SB.ready()) usLoad();
     if (view === 'perms' && SB.ready()) pmLoad();
     if (view === 'audit' && SB.ready()) auLoad();
@@ -2213,6 +2220,9 @@ function switchLang(l) {
   // Only when signed in: on the sign-in box the language buttons work too, and
   // there is nothing to fetch yet.
   if (SB.ready() && ME) { fillPickers(); fillAlrPickers(); }
+  tplFill();                              // built options, same blind spot
+  for (const [btn, field] of [['#btnShowUrl', '#sbUrl'], ['#btnShowKey', '#sbKey']])   // applyI18n reset them to Show
+    $(btn).textContent = t($(field).type === 'password' ? 'setup.show' : 'setup.hide');
   showView(VIEW);
 }
 
@@ -2542,7 +2552,7 @@ async function bkCount() {
     kpis.append(el('div', { className: 'kpi n' }, [
       el('label', { textContent: t('bk.h.counts') }),
       el('b', { textContent: fmtInt(total) }),
-      el('small', { textContent: `${BK_ALL.length} tables` })
+      el('small', { textContent: t('bk.nTables', { n: BK_ALL.length }) })
     ]));
     out.append(kpis);
     const d = el('details');
@@ -2627,7 +2637,7 @@ async function bkPush() {
   try {
     snap = await bkReadFile();
     if (!snap) return msg(out, 'err', t('bk.noFile'));
-    if (!snap.tables) throw new Error('missing "tables"');
+    if (!snap.tables) throw new Error(t('bk.noTablesKey'));
   } catch (e) { return msg(out, 'err', t('bk.badFile', { err: e.message })); }
 
   const host = CFG.url ? new URL(CFG.url).hostname : '?';
@@ -3004,12 +3014,19 @@ const TPL_MASTER = ['am_org', 'am_org_alias', 'am_category_group', 'am_category'
                     'am_unit', 'am_origin', 'am_origin_alias', 'am_location',
                     'am_product'];
 
+/* Refill a <select>, keeping what was chosen — so the labels follow a language
+   switch instead of staying in the language the screen was first opened in. */
+function selFill(sel, opts) {
+  const keep = sel.value;
+  sel.innerHTML = '';
+  for (const [v, txt] of opts) sel.append(el('option', { value: v, textContent: txt }));
+  if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+}
+
 function tplFill() {
   const s = $('#tplPick');
-  if (!s || s.options.length) return;
-  for (const tbl of TPL_MASTER)
-    s.append(el('option', { value: 'tbl:' + tbl, textContent: tblLabel(tbl) }));
-  s.append(el('option', { value: 'beetrack', textContent: t('tpl.beetrack') }));
+  if (!s) return;
+  selFill(s, [...TPL_MASTER.map(tbl => ['tbl:' + tbl, tblLabel(tbl)]), ['beetrack', t('tpl.beetrack')]]);
 }
 
 async function tplGet() {
@@ -5487,10 +5504,7 @@ async function pmSet(role, mod, act, on, cb) {
 
 /* --------------------------------------------------------------- audit */
 function auInitPickers() {
-  const sel = $('#auTbl');
-  if (sel.options.length) return;
-  sel.append(el('option', { value: '', textContent: t('audit.allTables') }));
-  for (const n of AUDIT_TABLES) sel.append(el('option', { value: n, textContent: n }));
+  selFill($('#auTbl'), [['', t('audit.allTables')], ...AUDIT_TABLES.map(n => [n, n])]);
 }
 
 /* A date typed in the picker is a LOCAL day. The column is timestamptz, so the
@@ -5614,6 +5628,8 @@ const PM = {
 const PM_ENTITIES = ['SSP', 'CP', 'JVC'];
 const PM_STATUS = ['pending', 'in_progress', 'completed', 'cancelled'];
 const PM_RISK = ['Critical', 'High', 'Medium', 'Low'];
+// Risk levels are stored in the workbook's English; shown in the UI language.
+const pmRiskName = r => { if (!r) return ''; const k = 'pm.risk.' + r, s = t(k); return s === k ? r : s; };
 
 /* ------------------------------------------------------------ codes, orgs */
 const pmCode = s => String(s ?? '').normalize('NFC').toUpperCase().replace(/\s+/g, '')
@@ -5663,11 +5679,21 @@ function pmStatus(p) {
   if (p.purchase_date || p.approve_date) return 'in_progress';
   return 'pending';
 }
-const pmDatesOdd = p => {
-  const seq = [p.request_date, p.approve_date, p.purchase_date, p.handover_date].filter(Boolean);
-  for (let i = 1; i < seq.length; i++) if (seq[i] < seq[i - 1]) return true;
-  return false;
+// The milestones must run request <= approve <= purchase <= handover. Returns
+// the first pair out of order ([earlier key, later key]) so the warning can say
+// exactly which two dates to fix, or null.
+const PM_DATE_SEQ = [['request_date', 'pm.col.request'], ['approve_date', 'pm.col.approve'],
+                     ['purchase_date', 'pm.col.purchase'], ['handover_date', 'pm.col.handover']];
+const pmDatesOddPair = p => {
+  const seq = PM_DATE_SEQ.filter(([k]) => p[k]);
+  for (let i = 1; i < seq.length; i++)
+    for (let j = 0; j < i; j++) if (p[seq[i][0]] < p[seq[j][0]]) return [seq[j], seq[i]];
+  return null;
 };
+const pmDatesOdd = p => !!pmDatesOddPair(p);
+// "Purchased (03/04/2026) is before Approved (19/05/2026)".
+const pmDatesMsg = p => { const x = pmDatesOddPair(p); return x && t('pm.flag.datesPair', {
+  a: t(x[1][1]), da: fmtDate(p[x[1][0]]), b: t(x[0][1]), db: fmtDate(p[x[0][0]]) }); };
 
 /* ---------------------------------------------------------------- format */
 const pmLoc = () => (LANG === 'vi' ? 'vi-VN' : 'en-US');
@@ -6106,7 +6132,7 @@ function piDosRender() {
     const r = it.rec, notes = [];
     if (!PM_CODE_OK.test(r.code)) notes.push(t('pm.flag.code'));
     if (!pmDeptKnown(r.dept_code)) notes.push(t('pm.flag.dept', { d: r.dept_code }));
-    if (pmDatesOdd(r)) notes.push(t('pm.flag.dates'));
+    if (pmDatesOdd(r)) notes.push(pmDatesMsg(r));
     if (it.dupes.length) notes.push(t('pm.imp.dupes', { n: it.dupes.length }));
     tb.append(el('tr', {}, [
       el('td', {}, el('code', { textContent: r.code })),
@@ -6241,7 +6267,7 @@ async function pbRoundChanged() {
   msSetup('pbDept', depts.map(d => ({ v: d, t: d })));
   const risks = [...new Set(lines.map(l => l.risk_level).filter(Boolean))];
   msSetup('pbRisk', PM_RISK.filter(r => risks.includes(r)).concat(risks.filter(r => !PM_RISK.includes(r)))
-    .map(r => ({ v: r, t: r })));
+    .map(r => ({ v: r, t: pmRiskName(r) })));
   pbRender();
 }
 
@@ -6399,7 +6425,7 @@ function pbRender() {
       el('td', { textContent: l.project_category || '' }),
       el('td', { textContent: l.area_category || '' }),
       el('td', { textContent: l.investment_type || '' }),
-      el('td', { textContent: l.risk_level || '' }),
+      el('td', { textContent: pmRiskName(l.risk_level) }),
       el('td', { className: 'num', textContent: l.estimated_value != null ? fmtMoney(l.estimated_value) : '' }),
       el('td', { textContent: fmtDate(l.start_date) }),
       el('td', { textContent: fmtDate(l.end_date) }),
@@ -6444,7 +6470,8 @@ function pmDl(obj, fields) {
   for (const [k, lbl] of fields) {
     let v = obj[k];
     if (v == null || v === '') continue;
-    if (PM_DATES.includes(k) || /_date$/.test(k)) v = fmtDate(v);
+    if (k === 'risk_level') v = pmRiskName(v);
+    else if (PM_DATES.includes(k) || /_date$/.test(k)) v = fmtDate(v);
     else if (/value|price|amount|approved/.test(k)) v = isFinite(Number(v)) ? fmtMoney(Number(v)) : v;
     else if (typeof v === 'number') v = isFinite(v) ? fmtNum(v) : v;
     dl.append(el('dt', { textContent: t(lbl) }), el('dd', { textContent: String(v) }));
@@ -6499,11 +6526,14 @@ async function ppLoad() {
       await wfLookups();
       const docs = await pmSelectAll('pm_doc', 'select=id,project_code,doc_type,doc_no,status,current_step,final:data->final');
       const open = docs.filter(d => d.status === 'in_review').map(d => d.id);
-      const steps = open.length ? await pmSelectAll('pm_doc_step', `select=doc_id,step,role_code&doc_id=in.(${open.join(',')})`) : [];
+      // kind (check / joint) arrived with the 25/09 chain rules; an older database lacks it.
+      const stepSel = cols => pmSelectAll('pm_doc_step', `select=${cols}&doc_id=in.(${open.join(',')})`);
+      const steps = !open.length ? [] : await stepSel('doc_id,step,role_code,kind').catch(() => stepSel('doc_id,step,role_code'));
       PM.prj.docs = new Map();
       for (const d of docs) {
         const st = steps.find(x => x.doc_id === d.id && x.step === d.current_step);
         d.role = st ? st.role_code : null;
+        d.kind = st ? st.kind || 'approve' : null;
         d.final = d.final === true || d.final === 'true';
         (PM.prj.docs.get(d.project_code) || PM.prj.docs.set(d.project_code, []).get(d.project_code)).push(d);
       }
@@ -6534,9 +6564,7 @@ async function ppLoad() {
     ySel.append(el('option', { value: '', textContent: t('pm.f.allYears') }));
     for (const y of ys) ySel.append(el('option', { value: y, textContent: y }));
     ySel.value = ys.map(String).includes(keep) ? keep : (ys[0] ? String(ys[0]) : '');
-    const bud = $('#ppBud');
-    if (!bud.options.length) for (const [v, k] of [['', 'pm.f.all'], ['1', 'pm.f.budgetedOnly'], ['0', 'pm.f.unbudgetedOnly']])
-      bud.append(el('option', { value: v, textContent: t(k) }));
+    selFill($('#ppBud'), [['', t('pm.f.all')], ['1', t('pm.f.budgetedOnly')], ['0', t('pm.f.unbudgetedOnly')]]);
     msSetup('ppEnt', PM_ENTITIES.map(e => ({ v: e, t: `${e} — ${t('perms.ent.' + e)}` })));
     msSetup('ppDept', [...new Set(rows.map(r => r.dept_code))].sort().map(d => ({ v: d, t: d })));
     msSetup('ppStatus', PM_STATUS.map(s => ({ v: s, t: t('pm.st.' + s) })));
@@ -6546,6 +6574,12 @@ async function ppLoad() {
     const back = PM.prj.open && rows.find(r => r.code === PM.prj.open);
     PM.prj.open = null;
     if (back) { PM.prj.pick = back.code; ppRender(); ppDetail(back); }
+    // The side panel stays open across a reload (a language switch, a save):
+    // redraw it from the fresh row so it never shows old text or old figures.
+    else if (!$('#ppDrawer').hidden && PM.prj.pick) {
+      const again = [...rows, ...(PM.prj.virtual || [])].find(r => r.code === PM.prj.pick);
+      if (again) (again.virtual ? ppVirtualDetail : ppDetail)(again); else ppDrawerClose();
+    }
   } catch (e) { msg(out, 'err', e.message); }
 }
 
@@ -6564,7 +6598,7 @@ function ppFiltered() {
 
 function ppFlags(p) {
   const f = [];
-  if (pmDatesOdd(p)) f.push(t('pm.flag.dates'));
+  if (pmDatesOdd(p)) f.push(pmDatesMsg(p));
   if (p.budgeted && !PM.prj.finalCodes.has(p.main_code)) f.push(t('pm.flag.noLine'));
   if (!pmDeptKnown(p.dept_code)) f.push(t('pm.flag.dept', { d: p.dept_code }));
   return f;
@@ -6594,7 +6628,21 @@ function ppStage(p) {
   const replacement = /replace/i.test(p.investment_type || '');
   const nextOf = ty => WF_ORDER.find(x => seq(x) > seq(ty) && x !== 'CT' && (x !== 'RR' || replacement));
   if (!d) return { type: 'PR', state: 'none' };
-  if (d.status === 'in_review') return { type: d.doc_type, state: 'review', who: d.role ? wfRoleName(d.role) : '', no: d.doc_no };
+  if (d.status === 'in_review') {
+    const s = { type: d.doc_type, state: 'review', who: d.role ? wfRoleName(d.role) : '', no: d.doc_no, kind: d.kind };
+    // Joint step: JVC waits for the whole group (PR + RR + PA, QC + MC) to arrive.
+    const needed = d.kind === 'joint' ? wfGrpOthers(d.doc_type).filter(ty => wfGrpNeeded(ty, p, docs)) : [];
+    if (needed.length) {
+      const live = ty => docs.filter(x => x.doc_type === ty && x.status !== 'rejected').sort((a, b) => b.id - a.id)[0];
+      const miss = needed.filter(ty => !live(ty));
+      if (miss.length) return Object.assign(s, { kind: 'needPair', pair: miss.join(', ') });
+      const behind = needed.filter(ty => { const m = live(ty);
+        return m.status !== 'approved' && !(m.status === 'in_review' && m.kind === 'joint' && m.role === d.role); });
+      if (behind.length) return Object.assign(s, { kind: 'waitPair', pair: behind.join(', ') });
+      s.group = [d.doc_type, ...needed.filter(ty => live(ty).status !== 'approved')];
+    }
+    return s;
+  }
   if (d.status === 'approved') {
     if (d.doc_type === 'AH' && d.final) return { type: 'AH', state: 'done', no: d.doc_no };
     const nx = d.doc_type === 'AH' ? 'AH' : nextOf(d.doc_type);
@@ -6602,8 +6650,15 @@ function ppStage(p) {
   }
   return { type: d.doc_type, state: d.status, no: d.doc_no };           // draft / returned / rejected
 }
-const ppStageText = s => !s ? '' : s.state === 'done' ? t('pm.stage.done')
-  : `${s.type} · ${s.state === 'review' ? t('pm.stage.review', { who: s.who || '?' }) : t('pm.stage.' + s.state)}`;
+// "waiting for X to approve" / "… to check" / "… to approve together with PA".
+const ppStageVerb = s => s.state !== 'review' ? t('pm.stage.' + s.state)
+  : t(['check', 'needPair', 'waitPair'].includes(s.kind) ? 'pm.stage.' + s.kind
+      : s.kind === 'joint' && (s.group || []).length > 1 ? 'pm.stage.joint' : 'pm.stage.review',
+      { who: s.who || '?', pair: s.pair || '' });
+// "PR + RR + PA" — in document order, whichever of them is further on.
+const ppStageType = s => s.kind === 'joint' && (s.group || []).length > 1
+  ? s.group.slice().sort((a, b) => wfSeq(a) - wfSeq(b)).join(' + ') : s.type;
+const ppStageText = s => !s ? '' : s.state === 'done' ? t('pm.stage.done') : `${ppStageType(s)} · ${ppStageVerb(s)}`;
 
 /* Filter text per column, like the Đối chiếu hoá đơn grid: words match
    anywhere; on figures ">100000000", "<0", "1..5" or "=0" compare the value. */
@@ -6634,8 +6689,8 @@ function ppCols() {
     { k: 'status', lbl: 'pm.col.status', val: p => PM_STATUS.indexOf(p.status), txt: p => t('pm.st.' + p.status), td: p => el('td', { className: 'nw' }, pmStatusChip(p.status)) },
     ...(PM.prj.docs ? [{ k: 'stage', lbl: 'pm.col.stage', val: p => ppStageText(ppStage(p)), txt: p => ppStageText(ppStage(p)),
       td: p => { const s = ppStage(p); return el('td', { className: 'nw' }, s ? el('span', { className: 'stg stg-' + s.state, title: s.no || '' }, [
-        ...(s.state === 'done' ? [] : [el('b', { textContent: s.type })]),
-        document.createTextNode(s.state === 'done' ? t('pm.stage.done') : ' ' + (s.state === 'review' ? t('pm.stage.review', { who: s.who || '?' }) : t('pm.stage.' + s.state)))]) : ''); } }] : []),
+        ...(s.state === 'done' ? [] : [el('b', { textContent: ppStageType(s) })]),
+        document.createTextNode(s.state === 'done' ? t('pm.stage.done') : ' ' + ppStageVerb(s))]) : ''); } }] : []),
     { k: 'code', lbl: 'pm.col.code', val: p => p.code, txt: p => p.code, td: p => {
       const flags = ppFlags(p), td = el('td', { className: 'nw' }, el('code', { textContent: p.code }));
       if (flags.length) td.append(el('span', { className: 'flag', textContent: '⚠', title: flags.join('\n') }));
@@ -6854,10 +6909,9 @@ function ppEditForm(p) {
     }
     try {
       await SB.patch('pm_project', `code=eq.${encodeURIComponent(p.code)}`, patch);
-      await ppLoad();                               // clears #ppMsg, so report after it
+      PM.prj.pick = p.code;
+      await ppLoad();                               // clears #ppMsg, so report after it; redraws the panel
       msg('#ppMsg', 'ok', t('pm.prj.saved', { code: p.code }));
-      const again = PM.prj.rows.find(r => r.code === p.code);
-      if (again) ppDetail(again);
     } catch (e) { msg('#ppMsg', 'err', e.message); }
   };
   acts.append(save);
@@ -7228,6 +7282,13 @@ async function pdLoad() {
     PM.dash.years = years;
     PM.dash.finals = finals;
     PM.dash.projects = projects;
+    // For the progress card: documents (19_pm_workflow.sql) and money paid
+    // (21_pm_payment.sql). Either may not exist yet — the card copes without.
+    const [docs, money] = await Promise.all([
+      pmSelectAll('pm_doc', 'select=project_code,doc_type,status,final:data->final').catch(() => null),
+      pmSelectAll('pm_project_money', 'select=*').catch(() => null)]);
+    PM.dash.docs = docs;
+    PM.dash.money = money ? new Map(money.map(m => [m.project_code, m])) : null;
     const ys = [...new Set([...finals.map(f => f.year), ...projects.map(p => p.year)])].sort((a, b) => b - a);
     const ySel = $('#pdYear');
     const keep = +ySel.value;
@@ -7235,15 +7296,9 @@ async function pdLoad() {
     for (const y of ys) ySel.append(el('option', { value: y, textContent: y }));
     if (!ys.length) { msg(out, 'info', t('pm.dash.empty')); $('#pdBody').innerHTML = ''; return; }
     ySel.value = ys.includes(keep) ? keep : (ys.includes(new Date().getFullYear()) ? new Date().getFullYear() : ys[0]);
-    const per = $('#pdPeriod');
-    if (!per.options.length) {
-      per.append(el('option', { value: 'Y', textContent: t('pm.per.year') }));
-      for (let q = 1; q <= 4; q++) per.append(el('option', { value: 'Q' + q, textContent: 'Q' + q }));
-      for (let m = 1; m <= 12; m++) per.append(el('option', { value: 'M' + m, textContent: pmMonthName(m) }));
-    }
-    const bud = $('#pdBud');
-    if (!bud.options.length) for (const [v, k] of [['', 'pm.f.all'], ['1', 'pm.f.budgetedOnly'], ['0', 'pm.f.unbudgetedOnly']])
-      bud.append(el('option', { value: v, textContent: t(k) }));
+    selFill($('#pdPeriod'), [['Y', t('pm.per.year')], ...[1, 2, 3, 4].map(q => ['Q' + q, 'Q' + q]),
+                             ...Array.from({ length: 12 }, (_, i) => ['M' + (i + 1), pmMonthName(i + 1)])]);
+    selFill($('#pdBud'), [['', t('pm.f.all')], ['1', t('pm.f.budgetedOnly')], ['0', t('pm.f.unbudgetedOnly')]]);
     await pdYearChanged();
     msg(out, '', '');
   } catch (e) { msg(out, 'err', e.message); }
@@ -7372,7 +7427,11 @@ function pdRender() {
   charts.append(chartCard(t('pm.viz.byCat'), null, null,
     W => hbarChart(W, catKeys.map(k => ({ key: k, label: k })), [{ label: t('pm.viz.budget'), color: '#9fb8dc', values: catV }]),
     () => [[t('pm.col.projCat'), t('pm.viz.budget'), t('pm.viz.share')], ...catKeys.map(k => [k, fmtMoney(catV.get(k)), fmtPct(catV.get(k) / (budget || 1))])]));
-  // 3. Plan vs committed, cumulative by month.
+  // 3. Overall progress: how much of the budget is committed, how far the
+  //    projects have got on average, and paid against budget and ceiling.
+  charts.append(pdProgressCard({ lines, projects, budget, committed, cap, sspBudget,
+                                 capInScope: !!cap && (!ent.length || ent.includes('SSP')) }));
+  // 4. Plan vs committed, cumulative by month.
   const plan = [], act = [];
   let pc = 0, ac = 0;
   for (let m = 1; m <= 12; m++) {
@@ -7387,9 +7446,9 @@ function pdRender() {
     [{ label: s3[0].label, color: C1, line: true }, { label: s3[1].label, color: C2, line: true }],
     W => lineChart(W, mNames, s3, months),
     () => [[t('pm.viz.month'), s3[0].label, s3[1].label], ...mNames.map((m, i) => [m, fmtMoney(plan[i]), fmtMoney(act[i])])], true));
-  // 4. Risk mix — ordered, so an ordinal ramp, darkest = most severe.
+  // 5. Risk mix — ordered, so an ordinal ramp, darkest = most severe.
   const ramp = [['Critical', '#0d366b', '#fff'], ['High', '#1c5cab', '#fff'], ['Medium', '#3987e5', '#fff'], ['Low', '#86b6ef', '#1f2937']];
-  const parts = ramp.map(([k, c, ink]) => ({ label: k, color: c, ink, n: lines.filter(l => l.risk_level === k).length,
+  const parts = ramp.map(([k, c, ink]) => ({ label: pmRiskName(k), color: c, ink, n: lines.filter(l => l.risk_level === k).length,
     v: pmSum(lines.filter(l => l.risk_level === k), 'estimated_value') }));
   const other = lines.filter(l => !PM_RISK.includes(l.risk_level));
   if (other.length) parts.push({ label: t('pm.viz.notAssessed'), color: '#d5dbe6', ink: '#1f2937', n: other.length, v: pmSum(other, 'estimated_value') });
@@ -7399,7 +7458,7 @@ function pdRender() {
     () => [[t('pm.col.risk'), t('pm.viz.projects'), t('pm.viz.share'), t('pm.viz.value')], ...parts.map(p => [p.label, fmtInt(p.n), fmtPct(p.n / (lines.length || 1)), fmtMoney(p.v)])],
     true);   // full row: alone in a half-width slot it left the other half empty
   charts.append(riskCard);
-  // 5. Timeline.
+  // 6. Timeline.
   const lineOf = new Map(PM.dash.lines.map(l => [l.project_code, l]));
   const items = projects.map(p => {
     const l = lineOf.get(p.main_code) || {};
@@ -7426,6 +7485,74 @@ function pdRender() {
   charts.append(gCard);
   box.append(charts);
   for (const c of charts.children) c._draw && c._draw();
+}
+
+/* How far one project has got, 0..1: the share of its documents approved
+   (PR, RR on a replacement, PA, QC, MC, PO, final AH), or of its milestone
+   dates for projects loaded from the Excel dossiers — whichever is further. */
+function pdCompletion(p, docs) {
+  if (p.status === 'completed') return 1;
+  const types = ['PR', ...(/replace/i.test(p.investment_type || '') ? ['RR'] : []), 'PA', 'QC', 'MC', 'PO', 'AH'];
+  const mine = (docs || []).filter(d => d.project_code === p.code && d.status === 'approved');
+  const byDocs = types.filter(ty => mine.some(d => d.doc_type === ty && (ty !== 'AH' || d.final === true || d.final === 'true'))).length / types.length;
+  const dates = ['request_date', 'assess_date', 'approve_date', 'purchase_date', 'handover_date'];
+  const byDates = dates.filter(k => p[k]).length / dates.length;
+  return Math.max(byDocs, byDates);
+}
+// Paid so far, pre-tax (bank amount ÷ 1 + the VAT rate its invoices show, else 8%) — as ppPaid.
+function pdPaidNet(p) {
+  const m = PM.dash.money && PM.dash.money.get(p.code);
+  if (!m || !(Number(m.paid_gross) > 0)) return 0;
+  const vat = Number(m.invoiced_net) > 0 ? Number(m.invoiced_vat) / Number(m.invoiced_net) : 0.08;
+  return Number(m.paid_gross) / (1 + vat);
+}
+
+/* The progress card: three meters and one bullet bar.
+   - budget implementation = committed ÷ approved budget
+   - average completion    = mean of pdCompletion over the budget projects
+                             (a budget line with no project yet counts 0)
+   - paid ÷ budget, and the bullet: paid (navy) inside budget (pale blue)
+     against the ceiling (tick) — the SSP cap (3% FF&E reserve) plus the CP /
+     JVC budgets, which have no cap of their own. */
+function pdProgressCard(x) {
+  const { lines, projects, budget, committed, cap, sspBudget, capInScope } = x;
+  const byMain = new Map();
+  for (const p of projects) if (p.status !== 'cancelled') (byMain.get(p.main_code) || byMain.set(p.main_code, []).get(p.main_code)).push(p);
+  const mains = [...new Set(lines.map(l => l.project_code))];
+  const items = [...mains.map(c => { const ps = byMain.get(c) || [];
+                                     return ps.length ? ps.reduce((s, p) => s + pdCompletion(p, PM.dash.docs), 0) / ps.length : 0; }),
+                 ...projects.filter(p => !p.budgeted && p.status !== 'cancelled').map(p => pdCompletion(p, PM.dash.docs))];
+  const avgDone = items.length ? items.reduce((s, v) => s + v, 0) / items.length : null;
+  const paid = pmSum(projects, pdPaidNet);
+  const ceiling = capInScope ? cap + (budget - sspBudget) : null;
+  const top = Math.max(budget, ceiling || 0, paid, committed) || 1;
+  const legend = [{ label: t('pm.prog.paid'), color: '#0b1f3a' }, { label: t('pm.prog.budget'), color: '#9fb8dc' },
+                  ...(ceiling ? [{ label: t('pm.prog.ceiling'), color: 'var(--ink-3)' }] : [])];
+  const rows = [
+    ['pm.prog.impl', budget ? committed / budget : null, t('pm.prog.implSub', { v: fmtM(committed), b: fmtM(budget) })],
+    ['pm.prog.avg', avgDone, t('pm.prog.avgSub', { n: fmtInt(items.length) })],
+    ['pm.prog.paidPct', budget ? paid / budget : null, t('pm.prog.paidSub', { v: fmtM(paid), b: fmtM(budget) })]];
+  return chartCard(t('pm.prog.h'), null, legend, () => {
+    const w = el('div', { className: 'prog' });
+    for (const [k, v, sub] of rows) w.append(el('div', { className: 'pgrow', title: sub }, [
+      el('div', { className: 'pgh' }, [el('span', { textContent: t(k) }), el('b', { textContent: v == null ? '—' : fmtPct(v, 0) })]),
+      el('div', { className: 'meter' + (v > 1 ? ' over' : '') }, el('i', { style: `width:${Math.min(100, Math.max(0, (v || 0) * 100))}%` })),
+      el('small', { textContent: sub })]));
+    // Bullet: paid inside budget, ceiling as a tick.
+    const pc = v => `${Math.min(100, (v / top) * 100)}%`;
+    const bullet = el('div', { className: 'bullet' }, [
+      el('i', { className: 'bb', style: `width:${pc(budget)}`, title: `${t('pm.prog.budget')}: ${fmtM(budget)}` }),
+      el('i', { className: 'bp', style: `width:${pc(paid)}`, title: `${t('pm.prog.paid')}: ${fmtM(paid)}` }),
+      ...(ceiling ? [el('i', { className: 'bc', style: `left:${pc(ceiling)}`, title: `${t('pm.prog.ceiling')}: ${fmtM(ceiling)}` })] : [])]);
+    w.append(el('div', { className: 'pgrow' }, [
+      el('div', { className: 'pgh' }, [el('span', { textContent: t('pm.prog.bullet') })]), bullet,
+      el('small', { textContent: [`${t('pm.prog.paid')} ${fmtM(paid)}`, `${t('pm.prog.budget')} ${fmtM(budget)}`,
+                                  ceiling ? `${t('pm.prog.ceiling')} ${fmtM(ceiling)}` : t('pm.prog.noCap')].join(' · ') })]));
+    return w;
+  }, () => [[t('pm.prog.h'), t('pm.viz.value')],
+            ...rows.map(([k, v]) => [t(k), v == null ? '—' : fmtPct(v, 1)]),
+            [t('pm.prog.paid'), fmtMoney(paid)], [t('pm.prog.budget'), fmtMoney(budget)],
+            [t('pm.prog.ceiling'), ceiling ? fmtMoney(ceiling) : '—']]);
 }
 
 let PD_RESIZE = null;
@@ -7634,6 +7761,15 @@ function wfCovers(scope, dept) {
 }
 const wfHasRoleFor = (role, dept) => !!(ME && ME.roles.some(r => r.role === role && wfCovers(r.scope, dept)));
 const wfChain = (entity, type) => WF.chains.filter(c => c.entity === entity && c.doc_type === type).sort((a, b) => a.step - b.step);
+/* Approval groups (pm_doc_type.grp): JVC approves PR + RR + PA in one go, and
+   QC + MC. RR belongs only on a replacement project (or once drawn up). */
+const wfSeq = ty => ((WF.types.find(x => x.code === ty) || {}).seq) || 0;
+const wfGrp = ty => (WF.types.find(x => x.code === ty) || {}).grp || null;
+const wfGrpOthers = ty => { const g = wfGrp(ty);
+  return g ? WF.types.filter(x => x.grp === g && x.code !== ty).sort((a, b) => a.seq - b.seq).map(x => x.code) : []; };
+const wfGrpNeeded = (ty, project, docs) => { const tt = WF.types.find(x => x.code === ty) || {};
+  return !!tt.required || (ty === 'RR' && /replace/i.test((project || {}).investment_type || ''))
+    || (docs || []).some(d => d.doc_type === ty && !['cancelled', 'rejected'].includes(d.status)); };
 function wfCanPrepare(type, dept) {
   const prep = wfChain(pmEntity(dept), type).find(c => c.step === 0);
   return can('project', 'create') && !!prep && wfHasRoleFor(prep.role_code, dept);
@@ -7679,8 +7815,12 @@ async function wfProjectPanel(p, host) {
     }
     // "Create" only when the earlier required steps are approved — the same
     // rule pm_doc_create enforces.
+    // Within an approval group (PR + RR + PA, QC + MC) the earlier document only
+    // has to be SUBMITTED: AM prepares the PA while checking the PR and RR.
     const seq = tt.seq || 0;
-    const blockers = WF.types.filter(x => x.seq < seq && (x.required || (x.code === 'RR' && replacement)) && !approved(x.code));
+    const sent = c => docs.some(d => d.doc_type === c && d.status === 'in_review');
+    const blockers = WF.types.filter(x => x.seq < seq && (x.required || (x.code === 'RR' && replacement)) && !approved(x.code)
+      && !(x.grp && x.grp === tt.grp && sent(x.code)));
     // One live document per type; AH repeats (one open at a time) until the final one.
     const live = mine.filter(d => d.status !== 'rejected');
     const finalAH = docs.some(d => d.doc_type === 'AH' && d.status === 'approved' && d.data && d.data.final);
@@ -7797,13 +7937,14 @@ async function wfLoad() {
     const [steps, events, docs, years] = await Promise.all([
       SB.select('pm_doc_step', `select=*&doc_id=eq.${doc.id}&order=step`),
       SB.select('pm_doc_event', `select=*&doc_id=eq.${doc.id}&order=at`),
-      SB.select('pm_doc', `select=id,doc_type,doc_no,status,total_value,data&project_code=eq.${encodeURIComponent(doc.project_code)}`),
+      SB.select('pm_doc', `select=id,doc_type,doc_no,status,current_step,total_value,data&project_code=eq.${encodeURIComponent(doc.project_code)}`),
       SB.select('pm_budget_year', `select=*&year=eq.${project ? project.year : 0}`)
     ]);
     const line = project ? await wfFinalLine(project) : null;
     if (!WF.doc || WF.doc.id !== doc.id) WF.qcTab = null;   // a different document opens on its default tab
     Object.assign(WF, { doc, project, steps, events, docs, year: years[0] || null, line: line || null, dirty: false });
     WF.data = JSON.parse(JSON.stringify(doc.data || {}));
+    WF.pair = await wfGroupState(doc, steps.find(s => s.step === doc.current_step), docs, project).catch(() => null);
     msg(out, '', '');
     wfRender();
     // Who the document is waiting for, by name.
@@ -7816,6 +7957,37 @@ async function wfLoad() {
     }
   } catch (e) { msg(out, 'err', e.message); }
 }
+
+/* A document at a "joint" step (JVC approves PR + RR + PA, QC + MC in one go):
+   where the rest of its group is — the client mirror of pm_pair_state.
+   null = nothing to wait for or approve with; otherwise
+   { missing: [types not drawn up], behind: [docs not there yet],
+     together: [docs approved with it], wait: 'missing' | 'behind' | null, label }. */
+async function wfGroupState(doc, cur, docs, project) {
+  if (!doc || doc.status !== 'in_review' || !cur || cur.kind !== 'joint') return null;
+  const others = wfGrpOthers(doc.doc_type);
+  if (!others.length) return null;
+  const out = { missing: [], behind: [], together: [] };
+  for (const ty of others) {
+    const pd = docs.filter(x => x.doc_type === ty && !['cancelled', 'rejected'].includes(x.status)).sort((a, b) => b.id - a.id)[0];
+    if (!pd) { if (wfGrpNeeded(ty, project, [])) out.missing.push(ty); continue; }
+    if (pd.status === 'approved') continue;
+    if (pd.status !== 'in_review') { out.behind.push(pd); continue; }
+    const ps = await SB.select('pm_doc_step', `select=step,role_code,kind,status&doc_id=eq.${pd.id}&order=step`);
+    const m = ps.find(s => s.role_code === cur.role_code && s.kind === 'joint' && s.status === 'pending');
+    if (!m) continue;
+    (pd.current_step === m.step ? out.together : out.behind).push(pd);
+  }
+  out.wait = out.missing.length ? 'missing' : out.behind.length ? 'behind' : null;
+  if (!out.wait && !out.together.length) return null;
+  // "PR + RR + PA": the group as it stands for this project.
+  out.label = [doc.doc_type, ...out.missing, ...out.behind.map(x => x.doc_type), ...out.together.map(x => x.doc_type)]
+    .sort((a, b) => wfSeq(a) - wfSeq(b)).join(' + ');
+  return out;
+}
+// The small tag after a role: approves / checks / approves together with PA.
+const wfKindTag = (kind, pair) => el('span', { className: 'kt kt-' + (kind || 'approve'),
+  textContent: t('wf.k.' + (kind || 'approve'), { pair: pair || '' }) });
 
 const wfEditable = () => WF.doc && ['draft', 'returned'].includes(WF.doc.status)
   && (WF.doc.created_by === (ME && ME.id) || wfCanPrepare(WF.doc.doc_type, WF.project.dept_code));
@@ -7838,11 +8010,27 @@ function wfRender() {
   head.append(top);
   const info = el('div', { style: 'margin-top:8px;font-size:12.5px;color:var(--dim)' });
   info.append(document.createTextNode(t('wf.madeBy', { who: d.created_email || '—', at: fmtDate((d.created_at || '').slice(0, 10)) })));
+  const pairType = wfGrpOthers(d.doc_type).join('/');
   if (d.status === 'in_review' && step) {
     info.append(el('br'), document.createTextNode(t('wf.waiting', { step: step.step, role: wfRoleName(step.role_code) }) + ' '),
-                el('b', { id: 'wdWho', textContent: '…' }));
+                wfKindTag(step.kind, pairType), document.createTextNode(' '), el('b', { id: 'wdWho', textContent: '…' }));
   }
   head.append(info);
+  // Joint step: JVC approves the whole group together — say where the rest is.
+  const pr = WF.pair;
+  const jointMsg = () => pr.wait === 'missing' ? t('wf.joint.missing', { grp: pr.label, miss: pr.missing.join(', ') })
+    : pr.wait === 'behind' ? t('wf.joint.behind', { grp: pr.label, no: pr.behind.map(x => x.doc_no).join(', ') })
+    : t('wf.joint.ready', { no: pr.together.map(x => x.doc_no).join(' + ') });
+  if (pr) {
+    const jb = el('div', { className: 'msg ' + (pr.wait ? 'warn' : 'info'), style: 'margin-top:10px' });
+    jb.append(document.createTextNode(jointMsg()));
+    for (const x of [...pr.behind, ...pr.together]) {
+      const a = el('a', { href: '#', style: 'margin-left:10px', textContent: t('wf.joint.open', { no: x.doc_no }) });
+      a.onclick = ev => { ev.preventDefault(); wfOpen(x.id); };
+      jb.append(a);
+    }
+    head.append(jb);
+  }
 
   const acts = el('div', { className: 'row', style: 'margin-top:10px;align-items:flex-end;flex-wrap:wrap' });
   const note = el('textarea', { id: 'wdNote', placeholder: t('wf.notePh'), style: 'min-height:38px;width:340px' });
@@ -7853,9 +8041,15 @@ function wfRender() {
   }
   if (wfCanAct(d, step, p.dept_code)) {
     acts.prepend(el('div', { className: 'fld' }, [el('label', { textContent: t('wf.note') }), note]));
-    btn('wf.approve', 'pri', () => wfAct('approve'));
+    // AM team CHECKS (and may send back to the preparer) — it does not approve or reject.
+    if (step.kind === 'check') btn('wf.checkBtn', 'pri', () => wfAct('approve'));
+    else if (pr) {
+      const b = btn('wf.approve', 'pri', () => wfAct('approve'));
+      if (pr.wait) { b.disabled = true; b.title = jointMsg(); }
+      else b.textContent = t('wf.approveJoint', { list: [d, ...pr.together].sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type)).map(x => x.doc_no).join(' + ') });
+    } else btn('wf.approve', 'pri', () => wfAct('approve'));
     btn('wf.return', '', () => wfAct('return'));
-    btn('wf.reject', 'danger', () => wfAct('reject'));
+    if (step.kind !== 'check') btn('wf.reject', 'danger', () => wfAct('reject'));
   }
   if (!['approved', 'cancelled'].includes(d.status)
       && (can('project', 'admin') || (d.created_by === (ME && ME.id) && ['draft', 'returned'].includes(d.status))))
@@ -7870,7 +8064,9 @@ function wfRender() {
   const chain = el('div', { className: 'card' });
   chain.append(el('h2', { textContent: t('wf.chain') }));
   const planned = WF.steps.length ? WF.steps : wfChain(pmEntity(p.dept_code), d.doc_type).filter(c => c.step > 0)
-    .map(c => ({ step: c.step, role_code: c.role_code, status: 'planned' }));
+    .map(c => ({ step: c.step, role_code: c.role_code, kind: c.kind, status: 'planned' }));
+  // A passed check step reads "Checked", not "Approved".
+  const stName = s => s.status === 'approved' && s.kind === 'check' ? t('wf.st.checked') : t('wf.st.' + s.status);
   const ol = el('div', { className: 'wfsteps' });
   const prep = wfChain(pmEntity(p.dept_code), d.doc_type).find(c => c.step === 0);
   ol.append(el('div', { className: 'wfstep done' }, [el('span', { className: 'n', textContent: '0' }),
@@ -7879,9 +8075,9 @@ function wfRender() {
   for (const s of planned) {
     const cur = d.status === 'in_review' && s.step === d.current_step;
     const cls = s.status === 'approved' ? 'done' : ['returned', 'rejected'].includes(s.status) ? 'bad' : cur ? 'cur' : '';
-    const lines = [el('b', { textContent: wfRoleName(s.role_code) })];
-    if (s.acted_email) lines.push(el('small', { textContent: `${t('wf.st.' + s.status)} · ${s.acted_email} · ${fmtDate((s.acted_at || '').slice(0, 10))}` }));
-    else lines.push(el('small', { textContent: cur ? t('wf.nowHere') : s.status === 'planned' ? t('wf.planned') : t('wf.st.' + s.status) }));
+    const lines = [el('b', { textContent: wfRoleName(s.role_code) }), wfKindTag(s.kind, pairType)];
+    if (s.acted_email) lines.push(el('small', { textContent: `${stName(s)} · ${s.acted_email} · ${fmtDate((s.acted_at || '').slice(0, 10))}` }));
+    else lines.push(el('small', { textContent: cur ? t('wf.nowHere') : s.status === 'planned' ? t('wf.planned') : stName(s) }));
     if (s.comment) lines.push(el('small', { className: 'cm', textContent: '“' + s.comment + '”' }));
     lines.push(...sigImg(s.signature, 'wfsig'));
     ol.append(el('div', { className: 'wfstep ' + cls }, [el('span', { className: 'n', textContent: String(s.step) }), el('div', {}, lines)]));
@@ -8102,10 +8298,13 @@ function fsConsent(x, label = 'Consent by:') {
   const doc = WF.doc, p = x.p;
   const chain = wfChain(pmEntity(p.dept_code), doc.doc_type);
   const prep = chain.find(c => c.step === 0);
-  const steps = WF.steps.length ? WF.steps : chain.filter(c => c.step > 0).map(c => ({ step: c.step, role_code: c.role_code }));
+  const steps = WF.steps.length ? WF.steps : chain.filter(c => c.step > 0).map(c => ({ step: c.step, role_code: c.role_code, kind: c.kind }));
   const boxes = [{ role: 'Prepared by / Người lập', sub: prep ? wfRoleEn(prep.role_code) : '', sig: doc.prep_signature,
                    who: doc.submitted_at ? doc.created_email : '', at: doc.submitted_at },
-                 ...steps.map(s => ({ role: wfRoleEn(s.role_code), sub: s.status && s.status !== 'pending' && s.status !== 'approved' ? t('wf.st.' + s.status) : '',
+                 // The AM team's boxes read "Checked by" — they check, JVC approves.
+                 ...steps.map(s => ({ role: wfRoleEn(s.role_code),
+                                      sub: s.status && s.status !== 'pending' && s.status !== 'approved' ? t('wf.st.' + s.status)
+                                         : s.kind === 'check' ? 'Checked by / Kiểm tra' : 'Approved by / Duyệt',
                                       sig: s.status === 'approved' && s.signature, who: s.acted_email || '', at: s.status === 'approved' ? s.acted_at : null }))];
   return el('div', { className: 'fconsent' }, [el('div', { className: 'fct', textContent: label }),
     el('div', { className: 'fsigs' }, boxes.map(b => el('div', { className: 'fsig' }, [
@@ -8671,15 +8870,21 @@ async function wfAct(action) {
   if (action !== 'approve' && !note.trim()) return msg('#wdMsg', 'err', t('wf.needReason'));
   // Approving is signed; returning or rejecting is a comment, not a signature.
   let png = null;
+  const step = WF.steps.find(s => s.step === WF.doc.current_step) || {};
+  const check = step.kind === 'check';
+  // Approved together with the rest of its group (PR + RR + PA, QC + MC).
+  const with_ = !check && WF.pair && !WF.pair.wait ? WF.pair.together : [];
+  const no = [WF.doc, ...with_].sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type)).map(x => x.doc_no).join(' + ');
   if (action === 'approve') {
-    png = await sigAsk(t('sig.titleApprove', { no: WF.doc.doc_no }));
+    png = await sigAsk(t(check ? 'sig.titleCheck' : 'sig.titleApprove', { no }));
     if (png === null) return;
   } else if (!confirm(t('wf.confirm.' + action, { no: WF.doc.doc_no }))) return;
   try {
     const to = await SB.rpc('pm_doc_act', { p_id: WF.doc.id, p_action: action, p_comment: note.trim() || null,
                                             p_signature: png ? { png } : null });
     await wfLoad(); wfBadge();
-    msg('#wdMsg', 'ok', t('wf.acted.' + (to === 'approved' ? 'final' : action), { no: WF.doc.doc_no }));
+    const k = action !== 'approve' ? action : to === 'approved' ? 'final' : check ? 'check' : 'approve';
+    msg('#wdMsg', 'ok', t('wf.acted.' + k, { no }));
   } catch (e) { msg('#wdMsg', 'err', e.message); }
 }
 
@@ -8787,16 +8992,22 @@ async function wfInboxLoad() {
   msg(out, 'info', t('table.loading'));
   try {
     await wfLookups();
-    WF.inbox = await SB.rpc('pm_inbox');
+    WF.inbox = wfInboxRows(await SB.rpc('pm_inbox'));
     msg(out, WF.inbox.length ? '' : 'ok', WF.inbox.length ? '' : t('wf.inboxEmpty'));
     const head = $('#wiGrid thead'), body = $('#wiGrid tbody');
     head.innerHTML = ''; body.innerHTML = '';
     head.append(el('tr', {}, [['wf.i.kind'], ['wf.i.doc'], ['wf.i.type'], ['pm.col.code'], ['pm.col.name'], ['pm.col.dept'],
       ['wf.i.value', 'num'], ['wf.i.sent'], ['wf.i.step']].map(([k, c]) => el('th', { className: c || '', textContent: t(k) }))));
     for (const r of WF.inbox) {
-      const tr = el('tr', { style: 'cursor:pointer' }, [
-        el('td', {}, el('span', { className: 'st ' + (r.kind === 'approve' ? 'in_progress' : 'cancelled'), textContent: t('wf.i.' + r.kind) })),
-        el('td', {}, el('code', { textContent: r.doc_no })), el('td', { textContent: wfTypeName(r.doc_type) }),
+      // To do: approve / check / approve together (PR + RR + PA on one line),
+      // or a joint step still waiting for the rest of its group (greyed, not counted).
+      const ms = r.members || [r];
+      const what = r.kind === 'returned' ? t('wf.i.returned') : r.wait ? t('wf.i.wait')
+        : t('wf.i.' + (r.step_kind === 'check' ? 'check' : r.step_kind === 'joint' && r.merged ? 'joint' : 'approve'));
+      const tr = el('tr', { style: 'cursor:pointer', className: r.wait ? 'wiwait' : '' }, [
+        el('td', {}, el('span', { className: 'st ' + (r.kind === 'returned' || r.wait ? 'cancelled' : 'in_progress'), textContent: what })),
+        el('td', {}, ms.flatMap((m, i) => [...(i ? [document.createTextNode(' + ')] : []), el('code', { textContent: m.doc_no })])),
+        el('td', { textContent: ms.map(m => wfTypeName(m.doc_type)).join(' + ') }),
         el('td', {}, el('code', { textContent: r.project_code })), el('td', { textContent: r.project_name || '' }),
         el('td', { textContent: r.dept_code }), el('td', { className: 'num', textContent: r.total_value != null ? fmtMoney(r.total_value) : '' }),
         el('td', { textContent: r.submitted_at ? fmtDate(r.submitted_at.slice(0, 10)) : '' }),
@@ -8804,14 +9015,35 @@ async function wfInboxLoad() {
       tr.onclick = () => wfOpen(r.doc_id);
       body.append(tr);
     }
-    wfBadge(WF.inbox.length);
+    wfBadge(wfInboxCount(WF.inbox));
   } catch (e) { msg(out, 'err', e.message); }
 }
+
+/* A group JVC approves together shows as ONE line: the first document of the
+   group (PR / QC) carries the others (RR, PA / MC), whose own lines fold away. */
+function wfInboxRows(rows) {
+  const out = [], groups = new Map();
+  for (const r of rows) {
+    const g = r.kind !== 'returned' && r.step_kind === 'joint' && !r.wait ? wfGrp(r.doc_type) : null;
+    if (!g) { out.push(r); continue; }
+    const k = `${r.project_code}|${g}|${r.role_code}`;
+    if (!groups.has(k)) { const c = { members: [] }; groups.set(k, c); out.push(c); }
+    groups.get(k).members.push(r);
+  }
+  for (const c of groups.values()) {
+    c.members.sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type));
+    Object.assign(c, c.members[0], { members: c.members, merged: c.members.length > 1 });
+  }
+  return out;
+}
+// What the menu badge counts: things the person can do now.
+const wfInboxCount = rows => rows.filter(r => !r.wait).length;
 
 /* The number beside "Waiting for me" in the menu. */
 async function wfBadge(n) {
   ntLoad();                            // the bell moves whenever the inbox does
-  if (n == null) { try { n = (await SB.rpc('pm_inbox')).length; } catch { return; } }
+  if (n == null) { try { await wfLookups(); } catch {}   // types tell PA from PR when folding pairs
+                   try { n = wfInboxCount(wfInboxRows(await SB.rpc('pm_inbox'))); } catch { return; } }
   WF.badgeN = n;                       // buildNav() redraws the menu and re-adds it from here
   const a = $('#nav a[data-view="inbox"]');
   if (!a) return;
@@ -9088,7 +9320,12 @@ function wfChainsRender() {
   for (const type of WF_ORDER) {
     const rows = wfChain(WF.entity, type);
     const prep = rows.find(c => c.step === 0);
-    const steps = rows.filter(c => c.step > 0).map(c => c.role_code);
+    const pair = wfGrpOthers(type).join('/');      // the documents JVC approves it with, e.g. "RR/PA"
+    const steps = rows.filter(c => c.step > 0).map(c => ({ r: c.role_code, k: c.kind || 'approve' }));
+    // What a newly added step does by default: AM team checks, JVC approves
+    // (together with the rest of its group where it has one).
+    const kindFor = r => ['AM_COORD', 'AM_EXEC'].includes(r) ? 'check' : pair && ['CHIEF_ACC', 'JVC_GM'].includes(r) ? 'joint' : 'approve';
+    const kinds = pair ? ['approve', 'check', 'joint'] : ['approve', 'check'];
     const tr = el('tr');
     tr.append(el('td', {}, [el('b', { textContent: type }), document.createTextNode(' ' + wfTypeName(type))]));
     const prepCell = el('td');
@@ -9098,15 +9335,22 @@ function wfChainsRender() {
     const chips = el('div', { className: 'roles' });
     const draw = () => {
       chips.innerHTML = '';
-      steps.forEach((r, i) => {
-        const c = el('span', { className: 'role' }, [el('b', { textContent: `${i + 1}. ` }), document.createTextNode(wfRoleName(r))]);
+      steps.forEach((st, i) => {
+        const c = el('span', { className: 'role' }, [el('b', { textContent: `${i + 1}. ` }), document.createTextNode(wfRoleName(st.r))]);
+        const tag = wfKindTag(st.k, pair);
+        if (admin) {                      // click the tag: approves → checks → approves with the group → …
+          tag.classList.add('kt-btn');
+          tag.title = t('wf.c.kindHint');
+          tag.onclick = () => { st.k = kinds[(kinds.indexOf(st.k) + 1) % kinds.length]; draw(); };
+        }
+        c.append(tag);
         if (admin) {
           if (i > 0) { const l = el('button', { className: 'x', textContent: '←' }); l.onclick = () => { [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]]; draw(); }; c.append(l); }
           const x = el('button', { className: 'x', textContent: '×' }); x.onclick = () => { steps.splice(i, 1); draw(); }; c.append(x);
         }
         chips.append(c);
       });
-      if (admin) { const add = roleSel(''); add.onchange = () => { if (add.value) { steps.push(add.value); draw(); } }; chips.append(add); }
+      if (admin) { const add = roleSel(''); add.onchange = () => { if (add.value) { steps.push({ r: add.value, k: kindFor(add.value) }); draw(); } }; chips.append(add); }
     };
     draw();
     tr.append(el('td', {}, chips));
@@ -9123,8 +9367,10 @@ function wfChainsRender() {
 async function wfChainSave(type, prep, steps) {
   if (!prep) return msg('#wcMsg', 'err', t('wf.c.needPrep'));
   if (!steps.length) return msg('#wcMsg', 'err', t('wf.c.needStep'));
-  const rows = [{ entity: WF.entity, doc_type: type, step: 0, role_code: prep },
-                ...steps.map((r, i) => ({ entity: WF.entity, doc_type: type, step: i + 1, role_code: r }))];
+  // A chain must end with someone who approves, not only checks.
+  if (!steps.some(s => s.k !== 'check')) return msg('#wcMsg', 'err', t('wf.c.needApprover'));
+  const rows = [{ entity: WF.entity, doc_type: type, step: 0, role_code: prep, kind: 'approve' },
+                ...steps.map((s, i) => ({ entity: WF.entity, doc_type: type, step: i + 1, role_code: s.r, kind: s.k }))];
   try {
     await SB.call('pm_chain?on_conflict=entity,doc_type,step', { method: 'POST',
       headers: SB.hdr({ Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify(rows) });
@@ -9151,7 +9397,7 @@ function initWf() {
    Money rules: budget consumption = invoiced PRE-TAX; cash = paid GROSS; VAT is
    always its own figure. */
 
-const PAY = { tab: 'queue', parsed: [], inv: [], pay: [], alloc: [], money: [], projects: [], budget: new Map(),
+const PAY = { tab: 'queue', cf: {}, sort: {}, sel: new Map(), parsed: [], inv: [], pay: [], alloc: [], money: [], projects: [], budget: new Map(),
               imports: [], pick: null };
 const PAY_TABS = ['queue', 'invoice', 'payment', 'project'];
 
@@ -9325,6 +9571,7 @@ async function payLoad() {
       (PAY.allocBy.get(k) || PAY.allocBy.set(k, []).get(k)).push(a);
     }
     msg(out, '', '');
+    if (PAY.sel) PAY.sel.clear();                  // ticks point at the rows just replaced
     payRenderImports();
     payRender();
   } catch (e) {
@@ -9332,10 +9579,30 @@ async function payLoad() {
   }
 }
 
+/* The Import page: budget workbook, dossiers and the accounting exports side by
+   side, each card only for those who may see that part. The accounting card
+   needs the projects (to read codes in the preview) and the last imports. */
+function piShow() {
+  $('#piBudCard').hidden = !can('budget', 'view');
+  $('#piDosCard').hidden = !can('project', 'view');
+  const pay = can('payment', 'view');
+  $('#piPayCard').hidden = !pay;
+  if (pay) payImpLoad();
+}
+async function payImpLoad() {
+  try {
+    await payLoadProjects();
+    PAY.imports = await SB.select('pm_pay_import', 'select=*&order=imported_at.desc&limit=6');
+    payRenderImports();
+  } catch (e) {
+    msg('#payReadOut', 'err', /pm_invoice|pm_pay|relation|schema cache/i.test(e.message) ? t('pay.noTables') : e.message);
+  }
+}
+
 function payRenderImports() {
   const box = $('#payImports');
   box.innerHTML = '';
-  if (!PAY.imports.length) return;
+  if (!(PAY.imports || []).length) return;
   box.append(el('div', { className: 'payimp' }, PAY.imports.slice(0, 4).map(i => el('span', {
     textContent: `${t('pay.kind.' + i.kind)} · ${fmtDate((i.imported_at || '').slice(0, 10))} · ${i.file_name || ''} · ${t('pay.impRows', { n: i.n_rows ?? 0, q: i.n_queue ?? 0 })}` }))));
 }
@@ -9368,108 +9635,68 @@ function payFilterRows(rows, kind) {
 }
 
 /* ------------------------------------------------------------- render */
-function payRender() {
-  MONEY.year = +$('#payYear').value || null;
-  const tabs = $('#payTabs');
-  tabs.innerHTML = '';
-  const nQueue = PAY.inv.filter(r => payStatus('invoice', r) === 'queue').length
-               + PAY.pay.filter(r => payStatus('payment', r) === 'queue').length;
-  for (const k of PAY_TABS) {
-    const b = el('button', { textContent: t('pay.tab.' + k) + (k === 'queue' && nQueue ? ` (${nQueue})` : '') });
-    b.classList.toggle('on', PAY.tab === k);
-    b.onclick = () => { PAY.tab = k; PAY.pick = null; $('#payDetail').innerHTML = ''; payRender(); };
-    tabs.append(b);
-  }
-  // Year choices from the data itself.
-  const ySel = $('#payYear'), keepY = ySel.value;
-  const years = [...new Set([...PAY.inv, ...PAY.pay].map(r => String(r.post_date || '').slice(0, 4)).filter(Boolean))].sort().reverse();
-  ySel.innerHTML = '';
-  ySel.append(el('option', { value: '', textContent: t('pm.f.allYears') }));
-  for (const y of years) ySel.append(el('option', { value: y, textContent: y }));
-  ySel.value = years.includes(keepY) ? keepY : '';
-  const sSel = $('#paySt'), keepS = sSel.value;
-  sSel.innerHTML = '';
-  sSel.append(el('option', { value: '', textContent: t('pm.f.all') }));
-  for (const s of ['queue', 'auto', 'manual', 'ignore', 'gone']) sSel.append(el('option', { value: s, textContent: t('pay.st.' + s) }));
-  sSel.value = keepS;
-  $('#payStWrap').hidden = PAY.tab === 'queue' || PAY.tab === 'project';
+/* The grid of each tab is a list of columns — header, sort value, filter text
+   and cell — as on the Projects screen: click a header to sort, type under it
+   to filter (">1000000", "<0", "1..5" on figures). Rows are items
+   { kind, r } (an invoice or payment line) or, By project, { p, ...sums }. */
+function payCols(tab) {
+  const doc = it => it.kind === 'invoice' ? it.r.invoice_no : it.r.voucher_no + (it.r.line_no > 1 ? '/' + it.r.line_no : '');
+  const party = it => it.kind === 'invoice' ? it.r.seller_name || '' : (it.r.vendor_name || it.r.vendor_code || '');
+  const money = (k, lbl, f, cls, title) => ({ k, lbl, num: true, sum: true, val: f,
+    txt: it => { const v = f(it); return v == null ? '' : fmtVnd(v); },
+    td: it => { const v = f(it); return el('td', { className: 'num' + (cls && cls(it) ? ' ' + cls(it) : ''), title: title ? title(it) : '',
+                                                   textContent: v == null ? '' : fmtVnd(v) }); } });
+  const text = (k, lbl, f, cls, code) => ({ k, lbl, val: it => f(it) || '', txt: it => f(it) || '',
+    td: it => el('td', { className: cls || '' }, code ? el('code', { textContent: f(it) || '' }) : document.createTextNode(f(it) || '')) });
+  const date = (k, lbl, f) => ({ k, lbl, val: it => f(it) || '', txt: it => fmtDate(f(it)),
+    td: it => el('td', { className: 'nw', textContent: fmtDate(f(it)) }) });
+  const projs = it => payAllocOf(it.kind, it.r.id).map(a => a.project_code).join(', ');
+  const projCol = { k: 'proj', lbl: 'pay.c.projects', val: projs, txt: it => projs(it) || (it.r.codes_found || []).join(', '),
+                    td: it => payProjCell(it.kind, it.r) };
+  const stCol = { k: 'st', lbl: 'pay.c.status', val: it => t('pay.st.' + payStatus(it.kind, it.r)),
+                  txt: it => t('pay.st.' + payStatus(it.kind, it.r)), td: it => el('td', {}, payChip(payStatus(it.kind, it.r))) };
+  const desc = text('desc', 'pay.c.desc', it => it.r.description, 'wrapcell paydesc');
+  if (tab === 'queue') return [
+    text('kind', 'pay.c.kind', it => t('pay.kind.' + it.kind)), date('date', 'pay.c.date', it => it.r.post_date),
+    text('doc', 'pay.c.doc', doc, '', true), text('party', 'pay.c.party', party, 'wrapcell'),
+    money('amount', 'pay.c.amount', it => Number(it.kind === 'invoice' ? it.r.net : it.r.amount)), desc,
+    text('codes', 'pay.c.codes', it => (it.r.codes_found || []).join(', ') || '—', 'paycodes')];
+  if (tab === 'invoice') return [
+    date('date', 'pay.c.date', it => it.r.post_date), text('doc', 'pay.c.invNo', doc, '', true),
+    text('series', 'pay.c.series', it => it.r.series), text('party', 'pay.c.party', party, 'wrapcell'),
+    money('net', 'pay.c.net', it => Number(it.r.net)), money('vat', 'pay.c.vat', it => Number(it.r.vat)),
+    text('rate', 'pay.c.rate', it => it.r.vat_rate), money('gross', 'pay.c.gross', it => Number(it.r.net) + Number(it.r.vat)),
+    projCol, stCol, desc];
+  if (tab === 'payment') return [
+    date('date', 'pay.c.date', it => it.r.post_date), text('doc', 'pay.c.voucher', doc, '', true),
+    text('vcode', 'pay.c.vendor', it => it.r.vendor_code, '', true), text('party', 'pay.c.party', it => it.r.vendor_name, 'wrapcell'),
+    money('paid', 'pay.c.paid', it => Number(it.r.amount)), projCol, stCol, desc];
+  return [
+    text('code', 'pm.col.code', it => it.p.code, '', true), text('name', 'pm.col.name', it => it.p.name, 'wrapcell'),
+    text('dept', 'pm.col.dept', it => it.p.dept_code),
+    money('budget', 'pay.c.budget', it => it.budget), money('contract', 'pm.col.contract', it => it.contract),
+    money('inv', 'pay.c.net', it => it.inv), money('vat', 'pay.c.vat', it => it.vat), money('gross', 'pay.c.gross', it => it.gross),
+    money('paid', 'pay.c.paid', it => it.paid),
+    money('payable', 'pay.c.payable', it => it.payable, it => it.payable < -1 ? 'payneg' : '', it => it.payable < -1 ? t('pay.advance') : ''),
+    Object.assign(money('toInvoice', 'pay.c.toInvoice', it => it.toInvoice, it => it.toInvoice != null && it.toInvoice < -1 ? 'payneg' : ''), { sum: false }),
+    { k: 'used', lbl: 'pay.c.used', num: true, val: it => it.used == null ? null : it.used * 100, txt: it => it.used != null ? fmtPct(it.used, 0) : '',
+      td: it => { const over = it.used != null && it.used > 1;
+                  return el('td', { className: 'num' + (over ? ' payneg' : ''), textContent: it.used != null ? fmtPct(it.used, 0) + (over ? ' ⚠' : '') : '—' }); } },
+    date('last', 'pay.c.lastPaid', it => it.last)];
+}
 
-  const head = $('#payGrid thead'), body = $('#payGrid tbody');
-  head.innerHTML = ''; body.innerHTML = '';
-  const th = cols => head.append(el('tr', {}, cols.map(([k, c]) => el('th', { className: c || '', textContent: k === '#' ? '#' : t(k) }))));
-  const empty = (n) => body.append(el('tr', {}, el('td', { colSpan: n, className: 'payempty', textContent: t('pay.none') })));
-
-  if (PAY.tab === 'queue') {
-    const rows = [...payFilterRows(PAY.inv, 'invoice').filter(r => payStatus('invoice', r) === 'queue').map(r => ['invoice', r]),
-                  ...payFilterRows(PAY.pay, 'payment').filter(r => payStatus('payment', r) === 'queue').map(r => ['payment', r])]
-      .sort((a, b) => String(b[1].post_date).localeCompare(String(a[1].post_date)));
-    th([['pay.c.kind'], ['pay.c.date'], ['pay.c.doc'], ['pay.c.party'], ['pay.c.amount', 'num'], ['pay.c.desc'], ['pay.c.codes'], ['']]);
-    if (!rows.length) empty(8);
-    for (const [kind, r] of rows) {
-      const tr = el('tr', { className: PAY.pick === kind + r.id ? 'pick' : '' }, [
-        el('td', { textContent: t('pay.kind.' + kind) }),
-        el('td', { textContent: fmtDate(r.post_date) }),
-        el('td', {}, el('code', { textContent: kind === 'invoice' ? r.invoice_no : r.voucher_no })),
-        el('td', { className: 'wrapcell', textContent: kind === 'invoice' ? r.seller_name : (r.vendor_code || r.vendor_name) }),
-        el('td', { className: 'num', textContent: fmtVnd(kind === 'invoice' ? r.net : r.amount) }),
-        el('td', { className: 'wrapcell paydesc', textContent: r.description || '' }),
-        el('td', { className: 'paycodes', textContent: (r.codes_found || []).join(', ') || '—' }),
-        el('td', {}, can('payment', 'edit') ? el('button', { className: 'btn tiny pri', textContent: t('pay.allocate'),
-          onclick: ev => { ev.stopPropagation(); payEdit(kind, r); } }) : '')]);
-      body.append(tr);
-    }
-    return;
-  }
-
-  if (PAY.tab === 'invoice') {
-    const rows = payFilterRows(PAY.inv, 'invoice');
-    th([['pay.c.date'], ['pay.c.invNo'], ['pay.c.series'], ['pay.c.party'], ['pay.c.net', 'num'], ['pay.c.vat', 'num'],
-        ['pay.c.rate'], ['pay.c.gross', 'num'], ['pay.c.projects'], ['pay.c.status'], ['pay.c.desc']]);
-    if (!rows.length) empty(11);
-    let sn = 0, sv = 0;
-    for (const r of rows) {
-      if (!r.gone) { sn += Number(r.net); sv += Number(r.vat); }
-      const tr = el('tr', { className: (r.gone ? 'gone ' : '') + (PAY.pick === 'invoice' + r.id ? 'pick' : ''), style: 'cursor:pointer' }, [
-        el('td', { textContent: fmtDate(r.post_date) }), el('td', {}, el('code', { textContent: r.invoice_no })),
-        el('td', { textContent: r.series || '' }), el('td', { className: 'wrapcell', textContent: r.seller_name || '' }),
-        el('td', { className: 'num', textContent: fmtVnd(Number(r.net)) }), el('td', { className: 'num', textContent: fmtVnd(Number(r.vat)) }),
-        el('td', { textContent: r.vat_rate || '' }), el('td', { className: 'num', textContent: fmtVnd(Number(r.net) + Number(r.vat)) }),
-        payProjCell('invoice', r), el('td', {}, payChip(payStatus('invoice', r))),
-        el('td', { className: 'wrapcell paydesc', textContent: r.description || '' })]);
-      tr.onclick = () => { PAY.pick = 'invoice' + r.id; payRender(); if (can('payment', 'edit')) payEdit('invoice', r); };
-      body.append(tr);
-    }
-    if (rows.length) body.append(el('tr', { className: 'tot' }, [el('td', { colSpan: 4, textContent: t('pm.total', { n: rows.length }) }),
-      el('td', { className: 'num', textContent: fmtVnd(sn) }), el('td', { className: 'num', textContent: fmtVnd(sv) }), el('td'),
-      el('td', { className: 'num', textContent: fmtVnd(sn + sv) }), el('td', { colSpan: 3 })]));
-    return;
-  }
-
-  if (PAY.tab === 'payment') {
-    const rows = payFilterRows(PAY.pay, 'payment');
-    th([['pay.c.date'], ['pay.c.voucher'], ['pay.c.vendor'], ['pay.c.party'], ['pay.c.paid', 'num'], ['pay.c.projects'],
-        ['pay.c.status'], ['pay.c.desc']]);
-    if (!rows.length) empty(8);
-    let sa = 0;
-    for (const r of rows) {
-      if (!r.gone) sa += Number(r.amount);
-      const tr = el('tr', { className: (r.gone ? 'gone ' : '') + (PAY.pick === 'payment' + r.id ? 'pick' : ''), style: 'cursor:pointer' }, [
-        el('td', { textContent: fmtDate(r.post_date) }), el('td', {}, el('code', { textContent: r.voucher_no + (r.line_no > 1 ? '/' + r.line_no : '') })),
-        el('td', {}, el('code', { textContent: r.vendor_code || '' })), el('td', { className: 'wrapcell', textContent: r.vendor_name || '' }),
-        el('td', { className: 'num', textContent: fmtVnd(Number(r.amount)) }),
-        payProjCell('payment', r), el('td', {}, payChip(payStatus('payment', r))),
-        el('td', { className: 'wrapcell paydesc', textContent: r.description || '' })]);
-      tr.onclick = () => { PAY.pick = 'payment' + r.id; payRender(); if (can('payment', 'edit')) payEdit('payment', r); };
-      body.append(tr);
-    }
-    if (rows.length) body.append(el('tr', { className: 'tot' }, [el('td', { colSpan: 4, textContent: t('pm.total', { n: rows.length }) }),
-      el('td', { className: 'num', textContent: fmtVnd(sa) }), el('td', { colSpan: 3 })]));
-    return;
-  }
-
+// The rows of a tab, after the bar above (year, status, search).
+function payItems(tab) {
+  const wrap = kind => r => ({ kind, r });
+  if (tab === 'queue')
+    return [...payFilterRows(PAY.inv, 'invoice').filter(r => payStatus('invoice', r) === 'queue').map(wrap('invoice')),
+            ...payFilterRows(PAY.pay, 'payment').filter(r => payStatus('payment', r) === 'queue').map(wrap('payment'))]
+      .sort((a, b) => String(b.r.post_date).localeCompare(String(a.r.post_date)));
+  if (tab === 'invoice') return payFilterRows(PAY.inv, 'invoice').map(wrap('invoice'));
+  if (tab === 'payment') return payFilterRows(PAY.pay, 'payment').map(wrap('payment'));
   // By project: only projects with money against them, plus the search.
   const q = hnorm($('#payQ').value), y = $('#payYear').value;
-  const rows = PAY.money.filter(m => (m.n_invoices || m.n_payments)).map(m => {
+  return PAY.money.filter(m => (m.n_invoices || m.n_payments)).map(m => {
     const p = PAY.byCode.get(m.project_code) || { code: m.project_code };
     const inv = Number(m.invoiced_net), vat = Number(m.invoiced_vat), paid = Number(m.paid_gross);
     const budget = p.main_code ? payBudget(p) : null;
@@ -9479,31 +9706,222 @@ function payRender() {
              used: budget ? inv / budget : null, last: m.last_paid };
   }).filter(r => (!y || String(r.p.year) === y) && (!q || hnorm(`${r.p.code} ${r.p.name} ${r.p.dept_code}`).includes(q)))
     .sort((a, b) => a.p.code.localeCompare(b.p.code));
-  th([['pm.col.code'], ['pm.col.name'], ['pm.col.dept'], ['pay.c.budget', 'num'], ['pm.col.contract', 'num'],
-      ['pay.c.net', 'num'], ['pay.c.vat', 'num'], ['pay.c.gross', 'num'], ['pay.c.paid', 'num'],
-      ['pay.c.payable', 'num'], ['pay.c.toInvoice', 'num'], ['pay.c.used', 'num'], ['pay.c.lastPaid']]);
-  if (!rows.length) empty(13);
-  const tot = { budget: 0, contract: 0, inv: 0, vat: 0, gross: 0, paid: 0, payable: 0 };
-  for (const r of rows) {
-    for (const k of Object.keys(tot)) tot[k] += r[k] || 0;
-    const over = r.used != null && r.used > 1;
-    const tr = el('tr', { style: 'cursor:pointer', className: PAY.pick === 'project' + r.p.code ? 'pick' : '' }, [
-      el('td', {}, el('code', { textContent: r.p.code })), el('td', { className: 'wrapcell', textContent: r.p.name || '' }),
-      el('td', { textContent: r.p.dept_code || '' }),
-      el('td', { className: 'num', textContent: fmtVnd(r.budget) }), el('td', { className: 'num', textContent: fmtVnd(r.contract) }),
-      el('td', { className: 'num', textContent: fmtVnd(r.inv) }), el('td', { className: 'num', textContent: fmtVnd(r.vat) }),
-      el('td', { className: 'num', textContent: fmtVnd(r.gross) }), el('td', { className: 'num', textContent: fmtVnd(r.paid) }),
-      el('td', { className: 'num' + (r.payable < -1 ? ' payneg' : ''), textContent: fmtVnd(r.payable),
-                 title: r.payable < -1 ? t('pay.advance') : '' }),
-      el('td', { className: 'num' + (r.toInvoice != null && r.toInvoice < -1 ? ' payneg' : ''), textContent: fmtVnd(r.toInvoice) }),
-      el('td', { className: 'num' + (over ? ' payneg' : ''), textContent: r.used != null ? fmtPct(r.used, 0) + (over ? ' ⚠' : '') : '—' }),
-      el('td', { textContent: fmtDate(r.last) })]);
-    tr.onclick = () => { PAY.pick = 'project' + r.p.code; payRender(); payProjectDetail(r.p.code, $('#payDetail')); };
+}
+
+// Column filters, then the header sort.
+function payRows(cols) {
+  const cf = (PAY.cf[PAY.tab] = PAY.cf[PAY.tab] || {});
+  let rows = payItems(PAY.tab).filter(it => cols.every(c => ppCfMatch(c, it, cf[c.k] || '')));
+  const s = PAY.sort[PAY.tab], col = s && cols.find(c => c.k === s.k);
+  if (col) {
+    const dir = s.dir === 'desc' ? -1 : 1;
+    rows = rows.slice().sort((a, b) => {
+      const x = col.val(a), y = col.val(b);
+      if (x == null || x === '') return 1;
+      if (y == null || y === '') return -1;
+      return (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), pmLoc())) * dir;
+    });
+  }
+  return rows;
+}
+
+// Invoice / payment lines can be ticked and allocated together; By project cannot.
+const paySelectable = it => !!it.kind && !it.r.gone && can('payment', 'edit');
+const payKey = it => it.kind + ':' + it.r.id;
+const payHasTicks = () => PAY.tab !== 'project' && can('payment', 'edit');
+
+function payRender() {
+  MONEY.year = +$('#payYear').value || null;
+  PAY.cf = PAY.cf || {}; PAY.sort = PAY.sort || {}; PAY.sel = PAY.sel || new Map();
+  const tabs = $('#payTabs');
+  tabs.innerHTML = '';
+  const nQueue = PAY.inv.filter(r => payStatus('invoice', r) === 'queue').length
+               + PAY.pay.filter(r => payStatus('payment', r) === 'queue').length;
+  for (const k of PAY_TABS) {
+    const b = el('button', { textContent: t('pay.tab.' + k) + (k === 'queue' && nQueue ? ` (${nQueue})` : '') });
+    b.classList.toggle('on', PAY.tab === k);
+    b.onclick = () => { PAY.tab = k; PAY.pick = null; PAY.sel.clear(); $('#payDetail').innerHTML = ''; payRender(); };
+    tabs.append(b);
+  }
+  // Year choices from the data itself.
+  const years = [...new Set([...PAY.inv, ...PAY.pay].map(r => String(r.post_date || '').slice(0, 4)).filter(Boolean))].sort().reverse();
+  selFill($('#payYear'), [['', t('pm.f.allYears')], ...years.map(y => [y, y])]);
+  selFill($('#paySt'), [['', t('pm.f.all')], ...['queue', 'auto', 'manual', 'ignore', 'gone'].map(s => [s, t('pay.st.' + s)])]);
+  $('#payStWrap').hidden = PAY.tab === 'queue' || PAY.tab === 'project';
+
+  const cols = payCols(PAY.tab);
+  const ticks = payHasTicks();
+  const cf = (PAY.cf[PAY.tab] = PAY.cf[PAY.tab] || {});
+  const head = $('#payGrid thead');
+  head.innerHTML = '';
+  // Header: tick-all, then click a title to sort (again to reverse).
+  const all = el('input', { type: 'checkbox', title: t('pay.selAll') });
+  all.onchange = () => {
+    for (const it of PAY.shown || []) if (paySelectable(it)) { if (all.checked) PAY.sel.set(payKey(it), it); else PAY.sel.delete(payKey(it)); }
+    payRenderBody(cols);
+  };
+  const hr = el('tr', {}, [...(ticks ? [el('th', { className: 'cb' }, all)] : []), ...cols.map(c => {
+    const s = PAY.sort[PAY.tab] && PAY.sort[PAY.tab].k === c.k ? PAY.sort[PAY.tab].dir : null;
+    const th = el('th', { className: 'srt' + (c.num ? ' num' : '') + (s ? ' on' : ''), title: t('pm.sortHint') },
+      [document.createTextNode(t(c.lbl)), el('span', { className: 'arr', textContent: s === 'asc' ? '▲' : s === 'desc' ? '▼' : '⇅' })]);
+    th.onclick = () => { PAY.sort[PAY.tab] = { k: c.k, dir: s === 'asc' ? 'desc' : 'asc' }; payRender(); };
+    return th; }), ...(PAY.tab === 'queue' ? [el('th')] : [])]);
+  const clear = el('button', { className: 'btn tiny', textContent: '↺', title: t('pm.cfClear') });
+  clear.onclick = () => { PAY.cf[PAY.tab] = {}; payRender(); };
+  const fr = el('tr', { className: 'frow' }, [el('th', {}, clear), ...cols.map((c, i) => {
+    const inp = el('input', { className: 'cfin' + (cf[c.k] ? ' on' : ''), value: cf[c.k] || '', spellcheck: false,
+      placeholder: c.num ? '>0 · <0 · 1..9' : t('pm.cfPh') });
+    inp.oninput = () => { cf[c.k] = inp.value; inp.classList.toggle('on', !!inp.value); payRenderBody(cols); };
+    // Without the tick column the reset button shares the first filter cell.
+    return i === 0 && !ticks ? null : el('th', {}, inp);
+  }).filter(Boolean), ...(PAY.tab === 'queue' ? [el('th')] : [])]);
+  if (!ticks) {                          // first header cell holds both the reset and the first filter
+    const c0 = cols[0], inp = el('input', { className: 'cfin' + (cf[c0.k] ? ' on' : ''), value: cf[c0.k] || '', spellcheck: false,
+      placeholder: c0.num ? '>0 · <0 · 1..9' : t('pm.cfPh'), style: 'width:calc(100% - 30px);min-width:40px' });
+    inp.oninput = () => { cf[c0.k] = inp.value; inp.classList.toggle('on', !!inp.value); payRenderBody(cols); };
+    fr.firstChild.append(inp);
+  }
+  head.append(hr, fr);
+  PAY.allBox = ticks ? all : null;
+  payRenderBody(cols);
+}
+
+// Rows only, so typing in a column filter keeps the cursor where it is.
+function payRenderBody(cols) {
+  const body = $('#payGrid tbody');
+  body.innerHTML = '';
+  const rows = PAY.shown = payRows(cols);
+  const ticks = payHasTicks();
+  const n = cols.length + (ticks ? 1 : 0) + (PAY.tab === 'queue' ? 1 : 0);
+  if (!rows.length) body.append(el('tr', {}, el('td', { colSpan: n, className: 'payempty', textContent: t('pay.none') })));
+  for (const it of rows) {
+    const key = it.kind ? payKey(it) : 'project' + it.p.code;
+    const pick = it.kind ? PAY.pick === it.kind + it.r.id : PAY.pick === key;
+    const tr = el('tr', { className: (it.r && it.r.gone ? 'gone ' : '') + (pick ? 'pick ' : '') + (it.kind && PAY.sel.has(key) ? 'sel' : ''),
+                          style: 'cursor:pointer' });
+    if (ticks) {
+      const cb = el('input', { type: 'checkbox', checked: PAY.sel.has(key), disabled: !paySelectable(it) });
+      cb.onclick = ev => ev.stopPropagation();
+      cb.onchange = () => { if (cb.checked) PAY.sel.set(key, it); else PAY.sel.delete(key); tr.classList.toggle('sel', cb.checked); payBulkBar(); };
+      tr.append(el('td', { className: 'cb' }, cb));
+    }
+    for (const c of cols) tr.append(c.td(it));
+    if (PAY.tab === 'queue') tr.append(el('td', {}, can('payment', 'edit') ? el('button', { className: 'btn tiny pri', textContent: t('pay.allocate'),
+      onclick: ev => { ev.stopPropagation(); payEdit(it.kind, it.r); } }) : ''));
+    tr.onclick = it.kind
+      ? () => { PAY.pick = it.kind + it.r.id; payRenderBody(cols); if (can('payment', 'edit')) payEdit(it.kind, it.r); }
+      : () => { PAY.pick = key; payRenderBody(cols); $('#payDetail').innerHTML = ''; payProjectDetail(it.p.code, $('#payDetail')); };
     body.append(tr);
   }
-  if (rows.length) body.append(el('tr', { className: 'tot' }, [el('td', { colSpan: 3, textContent: t('pm.total', { n: rows.length }) }),
-    ...['budget', 'contract', 'inv', 'vat', 'gross', 'paid', 'payable'].map(k => el('td', { className: 'num', textContent: fmtVnd(tot[k]) })),
-    el('td'), el('td', { className: 'num', textContent: tot.budget ? fmtPct(tot.inv / tot.budget, 0) : '—' }), el('td')]));
+  // Totals of what is shown (lines gone from the file left out); "used" = total invoiced ÷ total budget.
+  if (rows.length) {
+    const live = rows.filter(it => !(it.r && it.r.gone));
+    const tot = el('tr', { className: 'tot' }, ticks ? [el('td')] : []);
+    cols.forEach((c, i) => {
+      if (i === 0) return tot.append(el('td', { textContent: t('pm.total', { n: fmtInt(rows.length) }) }));
+      if (c.sum) return tot.append(el('td', { className: 'num', textContent: fmtVnd(live.reduce((s, it) => s + (Number(c.val(it)) || 0), 0)) }));
+      if (c.k === 'used') {
+        const b = live.reduce((s, it) => s + (it.budget || 0), 0), v = live.reduce((s, it) => s + (it.inv || 0), 0);
+        return tot.append(el('td', { className: 'num', textContent: b ? fmtPct(v / b, 0) : '—' }));
+      }
+      tot.append(el('td'));
+    });
+    if (PAY.tab === 'queue') tot.append(el('td'));
+    body.append(tot);
+  }
+  if (PAY.allBox) { const ok = rows.filter(paySelectable); PAY.allBox.checked = ok.length > 0 && ok.every(it => PAY.sel.has(payKey(it))); }
+  payBulkBar();
+}
+
+/* The bar for ticked lines: how many, how much, and what to do with all of
+   them at once — one split (usually one project) for every line, or mark them
+   "not a project" / back to automatic. */
+function payBulkBar() {
+  let bar = $('#payBulk');
+  if (!bar) { bar = el('div', { id: 'payBulk', className: 'paybulk' }); $('#payMsg').before(bar); }
+  bar.innerHTML = '';
+  const items = [...PAY.sel.values()];
+  bar.hidden = !items.length || PAY.tab === 'project';
+  if (bar.hidden) return;
+  const amt = items.reduce((s, it) => s + Number(it.kind === 'invoice' ? it.r.net : it.r.amount), 0);
+  const b = (k, cls, fn) => { const x = el('button', { className: 'btn tiny ' + (cls || ''), textContent: t(k) }); x.onclick = fn; bar.append(x); };
+  bar.append(el('b', { textContent: t('pay.bulk.n', { n: fmtInt(items.length), v: fmtVnd(amt) }) }));
+  b('pay.bulk.alloc', 'pri', () => payBulkEdit(items));
+  b('pay.ignore', '', () => payBulkCall(items, 'ignore'));
+  b('pay.auto', '', () => payBulkCall(items, 'auto'));
+  b('pay.bulk.clear', '', () => { PAY.sel.clear(); payRenderBody(payCols(PAY.tab)); });
+}
+
+// One call per line; report how many went through and which did not.
+async function payBulkCall(items, mode, alloc) {
+  const bad = [];
+  for (const it of items) {
+    try { await SB.rpc('pm_alloc_set', { p_kind: it.kind, p_id: it.r.id, p_alloc: alloc || [], p_mode: mode }); }
+    catch (e) { bad.push(`${it.kind === 'invoice' ? it.r.invoice_no : it.r.voucher_no}: ${e.message}`); }
+  }
+  PAY.sel.clear();
+  $('#payDetail').innerHTML = '';
+  await payLoad();
+  msg('#payMsg', bad.length ? 'warn' : 'ok', t('pay.bulk.done', { ok: fmtInt(items.length - bad.length), n: fmtInt(items.length) })
+      + (bad.length ? '\n' + bad.join('\n') : ''));
+}
+
+// The split editor for several lines at once: the same projects and shares for each.
+function payBulkEdit(items) {
+  const box = $('#payDetail');
+  box.innerHTML = '';
+  const amount = items.reduce((s, it) => s + Number(it.kind === 'invoice' ? it.r.net : it.r.amount), 0);
+  const card = el('div', { className: 'card' });
+  card.append(el('h2', { textContent: t('pay.bulk.h', { n: fmtInt(items.length) }) }),
+    el('p', { className: 'paydesc', textContent: items.map(it => it.kind === 'invoice' ? it.r.invoice_no : it.r.voucher_no).join(', ') }));
+  // Proposal: the project codes every ticked line mentions in its description.
+  const codes = items.map(it => new Set((it.r.codes_found || []).flatMap(payResolve)));
+  const common = codes.length ? [...codes[0]].filter(c => codes.every(s => s.has(c))) : [];
+  const even = common.length ? Math.round(10000 / common.length) / 100 : 100;
+  const lines = common.length
+    ? common.map((c, i) => ({ code: c, pct: i < common.length - 1 ? even : Math.round((100 - even * (common.length - 1)) * 100) / 100 }))
+    : [{ code: '', pct: 100 }];
+  const tb = el('table', { className: 'wflines' }), sumEl = el('div', { className: 'wftotal' });
+  const draw = () => {
+    tb.innerHTML = '';
+    tb.append(el('tr', {}, [el('th', { textContent: t('pm.col.code') }), el('th', { textContent: t('pm.col.name') }),
+      el('th', { className: 'num', textContent: '%' }), el('th', { className: 'num', textContent: t('pay.c.amount') }), el('th')]));
+    lines.forEach((l, i) => {
+      const code = el('input', { value: l.code, style: 'width:190px', spellcheck: false });
+      code.setAttribute('list', 'payProjList');
+      code.onchange = () => { l.code = pmCode(code.value); draw(); };
+      const pct = el('input', { value: l.pct, style: 'width:80px', inputMode: 'decimal' });
+      pct.onchange = () => { l.pct = xlNum(pct.value) || 0; draw(); };
+      const x = el('button', { className: 'xbtn', textContent: '×' });
+      x.onclick = () => { lines.splice(i, 1); draw(); };
+      const p = PAY.byCode.get(l.code);
+      tb.append(el('tr', {}, [el('td', {}, code),
+        el('td', { className: 'wrapcell', textContent: p ? p.name || '' : (l.code ? '⚠ ' + t('pay.noProject') : '') }),
+        el('td', { className: 'num' }, pct), el('td', { className: 'num', textContent: fmtVnd(amount * l.pct / 100) }), el('td', {}, x)]));
+    });
+    const s = lines.reduce((a, l) => a + (l.pct || 0), 0);
+    sumEl.textContent = t('pay.sum', { p: Math.round(s * 100) / 100 });
+    sumEl.classList.toggle('payneg', Math.abs(s - 100) > 0.01);
+  };
+  draw();
+  const add = el('button', { className: 'btn tiny', textContent: t('pay.addLine') });
+  add.onclick = () => { const s = lines.reduce((a, l) => a + (l.pct || 0), 0); lines.push({ code: '', pct: Math.max(0, Math.round((100 - s) * 100) / 100) }); draw(); };
+  const out = el('div');
+  const save = el('button', { className: 'btn pri', textContent: t('pay.bulk.save', { n: fmtInt(items.length) }) });
+  save.onclick = () => {
+    const bad = lines.filter(l => !PAY.byCode.has(l.code));
+    if (bad.length) return msg(out, 'err', t('pay.badCodes', { c: bad.map(l => l.code || '—').join(', ') }));
+    const s = lines.reduce((a, l) => a + (l.pct || 0), 0);
+    if (Math.abs(s - 100) > 0.01) return msg(out, 'err', t('pay.sumBad', { p: Math.round(s * 100) / 100 }));
+    const merged = new Map();
+    for (const l of lines) merged.set(l.code, (merged.get(l.code) || 0) + l.pct);
+    payBulkCall(items, 'manual', [...merged].map(([project_code, pct]) => ({ project_code, share: Math.round(pct * 10000) / 1e6 })));
+  };
+  const cancel = el('button', { className: 'btn', textContent: t('sig.cancel') });
+  cancel.onclick = () => { box.innerHTML = ''; };
+  card.append(el('div', { className: 'wrap' }, tb), add, sumEl, el('div', { className: 'acts' }, [save, cancel]), out);
+  box.append(card);
+  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 /* --------------------------------------------------- allocation editor */
@@ -9675,7 +10093,7 @@ function initPay() {
   $('#btnPayRead').onclick = payRead;
   $('#btnPayGo').onclick = payGo;
   $('#btnPayExport').onclick = payExport;
-  $('#payQ').oninput = () => payRender();
+  $('#payQ').oninput = () => payRenderBody(payCols(PAY.tab));   // keeps the cursor in the box
   $('#payYear').onchange = () => payRender();
   $('#paySt').onchange = () => payRender();
   // Project codes for the allocation editor's code boxes.
