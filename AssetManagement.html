@@ -1038,6 +1038,34 @@
   .stg-rejected{background:#fbe5e2;color:var(--red)}
   .stg-done{background:#e3f3ea;color:var(--green)}
   .stg-none{background:#f3f4f6;color:var(--dim)}
+
+  /* ============================================================ PROJECT PANEL
+     Slides in from the right over the list: title + ✎ (update) + ✕ on a
+     navy-ruled head, the facts as label : value rows underneath. */
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:min(720px,100vw);z-index:40;background:var(--panel);
+          border-left:1px solid var(--line);box-shadow:-10px 0 30px rgba(11,31,58,.18);display:flex;flex-direction:column;
+          transition:transform .22s ease,visibility .22s}
+  .drawer[hidden]{display:flex;transform:translateX(100%);visibility:hidden;pointer-events:none}
+  .dhead{display:flex;align-items:flex-start;gap:6px;padding:14px 16px 12px;border-bottom:2px solid var(--navy);background:var(--head)}
+  .dhead h2{flex:1;margin:5px 0 0;font-size:13px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.5px;line-height:1.45}
+  .dbtn{flex:none;width:32px;height:32px;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--panel);
+        color:var(--navy);font-size:15px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+  .dbtn:hover,.dbtn.on{background:var(--navy);border-color:var(--navy);color:#fff}
+  .dbtn[hidden]{display:none}
+  .dbody{flex:1;overflow:auto;padding:14px 16px 28px;overscroll-behavior:contain}
+  .dbody .pmdet{margin-top:0}
+  .dbody .pmdet dl{grid-template-columns:170px minmax(0,1fr);gap:7px 14px}
+  .dbody .pmdet dt{padding-top:2px}
+  .dbody .pmdet > .msg{margin:0 0 12px}
+  .ppedit{border:1px solid var(--line);border-left:4px solid var(--amber);border-radius:8px;padding:10px 12px;margin:0 0 14px;background:#fffcf5}
+  .ppedit[hidden]{display:none}
+  .ppedit h2{margin:0 0 8px}
+  @media (max-width:600px){ .dbody .pmdet dl{grid-template-columns:1fr} }
+  @media print{ .drawer{display:none!important} }
+  /* Budget lines with no project yet, listed so nothing in the budget is missed. */
+  .virt{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;background:#eef1f6;color:var(--dim);
+        font-size:10.5px;font-weight:600;white-space:nowrap;vertical-align:1px}
+  tr.virtrow td,tr.virtrow code{color:var(--dim)}
 </style>
 </head>
 <body>
@@ -1693,7 +1721,12 @@
       </div>
       <div id="ppMsg"></div>
       <div class="wrap pmgrid"><table id="ppGrid"><thead></thead><tbody></tbody></table></div>
-      <div id="ppDetail"></div>
+      <div id="ppDrawer" class="drawer" role="dialog" aria-labelledby="ppDrTitle" hidden>
+        <div class="dhead"><h2 id="ppDrTitle"></h2>
+          <button id="ppDrEdit" class="dbtn" type="button" data-i18n-title="pm.prj.edit" hidden>&#9998;</button>
+          <button id="ppDrClose" class="dbtn" type="button" data-i18n-title="pm.prj.close">&#10005;</button></div>
+        <div id="ppDetail" class="dbody"></div>
+      </div>
     </section>
 
     <section id="v-pmimport">
@@ -1847,7 +1880,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260924r"></script>
-<script src="app.js?v=20260924r"></script>
+<script src="i18n.js?v=20260925a"></script>
+<script src="app.js?v=20260925a"></script>
 </body>
 </html>

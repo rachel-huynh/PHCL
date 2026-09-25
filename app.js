@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260924r';
+const APP_VERSION = '20260925a';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -2140,6 +2140,7 @@ function showView(view) {
   }
   if (VIEW === 'doc' && view !== 'doc' && WF.dirty && wfEditable() && !confirm(t('wf.leave'))) return;
   if (view !== 'doc') WF.dirty = false;
+  if (view !== 'projects') ppDrawerClose();
   VIEW = view;
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.view === view));
   curMark();
@@ -6751,13 +6752,42 @@ const PM_PROJ_SHOW = [['code', 'pm.col.code'], ['main_code', 'pm.f.mainCode'], [
   ['contract_value', 'pm.col.contract'], ['contract_volume', 'pm.f.volume'], ['chosen_vendor', 'pm.col.vendor'],
   ['evaluation', 'pm.f.evaluation'], ['comment', 'pm.f.note'], ['source_file', 'pm.f.sourceFile']];
 
+/* The project panel slides in from the right, so the list stays in view and
+   another row can be clicked straight away. ✎ shows the update form (only for
+   those who may edit), ✕ or Esc closes. Returns the empty panel body. */
+function ppDrawer(title, onEdit) {
+  const dr = $('#ppDrawer');
+  $('#ppDrTitle').textContent = title;
+  const pen = $('#ppDrEdit');
+  pen.hidden = !onEdit;
+  pen.classList.remove('on');
+  pen.onclick = onEdit ? () => pen.classList.toggle('on', onEdit()) : null;
+  dr.hidden = false;
+  const body = $('#ppDetail');
+  body.innerHTML = '';
+  body.scrollTop = 0;
+  return body;
+}
+function ppDrawerClose() {
+  const dr = $('#ppDrawer');
+  if (!dr || dr.hidden) return;
+  dr.hidden = true;
+  $('#ppDetail').innerHTML = '';
+  if (PM.prj.pick) { PM.prj.pick = null; ppRenderBody(); }
+}
+
 async function ppDetail(p) {
   MONEY.year = p.year;
-  const box = $('#ppDetail');
-  box.innerHTML = '';
-  const card = el('div', { className: 'card pmdet' });
+  const card = el('div', { className: 'pmdet' });
   const share = p.share_pct != null ? Object.assign({}, p, { share_pct: fmtPct(Number(p.share_pct), 0) }) : p;
-  card.append(el('h2', { textContent: `${p.code} — ${p.name || ''}` }));
+  // The update form waits at the top of the panel, folded until ✎ is pressed.
+  const form = can('project', 'edit') ? ppEditForm(p) : null;
+  const box = ppDrawer(`${p.code} — ${p.name || ''}`, form && (() => {
+    form.hidden = !form.hidden;
+    if (!form.hidden) { $('#ppDetail').scrollTop = 0; const f = form.querySelector('select,input'); if (f) f.focus(); }
+    return !form.hidden;
+  }));
+  if (form) { form.hidden = true; card.append(form); }
   const flags = ppFlags(p);
   if (flags.length) card.append(el('div', { className: 'msg warn', textContent: flags.join('\n') }));
   card.append(pmDl(share, PM_PROJ_SHOW));
@@ -6787,15 +6817,13 @@ async function ppDetail(p) {
   try { await wfProjectPanel(p, card); } catch {}
   // Invoices and payments against it (21_pm_payment.sql), same tolerance.
   if (can('payment', 'view')) { try { await payProjectDetail(p.code, card, true); } catch {} }
-  if (can('project', 'edit')) card.append(ppEditForm(p));
-  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 /* The execution facts that change as the project moves. Phase 3 replaces most
    of this with the document workflow; until then someone must be able to
    correct a date or record the contract. */
 function ppEditForm(p) {
-  const wrap = el('div', { style: 'margin-top:14px' });
+  const wrap = el('div', { className: 'ppedit' });
   wrap.append(el('h2', { textContent: t('pm.prj.edit') }));
   const row = el('div', { className: 'row', style: 'align-items:flex-end;flex-wrap:wrap' });
   const fld = (k, lbl, type, w) => {
@@ -6837,7 +6865,7 @@ function ppEditForm(p) {
     const del = el('button', { className: 'btn danger', textContent: t('pm.prj.delete') });
     del.onclick = async () => {
       if (!confirm(t('pm.prj.confirmDel', { code: p.code }))) return;
-      try { await SB.remove('pm_project', `code=eq.${encodeURIComponent(p.code)}`); $('#ppDetail').innerHTML = '';
+      try { await SB.remove('pm_project', `code=eq.${encodeURIComponent(p.code)}`); ppDrawerClose();
             await ppLoad(); msg('#ppMsg', 'ok', t('pm.prj.deleted', { code: p.code })); }
       catch (e) { msg('#ppMsg', 'err', e.message); }
     };
@@ -6854,12 +6882,10 @@ function ppEditForm(p) {
 /* A budget line with no project yet: what the budget says, and a button to
    open the project from it (the same form as '+ New project', pre-filled). */
 function ppVirtualDetail(p) {
-  const box = $('#ppDetail');
-  box.innerHTML = '';
   MONEY.year = p.year;
-  const card = el('div', { className: 'card pmdet' });
-  card.append(el('h2', { textContent: ` 2014 ` }),
-    el('div', { className: 'msg info', textContent: t('pm.prj.budgetOnlyHint') }),
+  const box = ppDrawer(`${p.code} — ${p.name || ''}`, null);
+  const card = el('div', { className: 'pmdet' });
+  card.append(el('div', { className: 'msg info', textContent: t('pm.prj.budgetOnlyHint') }),
     pmDl(p, [['code', 'pm.col.code'], ['name', 'pm.col.name'], ['dept_code', 'pm.col.dept'], ['estimated_value', 'pm.col.estimate'],
              ['investment_type', 'pm.col.invest'], ['risk_level', 'pm.col.risk'], ['planned_start', 'pm.f.plannedStart'],
              ['planned_end', 'pm.f.plannedEnd'], ['asset_item', 'pm.f.assetItem'], ['location', 'pm.f.location'], ['reason', 'pm.f.reason']]));
@@ -6869,20 +6895,17 @@ function ppVirtualDetail(p) {
     card.append(el('div', { className: 'acts', style: 'margin-top:10px' }, b));
   }
   box.append(card);
-  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function ppNew(preCode, preYear) {
-  const box = $('#ppDetail');
-  box.innerHTML = '';
-  PM.prj.pick = null;
   const y = preYear || +$('#ppYear').value || new Date().getFullYear();
+  const box = ppDrawer(t('pm.prj.newH', { y }), null);
+  if (!preCode && PM.prj.pick) { PM.prj.pick = null; ppRenderBody(); }
   const taken = new Set(PM.prj.rows.map(r => r.main_code));
   const free = (PM.prj.finalLines || []).filter(l => l.year === y && !taken.has(l.project_code));
-  const card = el('div', { className: 'card pmdet' });
-  card.append(el('h2', { textContent: t('pm.prj.newH', { y }) }));
+  const card = el('div', { className: 'pmdet' });
   const row = el('div', { className: 'row', style: 'align-items:flex-end;flex-wrap:wrap' });
-  const lineSel = el('select', { style: 'min-width:360px' });
+  const lineSel = el('select', { style: 'min-width:360px;max-width:100%' });
   lineSel.append(el('option', { value: '', textContent: free.length ? t('pm.prj.pickLine') : t('pm.prj.noFreeLine') }));
   free.forEach((l, i) => lineSel.append(el('option', { value: i,
     textContent: `${l.project_code} — ${l.name || ''} — ${fmtM(l.estimated_value)}` })));
@@ -6922,13 +6945,15 @@ function ppNew(preCode, preYear) {
       request_date: new Date().toISOString().slice(0, 10) });
     try {
       await SB.insert('pm_project', [rec]);
-      box.innerHTML = '';
       await ppLoad();                               // clears #ppMsg, so report after it
       msg('#ppMsg', 'ok', t('pm.prj.created', { code: c }));
+      // Straight on to the new project, where its PR can be drawn up.
+      const made = PM.prj.rows.find(r => r.code === c);
+      if (made) { PM.prj.pick = c; ppRenderBody(); ppDetail(made); } else ppDrawerClose();
     } catch (e) { msg('#ppMsg', 'err', e.message); }
   };
   const cancel = el('button', { className: 'btn', textContent: t('auth.cancel') });
-  cancel.onclick = () => { box.innerHTML = ''; };
+  cancel.onclick = ppDrawerClose;
   acts.append(cancel, save);
   row.append(acts);
   card.append(row);
@@ -6936,7 +6961,6 @@ function ppNew(preCode, preYear) {
   // Opened from a not-started budget line: that line is already chosen.
   if (preCode) { const i = free.findIndex(l => l.project_code === preCode); if (i >= 0) lineSel.value = String(i); }
   sync();
-  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function ppExport() {
@@ -8957,6 +8981,8 @@ function initSig() {
   // stretched, so start clean.
   window.addEventListener('resize', () => { if (!$('#sigModal').hidden) { sigSize(); sigClear(); } });
   document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !$('#sigModal').hidden) sigDone(null); });
+  $('#ppDrClose').onclick = ppDrawerClose;
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && $('#sigModal').hidden && !(ev.target.closest && ev.target.closest('details[open]'))) ppDrawerClose(); });
 }
 
 /* ======================================================== NOTIFICATIONS

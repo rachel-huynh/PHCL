@@ -515,6 +515,12 @@ en: {
   'pm.prj.badCode': 'The code must look like FFE.DEPT.NN.YYYY (or FFE.DEPT.NN.YYYY.01 for a sub-project).',
   'pm.prj.created': 'Created {code}.',
   'pm.prj.edit': 'Update',
+  'pm.prj.close': 'Close (Esc)',
+  'pm.prj.budgetOnly': 'no dossier yet',
+  'pm.prj.budgetOnlyHint': 'A line in the final budget that has no project or procurement dossier yet. Open the project from it to start the PR.',
+  'pm.prj.openFromLine': 'Open project from this budget line',
+  'pm.f.plannedStart': 'Planned start',
+  'pm.f.plannedEnd': 'Planned end',
   'pm.prj.autoStatus': '— from the dates —',
   'pm.prj.saved': 'Saved {code}.',
   'pm.prj.delete': 'Delete project',
@@ -1758,6 +1764,12 @@ vi: {
   'pm.prj.badCode': 'Mã phải có dạng FFE.PHÒNG.SỐ.NĂM (hoặc FFE.PHÒNG.SỐ.NĂM.01 cho dự án con).',
   'pm.prj.created': 'Đã tạo {code}.',
   'pm.prj.edit': 'Cập nhật',
+  'pm.prj.close': 'Đóng (Esc)',
+  'pm.prj.budgetOnly': 'chưa có hồ sơ',
+  'pm.prj.budgetOnlyHint': 'Dòng trong ngân sách chính thức, chưa được tạo dự án / hồ sơ mua sắm. Tạo dự án từ dòng này để bắt đầu lập PR.',
+  'pm.prj.openFromLine': 'Tạo dự án từ dòng ngân sách',
+  'pm.f.plannedStart': 'Bắt đầu (kế hoạch)',
+  'pm.f.plannedEnd': 'Kết thúc (kế hoạch)',
   'pm.prj.autoStatus': '— theo các mốc ngày —',
   'pm.prj.saved': 'Đã lưu {code}.',
   'pm.prj.delete': 'Xoá dự án',
@@ -2510,12 +2522,14 @@ function t(key, vars) {
 /* Apply to static markup:
      data-i18n       -> textContent
      data-i18n-html  -> innerHTML   (for strings carrying <b>/<code>)
-     data-i18n-ph    -> placeholder                                     */
+     data-i18n-ph    -> placeholder
+     data-i18n-title -> title (tooltip)                                 */
 function applyI18n(root) {
   root = root || document;
   root.querySelectorAll('[data-i18n]').forEach(n => { n.textContent = t(n.dataset.i18n); });
   root.querySelectorAll('[data-i18n-html]').forEach(n => { n.innerHTML = t(n.dataset.i18nHtml); });
   root.querySelectorAll('[data-i18n-ph]').forEach(n => { n.placeholder = t(n.dataset.i18nPh); });
+  root.querySelectorAll('[data-i18n-title]').forEach(n => { n.title = t(n.dataset.i18nTitle); });
   document.documentElement.lang = LANG;
 }
 
