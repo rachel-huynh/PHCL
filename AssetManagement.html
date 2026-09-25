@@ -1382,6 +1382,81 @@
   .wfdot.ref{border-color:#9fb0c9;color:#5b6f8f;background:#f4f7fb}
   .wfdot.ref.on{background:#5b6f8f;border-color:#5b6f8f;color:#fff}
   .wfsep{width:1px;height:26px;background:#c9d1de;margin:0 4px}
+  /* ============ Procurement forms — feedback 25/09/2026 ("Procurement forms.pdf") ============ */
+  /* One font on every form: Calibri, the workbook's (the app theme must not replace it). */
+  .fsheet,.fsheet input,.fsheet select,.fsheet textarea,.fsheet button,.fsheet code{font-family:Calibri,Carlito,"Segoe UI",Arial,sans-serif}
+  /* One navy on every form: the PR / RR one, not the near-black of the app theme. */
+  .fsheet{--fn:#003366}
+  .fsheet .ftable tr.fgrp th{background:#1f4e79}
+  /* Borders light grey, and only where two white areas meet. */
+  .fpage{border-color:#d5dbe5}
+  .fsheet .ftable th,.fsheet .ftable td{border-color:#d5dbe5}
+  .fsheet .fcode th{border-color:#003366} .fsheet .fcode td{border-color:#d5dbe5;min-width:96px}
+  .xs-hd,.xs-cv,.xs-th,.xsg .bd{border-color:#d5dbe5}
+  .xs-th[style^="grid-column:2 /"],.xs-td[style^="grid-column:2 /"]{border-left-color:#d5dbe5}
+  .xs-td{border-right-color:#d5dbe5;border-bottom-color:#d5dbe5}
+  .xs-cv.l{justify-content:flex-start}
+  /* Consent: everything centred, the signer's name bold at the title's size, on white (no page colour around it). */
+  .fsig{border-color:#d5dbe5}
+  .fsig .sk{text-align:center}
+  .fsig .sn{font-weight:700;font-size:10.5px;color:var(--ink)}
+  .fpage > .fconsent{background:#fff;margin:12px -12px -14px;padding:10px 12px 12px}
+  /* Text that must stay on one line shrinks to fit its box (fsFit). */
+  .fsheet .fit{white-space:nowrap !important;overflow:hidden}
+  .fsheet .fit .wfro{white-space:nowrap}
+  /* The approval chain of a document on one row. */
+  .wfsteps{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}
+  .wfsteps .wfstep{min-width:150px;flex:1 1 0}
+  /* One A4 page per form page (fsPages); the QC appendix and the MC in landscape. */
+  @page land{size:A4 landscape;margin:8mm}
+  @media print{
+    #wdPrint .fprintpage{break-after:page;page:port}
+    #wdPrint .fprintpage.land{page:land}
+    #wdPrint .fprintpage:last-child{break-after:auto}
+  }
+  @page port{size:A4 portrait;margin:8mm}
+  .fsheet.pdf .fpage.land{min-width:0}
+  .fpage.land{min-width:1120px}
+  /* Two grid rows tall (PA reason, procurement type; AH detailed evaluation). */
+  .fcell.rows2{grid-row:span 2;display:flex;flex-direction:column}
+  .fcell.rows2 .fv{flex:1}
+  .fcell.left.rows2 .fv{align-items:flex-start}
+  /* PA risk box: the risk level under the assessment, as wide as it. */
+  .frg{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:2px 6px;align-items:center;margin-top:2px}
+  .frg .fl.c{text-align:center;text-transform:none}
+  .frg .op{font-weight:700}
+  .frg .lvlk{grid-column:1 / 5;text-align:right}
+  .frg .lvlv{grid-column:5}
+  /* Figures (PA / QC / MC): left-aligned, compact; the PA difference red when over, green within. */
+  .fkv td.v.n{text-align:left}
+  .fkv td.v{min-width:170px}
+  .pakv td.v.bad{color:#b42318;font-weight:700} .pakv td.v.good{color:#15803d;font-weight:700}
+  .fsheet table.fkv{width:auto}
+  /* QC: scores centred in narrower boxes; the conclusion box runs the full height. */
+  .fqc td.fvbox.n,.fqc.fap td.fvbox.l{text-align:center}
+  .fqc:not(.fap) td.fvbox:not(.wide){width:13%}
+  .fqc td.fconc{height:1px;vertical-align:top}
+  .fqc td.fconc.ok{background:#e9f6ef} .fqc td.fconc.warn{background:#fff7e6}
+  .fcw{display:flex;flex-direction:column;height:100%}
+  .fcw .cb{flex:1}
+  .fsheet .ftable.fin td{text-align:center}
+  .fsheet .ftable.fin td.l{text-align:left}
+  .fsheet .ftable tr.fsub2 td{background:#eef2fa;font-weight:600;font-size:10px}
+  .fspec .btn{margin-left:4px;padding:0 5px;min-height:0;line-height:16px}
+  .fspecrow td{background:#fffdf3 !important;text-align:left !important}
+  .fspecgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px 8px;margin-top:4px}
+  .fspecgrid label{display:flex;flex-direction:column;font-size:9.5px;color:var(--dim)}
+  .fspecgrid label.wide{grid-column:span 3}
+  .fspecgrid input{border:1px dashed #7d95ba;background:#fff;font:inherit;font-size:11px;color:var(--ink);padding:1px 3px}
+  /* MC: a vendor's name on its own line under the group title. */
+  .fgv.col{flex-direction:column;gap:1px}
+  /* PO / AH: the column switch while editing; the overhead lines. */
+  .fcolbar{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;margin:2px 0 6px;font-size:11px}
+  .fcolbar .chk{font-size:11px;gap:3px}
+  .fsheet .ftable.fover{width:60%;margin-top:6px}
+  .frefbar .btn{background:#fff;color:var(--ink)}
+  .fsheet.edit.wide{min-width:1100px}
+  .fsheet.edit.wide:has(.fcolbar .chk){min-width:2100px}
 </style>
 </head>
 <body>
@@ -1771,6 +1846,11 @@
     <div class="card">
       <h2 data-i18n="st.h.display"></h2>
       <label class="chk"><input type="checkbox" id="stHelp"><span data-i18n="st.help"></span></label>
+    </div>
+    <div class="card" id="stDocCard" hidden>
+      <h2 data-i18n="st.h.doc"></h2>
+      <label class="chk"><input type="checkbox" id="stHist"><span data-i18n="st.hist"></span></label>
+      <div id="stDocMsg"></div>
     </div>
     <div class="card" id="stYearCard">
       <h2 data-i18n="st.h.year"></h2>
@@ -2274,7 +2354,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260925q"></script>
-<script src="app.js?v=20260925q"></script>
+<script src="i18n.js?v=20260925s"></script>
+<script src="app.js?v=20260925s"></script>
 </body>
 </html>
