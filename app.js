@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260925h';
+const APP_VERSION = '20260925i';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -6581,23 +6581,25 @@ async function ppLoad() {
     ]);
     PM.prj.rows = rows;
     PM.prj.money = money ? new Map(money.map(m => [m.project_code, m])) : null;
-    // Documents and the step each one waits at (19_pm_workflow.sql), for the
-    // "current step" column. Missing tables: the column is left out.
+    // Packages, their documents and the step each waits at (19_pm_workflow.sql),
+    // for the "current step" column. Missing tables: the column is left out.
     PM.prj.docs = null;
     try {
       await wfLookups();
-      const docs = await pmSelectAll('pm_doc', 'select=id,project_code,doc_type,doc_no,status,current_step,final:data->final');
-      const open = docs.filter(d => d.status === 'in_review').map(d => d.id);
-      // kind (check / joint) arrived with the 25/09 chain rules; an older database lacks it.
-      const stepSel = cols => pmSelectAll('pm_doc_step', `select=${cols}&doc_id=in.(${open.join(',')})`);
-      const steps = !open.length ? [] : await stepSel('doc_id,step,role_code,kind').catch(() => stepSel('doc_id,step,role_code'));
+      const [docs, pkgs] = await Promise.all([
+        pmSelectAll('pm_doc', 'select=id,project_code,doc_type,doc_no,status,pkg_id,final:data->final'),
+        pmSelectAll('pm_pkg', 'select=id,project_code,grp,status,current_step,returned_to')]);
+      const open = pkgs.filter(k => k.status === 'in_review').map(k => k.id);
+      const steps = open.length ? await pmSelectAll('pm_pkg_step', `select=pkg_id,step,role_code,kind,owner_prep&pkg_id=in.(${open.join(',')})`) : [];
       PM.prj.docs = new Map();
+      PM.prj.pkgs = new Map();
       for (const d of docs) {
-        const st = steps.find(x => x.doc_id === d.id && x.step === d.current_step);
-        d.role = st ? st.role_code : null;
-        d.kind = st ? st.kind || 'approve' : null;
         d.final = d.final === true || d.final === 'true';
         (PM.prj.docs.get(d.project_code) || PM.prj.docs.set(d.project_code, []).get(d.project_code)).push(d);
+      }
+      for (const k of pkgs) {
+        k.step = steps.find(x => x.pkg_id === k.id && x.step === k.current_step) || null;
+        (PM.prj.pkgs.get(k.project_code) || PM.prj.pkgs.set(k.project_code, []).get(k.project_code)).push(k);
       }
     } catch { PM.prj.docs = null; }
     PM.prj.vendors = vendors;
@@ -6679,47 +6681,34 @@ function ppPaid(p) {
   const base = p.contract_value != null && Number(p.contract_value) > 0 ? Number(p.contract_value) : null;
   return { paid, base, pct: base ? paid / base : null };
 }
-/* Where each project stands in the document chain, from pm_doc: the furthest
-   live document, and whom it waits for — or, once it is approved, the next
-   document still to be drawn up. Empty until 19_pm_workflow.sql exists. */
+/* Where each project stands, from its furthest live PACKAGE: whom it waits for
+   (coloured: blue hotel, purple AM team, yellow JVC), or — once approved — the
+   next package to draw up. Empty until 19_pm_workflow.sql exists. */
 function ppStage(p) {
   if (!PM.prj.docs) return null;
-  const seq = ty => ((WF.types.find(x => x.code === ty) || {}).seq) || WF_ORDER.indexOf(ty) * 10;
-  const docs = (PM.prj.docs.get(p.code) || []).filter(d => d.status !== 'cancelled');
-  const d = docs.slice().sort((a, b) => seq(b.doc_type) - seq(a.doc_type) || b.id - a.id)[0];
-  const replacement = /replace/i.test(p.investment_type || '');
-  const nextOf = ty => WF_ORDER.find(x => seq(x) > seq(ty) && x !== 'CT' && (x !== 'RR' || replacement));
-  if (!d) return { type: 'PR', state: 'none' };
-  if (d.status === 'in_review') {
-    const s = { type: d.doc_type, state: 'review', who: d.role ? wfRoleName(d.role) : '', no: d.doc_no, kind: d.kind };
-    // Joint step: JVC waits for the whole group (PR + RR + PA, QC + MC) to arrive.
-    const needed = d.kind === 'joint' ? wfGrpOthers(d.doc_type).filter(ty => wfGrpNeeded(ty, p, docs)) : [];
-    if (needed.length) {
-      const live = ty => docs.filter(x => x.doc_type === ty && x.status !== 'rejected').sort((a, b) => b.id - a.id)[0];
-      const miss = needed.filter(ty => !live(ty));
-      if (miss.length) return Object.assign(s, { kind: 'needPair', pair: miss.join(', ') });
-      const behind = needed.filter(ty => { const m = live(ty);
-        return m.status !== 'approved' && !(m.status === 'in_review' && m.kind === 'joint' && m.role === d.role); });
-      if (behind.length) return Object.assign(s, { kind: 'waitPair', pair: behind.join(', ') });
-      s.group = [d.doc_type, ...needed.filter(ty => live(ty).status !== 'approved')];
-    }
-    return s;
+  const docs = (PM.prj.docs.get(p.code) || []).filter(d => !['cancelled', 'rejected'].includes(d.status));
+  const pkgs = (PM.prj.pkgs.get(p.code) || []).filter(k => k.status !== 'cancelled');
+  const types = k => docs.filter(d => d.pkg_id === k.id).map(d => d.doc_type).sort((a, b) => wfSeq(a) - wfSeq(b)).join(' + ') || wfLead(k.grp);
+  const nos = k => docs.filter(d => d.pkg_id === k.id).map(d => d.doc_no).join(' + ');
+  const k = pkgs.slice().sort((a, b) => wfSeq(wfLead(b.grp)) - wfSeq(wfLead(a.grp)) || b.id - a.id)[0];
+  if (!k) return { type: 'PR', state: 'none', band: 'op' };
+  if (k.status === 'in_review') {
+    const s = k.step || {}, owners = wfPkgTypes(k.grp).filter(ty => wfSide(ty) === 'owner').join('/');
+    return { type: types(k), state: 'review', who: s.role_code ? wfRoleName(s.role_code) : '', no: nos(k), band: wfBand(s.role_code),
+             kind: s.owner_prep ? (k.returned_to === 'am' ? 'redo' : 'checkPrep') : s.kind, pair: owners };
   }
-  if (d.status === 'approved') {
-    if (d.doc_type === 'AH' && d.final) return { type: 'AH', state: 'done', no: d.doc_no };
-    const nx = d.doc_type === 'AH' ? 'AH' : nextOf(d.doc_type);
-    return nx ? { type: nx, state: 'none' } : { type: d.doc_type, state: 'done', no: d.doc_no };
+  if (k.status === 'approved') {
+    if (docs.some(d => d.doc_type === 'AH' && d.status === 'approved' && d.final)) return { type: 'AH', state: 'done', band: 'ok' };
+    const top = Math.max(...wfPkgTypes(k.grp).map(wfSeq));
+    const nx = k.grp === 'AH' ? 'AH' : (WF.types.filter(x => x.required && x.side === 'operator' && x.seq > top).sort((a, b) => a.seq - b.seq)[0] || {}).code;
+    return nx ? { type: nx, state: 'none', band: 'op', no: nos(k) } : { type: types(k), state: 'done', band: 'ok', no: nos(k) };
   }
-  return { type: d.doc_type, state: d.status, no: d.doc_no };           // draft / returned / rejected
+  return { type: types(k), state: k.status, band: k.status === 'draft' ? 'draft' : 'bad', no: nos(k) };   // draft / returned / rejected
 }
-// "waiting for X to approve" / "… to check" / "… to approve together with PA".
+// "waiting for X to approve" / "… to check" / "… to check and draw up the PA".
 const ppStageVerb = s => s.state !== 'review' ? t('pm.stage.' + s.state)
-  : t(['check', 'needPair', 'waitPair'].includes(s.kind) ? 'pm.stage.' + s.kind
-      : s.kind === 'joint' && (s.group || []).length > 1 ? 'pm.stage.joint' : 'pm.stage.review',
-      { who: s.who || '?', pair: s.pair || '' });
-// "PR + RR + PA" — in document order, whichever of them is further on.
-const ppStageType = s => s.kind === 'joint' && (s.group || []).length > 1
-  ? s.group.slice().sort((a, b) => wfSeq(a) - wfSeq(b)).join(' + ') : s.type;
+  : t(['check', 'checkPrep', 'redo'].includes(s.kind) ? 'pm.stage.' + s.kind : 'pm.stage.review', { who: s.who || '?', pair: s.pair || '' });
+const ppStageType = s => s.type;
 const ppStageText = s => !s ? '' : s.state === 'done' ? t('pm.stage.done') : `${ppStageType(s)} · ${ppStageVerb(s)}`;
 
 /* Filter text per column, like the Đối chiếu hoá đơn grid: words match
@@ -6750,7 +6739,7 @@ function ppCols() {
   const cols = [
     { k: 'status', lbl: 'pm.col.status', val: p => PM_STATUS.indexOf(p.status), txt: p => t('pm.st.' + p.status), td: p => el('td', { className: 'nw' }, pmStatusChip(p.status)) },
     ...(PM.prj.docs ? [{ k: 'stage', lbl: 'pm.col.stage', val: p => ppStageText(ppStage(p)), txt: p => ppStageText(ppStage(p)),
-      td: p => { const s = ppStage(p); return el('td', { className: 'nw' }, s ? el('span', { className: 'stg stg-' + s.state, title: s.no || '' }, [
+      td: p => { const s = ppStage(p); return el('td', { className: 'nw' }, s ? el('span', { className: 'stg band-' + s.band, title: s.no || '' }, [
         ...(s.state === 'done' ? [] : [el('b', { textContent: ppStageType(s) })]),
         document.createTextNode(s.state === 'done' ? t('pm.stage.done') : ' ' + ppStageVerb(s))]) : ''); } }] : []),
     { k: 'code', lbl: 'pm.col.code', val: p => p.code, txt: p => p.code, td: p => {
@@ -7050,11 +7039,19 @@ function ppNew(preCode, preYear) {
   const dept = el('select', { style: 'width:120px' });
   for (const o of PM.orgs.filter(o => o.is_department)) dept.append(el('option', { value: o.code, textContent: o.code }));
   const est = el('input', { style: 'width:150px', inputMode: 'numeric' });
+  // Replacement or new investment decides whether the PR goes with an RR.
+  // The budget line usually says; when it does not, the preparer chooses here.
+  const inv = el('select', { style: 'width:170px' });
+  for (const v of ['', 'Replacement', 'New Investment']) inv.append(el('option', { value: v, textContent: v ? wfOpt(v) : '—' }));
+  const lineInv = l => /replace/i.test(l.investment_type || '') ? 'Replacement' : /new/i.test(l.investment_type || '') ? 'New Investment' : '';
   const sync = () => {
     const l = free[lineSel.value];
     code.disabled = !unb.checked; lineSel.disabled = unb.checked;
     if (!unb.checked && l) { code.value = l.project_code; name.value = l.name || ''; dept.value = pmDept(l.dept_code);
                              est.value = l.estimated_value != null ? fmtNum(l.estimated_value) : ''; }
+    const fixed = !unb.checked && l && lineInv(l);
+    if (fixed) inv.value = fixed;
+    inv.disabled = !!fixed;
   };
   lineSel.onchange = sync; unb.onchange = sync;
   row.append(
@@ -7063,28 +7060,32 @@ function ppNew(preCode, preYear) {
     el('div', { className: 'fld' }, [el('label', { textContent: t('pm.col.code') }), code]),
     el('div', { className: 'fld' }, [el('label', { textContent: t('pm.col.name') }), name]),
     el('div', { className: 'fld' }, [el('label', { textContent: t('pm.col.dept') }), dept]),
-    el('div', { className: 'fld' }, [el('label', { textContent: t('pm.col.estimate') }), est]));
+    el('div', { className: 'fld' }, [el('label', { textContent: t('pm.col.estimate') }), est]),
+    el('div', { className: 'fld' }, [el('label', { textContent: t('pm.col.invest') }), inv]));
   const acts = el('div', { className: 'acts' });
   const save = el('button', { className: 'btn pri', textContent: t('tool.save') });
   save.onclick = async () => {
     const c = pmCode(code.value);
     if (!PM_CODE_OK.test(c)) return msg('#ppMsg', 'err', t('pm.prj.badCode'));
     const l = unb.checked ? null : free[lineSel.value];
+    if (!inv.value) return msg('#ppMsg', 'err', t('wf.askInvest'));
     const rec = pmProjRow(l ? {
       name: l.name, investment_type: l.investment_type, possibility: l.possibility, impact: l.impact,
       assessment: l.assessment, risk_level: l.risk_level, project_category: l.project_category,
       area_category: l.area_category, asset_item: l.asset_item, location: l.location, reason: l.reason,
       planned_start: l.start_date, planned_end: l.end_date } : {}, {
       code: c, main_code: pmMain(c), dept_code: dept.value, name: name.value.trim() || null,
-      estimated_value: numIn(est.value), budgeted: !unb.checked, source: 'app',
+      estimated_value: numIn(est.value), budgeted: !unb.checked, source: 'app', investment_type: inv.value,
       request_date: new Date().toISOString().slice(0, 10) });
     try {
       await SB.insert('pm_project', [rec]);
       await ppLoad();                               // clears #ppMsg, so report after it
       msg('#ppMsg', 'ok', t('pm.prj.created', { code: c }));
-      // Straight on to the new project, where its PR can be drawn up.
+      // Straight on to its PR (and RR for a replacement), when this person draws them up;
+      // otherwise to the new project.
       const made = PM.prj.rows.find(r => r.code === c);
-      if (made) { PM.prj.pick = c; ppRenderBody(); ppDetail(made); } else ppDrawerClose();
+      if (made && WF.types.length && wfCanPrepare('PR', made.dept_code)) { ppDrawerClose(); await wfCreate(made, 'PR', [], '#ppMsg'); }
+      else if (made) { PM.prj.pick = c; ppRenderBody(); ppDetail(made); } else ppDrawerClose();
     } catch (e) { msg('#ppMsg', 'err', e.message); }
   };
   const cancel = el('button', { className: 'btn', textContent: t('auth.cancel') });
@@ -7724,7 +7725,7 @@ const qcSubs = labels => { const w = Math.floor(10000 / labels.length) / 100;
   return labels.map((l, i) => ({ label: l, w: i < labels.length - 1 ? w : Math.round((100 - w * (labels.length - 1)) * 100) / 100 })); };
 const off100 = v => Math.abs(v - 100) > 0.01;
 
-const WF_COND = ['Like new', 'Poor', 'Damaged'];
+const WF_COND = ['Full operational', 'Poor', 'Damaged'];     // the workbook's words (Menu!BI)
 const WF_RR_REASON = ['High repair cost', 'Obsolete', 'Irreparable', 'Breakage/loss'];
 const WF_RISK_CAT = ["People's Health & Safety", 'Technical Issues', 'Reputation Damage', 'Incident Acknowledgement',
                      'Periodic Internal Assessment', 'Legal Compliance', 'HACCP Fail Point', 'Public Negative Feedback',
@@ -7859,22 +7860,13 @@ function wfCovers(scope, dept) {
 }
 const wfHasRoleFor = (role, dept) => !!(ME && ME.roles.some(r => r.role === role && wfCovers(r.scope, dept)));
 const wfChain = (entity, type) => WF.chains.filter(c => c.entity === entity && c.doc_type === type).sort((a, b) => a.step - b.step);
-/* Approval groups (pm_doc_type.grp): JVC approves PR + RR + PA in one go, and
-   QC + MC. RR belongs only on a replacement project (or once drawn up). */
+/* Packages (pm_doc_type.grp): PR + RR + PA and QC + MC go through one chain
+   together (see "packages" below). */
 const wfSeq = ty => ((WF.types.find(x => x.code === ty) || {}).seq) || 0;
 const wfGrp = ty => (WF.types.find(x => x.code === ty) || {}).grp || null;
-const wfGrpOthers = ty => { const g = wfGrp(ty);
-  return g ? WF.types.filter(x => x.grp === g && x.code !== ty).sort((a, b) => a.seq - b.seq).map(x => x.code) : []; };
-const wfGrpNeeded = (ty, project, docs) => { const tt = WF.types.find(x => x.code === ty) || {};
-  return !!tt.required || (ty === 'RR' && /replace/i.test((project || {}).investment_type || ''))
-    || (docs || []).some(d => d.doc_type === ty && !['cancelled', 'rejected'].includes(d.status)); };
 function wfCanPrepare(type, dept) {
   const prep = wfChain(pmEntity(dept), type).find(c => c.step === 0);
   return can('project', 'create') && !!prep && wfHasRoleFor(prep.role_code, dept);
-}
-function wfCanAct(doc, step, dept) {
-  return doc.status === 'in_review' && !!step && can('approval', 'approve')
-    && doc.created_by !== (ME && ME.id) && wfHasRoleFor(step.role_code, dept);
 }
 const wfRoleName = code => { const r = WF.roles.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
 const wfTypeName = code => { const r = WF.types.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
@@ -7891,31 +7883,62 @@ async function wfLookups(force) {
   Object.assign(WF, { types, chains, roles });
 }
 
+/* ------------------------------------------------------- packages (bộ hồ sơ)
+   Documents travel in PACKAGES through ONE approval chain (19_pm_workflow.sql):
+   PR + RR + PA, then QC + MC; PO, CT and AH one each. The chain, its status
+   and the signatures belong to the package — one approval or check signs
+   every document in it — while each document keeps its own content.
+   The chain is the lead type's (PR / QC); its AM Coordinator step is where
+   the AM team checks AND draws up the PA / MC (owner_prep). */
+const wfPkgTypes = grp => { const ts = WF.types.filter(x => x.grp === grp).sort((a, b) => a.seq - b.seq).map(x => x.code); return ts.length ? ts : [grp]; };
+const wfLead = grp => { const x = WF.types.filter(t => t.grp === grp && t.side === 'operator').sort((a, b) => a.seq - b.seq)[0]; return x ? x.code : grp; };
+const wfSide = ty => (WF.types.find(x => x.code === ty) || {}).side;
+const wfIsReplacement = p => /replace/i.test((p || {}).investment_type || '');
+// Colour band of a step: blue = hotel operator, purple = AM team, yellow = JVC approvers.
+const WF_BAND = { AM_COORD: 'am', AM_EXEC: 'am', CHIEF_ACC: 'jvc', JVC_DGM: 'jvc', JVC_GM: 'jvc' };
+const wfBand = role => WF_BAND[role] || 'op';
+// Titles under the signature boxes, in the workbook's words.
+const WF_SIG_TITLE = {
+  DEPT_HEAD: ['Head of Department', 'Trưởng bộ phận'], DOF: ['Head of Finance', 'Trưởng bộ phận Tài chính'],
+  HOTEL_GM: ['Hotel General Manager', 'Tổng Quản lý KS'], AM_COORD: ['AM Coordinator', 'Điều phối quản lý tài sản'],
+  AM_EXEC: ['AM Executive', 'Chuyên viên quản lý tài sản'], CHIEF_ACC: ['JVC Chief Accountant', 'Kế toán trưởng JVC'],
+  JVC_DGM: ['JVC Deputy General Manager', 'Phó Tổng Giám đốc JVC'], JVC_GM: ['JVC General Manager', 'Tổng Giám đốc JVC']
+};
+const wfSigTitle = code => WF_SIG_TITLE[code] || (r => r ? [r.name_en, r.name_vi] : [code, ''])(WF.roles.find(x => x.code === code));
+
 /* ------------------------------------------ the documents of one project */
 /* Can this person draw up a document of this type for the project now — the
    same rules pm_doc_create enforces — and if not, why (shown under the empty
    box, so nobody hunts for a button that cannot be there yet):
-   - every earlier required document approved; within an approval group
-     (PR + RR + PA, QC + MC) only SUBMITTED — AM prepares the PA while
-     checking the PR and RR;
+   - PA / MC are drawn up by the AM team at their checking step, in the package;
+   - RR belongs only to a replacement project, and joins the PR's package while
+     it is still being prepared;
+   - a new package (PR, QC, PO, CT, AH): every earlier required document approved;
    - one live document per type (AH repeats, one open at a time, until the final one);
-   - an optional step (RR, CT) cannot be slotted in once a later one exists;
+   - an optional step (CT) cannot be slotted in once a later one exists;
    - the person holds the chain's preparer role (step 0) for the project.
    { ok } or { ok: false, why } — why is null when the box already holds the document. */
-function wfCreateState(p, type, docs) {
+function wfCreateState(p, type, docs, pkgs = []) {
   const tt = WF.types.find(x => x.code === type) || {};
   const seq = tt.seq || 0;
-  const replacement = /replace/i.test(p.investment_type || '');
   const live = docs.filter(d => d.doc_type === type && !['cancelled', 'rejected'].includes(d.status));
   const finalAH = docs.some(d => d.doc_type === 'AH' && d.status === 'approved' && d.data && d.data.final);
   const room = tt.repeatable ? !finalAH && !live.some(d => ['draft', 'in_review', 'returned'].includes(d.status)) : !live.length;
-  const later = docs.some(d => !['rejected', 'cancelled'].includes(d.status) && wfSeq(d.doc_type) > seq);
-  if (!room || later) return { ok: false, why: null };
-  const has = (c, sts) => docs.some(d => d.doc_type === c && sts.includes(d.status));
-  const blockers = WF.types.filter(x => x.seq < seq && (x.required || (x.code === 'RR' && replacement)) && !has(x.code, ['approved'])
-    && !(x.grp && x.grp === tt.grp && has(x.code, ['in_review'])));
-  if (blockers.length) return { ok: false, why: t('wf.why.first', { list: blockers.map(x =>
-    t(x.grp && x.grp === tt.grp ? 'wf.why.sent' : 'wf.why.approved', { t: x.code })).join(', ') }) };
+  if (!room) return { ok: false, why: null };
+  if (tt.side === 'owner') return { ok: false, why: t('wf.why.owner', { t: wfLead(tt.grp) }) };
+  const pk = tt.grp ? pkgs.filter(k => k.grp === tt.grp && !['rejected', 'cancelled'].includes(k.status)).sort((a, b) => b.id - a.id)[0] : null;
+  if (tt.grp && type !== wfLead(tt.grp)) {
+    if (type === 'RR' && !wfIsReplacement(p)) return { ok: false, why: t('wf.rr.na') };
+    if (!pk) return { ok: false, why: t('wf.why.leadFirst', { t: wfLead(tt.grp) }) };
+    if (!['draft', 'returned'].includes(pk.status)) return { ok: false, why: null };
+  } else {
+    const later = docs.some(d => !['rejected', 'cancelled'].includes(d.status) && wfSeq(d.doc_type) > seq);
+    if (later) return { ok: false, why: null };
+    const has = c => docs.some(d => d.doc_type === c && d.status === 'approved');
+    const blockers = WF.types.filter(x => x.seq < seq && (!tt.grp || x.grp !== tt.grp)
+      && (x.required || (x.code === 'RR' && wfIsReplacement(p))) && !has(x.code));
+    if (blockers.length) return { ok: false, why: t('wf.why.first', { list: blockers.map(x => t('wf.why.approved', { t: x.code })).join(', ') }) };
+  }
   if (!wfCanPrepare(type, p.dept_code)) {
     const prep = wfChain(pmEntity(p.dept_code), type).find(c => c.step === 0);
     return { ok: false, why: prep ? t('wf.why.who', { role: wfRoleName(prep.role_code) }) : null };
@@ -7923,66 +7946,92 @@ function wfCreateState(p, type, docs) {
   return { ok: true };
 }
 
-/* The documents the AM team still has to draw up: a PA (or MC) whose PR / RR
-   (QC) is already in review. They sit in the To-do list, because the approval
-   group cannot reach JVC without them. */
+/* What the To-do list adds beyond documents to check or approve: the next
+   package to draw up once the one before it is approved — the QC after the
+   PR package, the PO after the QC package, the AH after the PO. */
 async function wfPrepTodos() {
   if (!ME || !can('project', 'create')) return [];
   await wfLookups();
-  const owners = WF.types.filter(x => x.side === 'owner' && x.grp).map(x => x.code);
-  const mine = owners.filter(ty => PM_ENTITIES.some(e => { const c = wfChain(e, ty).find(c => c.step === 0);
+  const next = ['QC', 'PO', 'AH'].filter(ty => PM_ENTITIES.some(e => { const c = wfChain(e, ty).find(c => c.step === 0);
     return c && ME.roles.some(r => r.role === c.role_code); }));
-  if (!mine.length) return [];
-  const [docs, projects] = await Promise.all([
-    pmSelectAll('pm_doc', 'select=id,project_code,doc_type,doc_no,status,submitted_at,final:data->final&status=not.in.(cancelled,rejected)'),
+  if (!next.length) return [];
+  const [docs, pkgs, projects] = await Promise.all([
+    pmSelectAll('pm_doc', 'select=id,project_code,doc_type,doc_no,status,pkg_id,decided_at,final:data->final&status=not.in.(cancelled,rejected)'),
+    pmSelectAll('pm_pkg', 'select=id,project_code,grp,status&status=not.in.(cancelled,rejected)'),
     pmSelectAll('pm_project', 'select=code,name,dept_code,investment_type,status&status=not.in.(completed,cancelled)')]);
-  const by = new Map();
+  const by = new Map(), pby = new Map();
   for (const d of docs) { d.data = { final: d.final === true || d.final === 'true' }; (by.get(d.project_code) || by.set(d.project_code, []).get(d.project_code)).push(d); }
+  for (const k of pkgs) (pby.get(k.project_code) || pby.set(k.project_code, []).get(k.project_code)).push(k);
   const out = [];
   for (const p of projects) {
     const pd = by.get(p.code) || [];
-    for (const ty of mine) {
-      const basis = pd.filter(d => d.status === 'in_review' && wfGrp(d.doc_type) === wfGrp(ty)).sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type));
-      if (!basis.length || !wfCreateState(p, ty, pd).ok) continue;
-      out.push({ kind: 'prepare', doc_type: ty, doc_id: basis[0].id, doc_no: basis[0].doc_no, basis: basis[0].doc_type,
-                 project_code: p.code, project_name: p.name, dept_code: p.dept_code, total_value: null,
-                 submitted_at: basis[0].submitted_at, project: p });
+    if (!pd.length) continue;
+    for (const ty of next) {
+      if (!wfCreateState(p, ty, pd, pby.get(p.code) || []).ok) continue;
+      const basis = pd.filter(d => d.status === 'approved' && wfSeq(d.doc_type) < wfSeq(ty)).sort((a, b) => wfSeq(b.doc_type) - wfSeq(a.doc_type))[0];
+      out.push({ kind: 'prepare', doc_type: ty, doc_id: basis ? basis.id : null, doc_no: basis ? basis.doc_no : '', project_code: p.code,
+                 project_name: p.name, dept_code: p.dept_code, total_value: null, submitted_at: basis ? basis.decided_at : null });
     }
   }
   return out;
 }
 
-// Create from somewhere other than the project panel: fetch the project's documents first.
+// Create from somewhere other than the project panel: fetch the project and its documents first.
 async function wfCreateFor(projectCode, type, out) {
   try {
     const [p] = await SB.select('pm_project', `select=*&code=eq.${encodeURIComponent(projectCode)}`);
-    const docs = await SB.select('pm_doc', `select=id,doc_type,doc_no,status,current_step,total_value,created_by,data&project_code=eq.${encodeURIComponent(projectCode)}&order=created_at`);
+    const docs = await SB.select('pm_doc', `select=id,doc_type,doc_no,status,pkg_id,total_value,created_by,data&project_code=eq.${encodeURIComponent(projectCode)}&order=created_at`);
     await wfCreate(p, type, docs, out);
   } catch (e) { msg(out, 'err', e.message); }
 }
 
+/* Replacement or new investment decides whether the package carries an RR.
+   The budget line usually says; when it does not, the preparer is asked once,
+   and the answer is kept on the project. */
+async function wfAskInvestment(p, host) {
+  if (p.investment_type) return p.investment_type;
+  return new Promise(ok => {
+    const box = el('div', { className: 'msg info wfask' }, [el('b', { textContent: t('wf.askInvest') }), document.createTextNode(' ')]);
+    for (const v of ['Replacement', 'New Investment']) {
+      const b = el('button', { className: 'btn tiny pri', textContent: wfOpt(v) });
+      b.onclick = async () => {
+        try { await SB.patch('pm_project', `code=eq.${encodeURIComponent(p.code)}`, { investment_type: v }); p.investment_type = v; box.remove(); ok(v); }
+        catch (e) { box.textContent = e.message; ok(null); }
+      };
+      box.append(b, document.createTextNode(' '));
+    }
+    const x = el('button', { className: 'btn tiny', textContent: t('auth.cancel') }); x.onclick = () => { box.remove(); ok(null); };
+    box.append(x);
+    host.prepend(box);
+  });
+}
+
 async function wfProjectPanel(p, host) {
   await wfLookups();
-  const docs = await SB.select('pm_doc', `select=id,doc_type,doc_no,status,current_step,version,total_value,created_by,created_email,submitted_at,decided_at,data&project_code=eq.${encodeURIComponent(p.code)}&order=created_at`);
+  const [docs, pkgs] = await Promise.all([
+    SB.select('pm_doc', `select=id,doc_type,doc_no,status,pkg_id,version,total_value,created_by,created_email,submitted_at,decided_at,data&project_code=eq.${encodeURIComponent(p.code)}&order=created_at`),
+    SB.select('pm_pkg', `select=id,grp,status,current_step,returned_to&project_code=eq.${encodeURIComponent(p.code)}&order=id`)]);
   const card = el('div', { style: 'margin-top:14px' });
   card.append(el('h2', { textContent: t('wf.docs') }));
   const strip = el('div', { className: 'wfstrip' });
-  const replacement = /replace/i.test(p.investment_type || '');
   for (const type of WF_ORDER) {
     const tt = WF.types.find(x => x.code === type) || {};
     const mine = docs.filter(d => d.doc_type === type && d.status !== 'cancelled');
-    const box = el('div', { className: 'wfbox' });
+    const box = el('div', { className: 'wfbox' + (type === 'RR' && !wfIsReplacement(p) ? ' na' : '') });
     box.append(el('div', { className: 'wft' }, [el('b', { textContent: type }), document.createTextNode(' ' + wfTypeName(type))]));
-    if (!tt.required && !(type === 'RR' && replacement)) box.append(el('div', { className: 'wfopt', textContent: t('wf.optional') }));
+    if (!tt.required && type !== 'RR') box.append(el('div', { className: 'wfopt', textContent: t('wf.optional') }));
     for (const d of mine) {
       const a = el('a', { href: '#', className: 'wfdoc' }, [el('code', { textContent: d.doc_no }), wfChip(d.status)]);
       a.onclick = ev => { ev.preventDefault(); wfOpen(d.id); };
       box.append(a);
     }
-    const st = wfCreateState(p, type, docs);
+    const st = wfCreateState(p, type, docs, pkgs);
     if (st.ok) {
       const b = el('button', { className: 'btn tiny pri', textContent: t('wf.create') });
-      b.onclick = () => wfCreate(p, type, docs);
+      b.onclick = async () => {
+        if (type === 'PR' && !(await wfAskInvestment(p, card))) return;
+        wfCreate(p, type, docs);
+      };
       box.append(b);
     } else if (st.why) box.append(el('div', { className: 'wfwhy', textContent: st.why }));   // why there is no button yet
     strip.append(box);
@@ -8000,6 +8049,300 @@ async function wfFinalLine(p) {
   return (await SB.select('pm_budget_line', `select=*&round_id=eq.${fin.id}&project_code=eq.${encodeURIComponent(p.main_code)}&limit=1`))[0] || null;
 }
 
+async function wfCreate(p, type, docs, out = '#ppMsg') {
+  try {
+    await wfLookups();
+    await wfCatLoad();
+    const make = async ty => {
+      const data = await wfPrefill(p, ty, docs);
+      Object.assign(WF, { project: p, docs, line: null });
+      WF_FORMS[ty].derive(data, wfCtx());           // fills in totals and computed boxes
+      return SB.rpc('pm_doc_create', { p_project: p.code, p_type: ty, p_data: data });
+    };
+    const id = await make(type);
+    // A replacement project's PR takes its RR along: both are filled in and sent together.
+    if (type === 'PR' && wfIsReplacement(p) && !docs.some(d => d.doc_type === 'RR' && !['cancelled', 'rejected'].includes(d.status)))
+      await make('RR');
+    await wfOpen(id);
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+/* ------------------------------------------------------------ doc screen
+   One screen per PACKAGE: its chain, its actions, and its documents shown one
+   at a time on the same page — round dots beside CONTENT (PR · RR · PA) and
+   arrows under the sheet switch between them with a page-turn, without
+   leaving the screen. */
+async function wfOpen(id) {
+  WF.openId = id;
+  showView('doc');
+}
+
+async function wfLoad() {
+  const out = $('#wdMsg');
+  if (!WF.openId) { msg(out, 'info', t('wf.noDoc')); $('#wdBody').innerHTML = ''; return; }
+  msg(out, 'info', t('table.loading'));
+  try {
+    await wfLookups();
+    await wfCatLoad();
+    const [doc] = await SB.select('pm_doc', `select=*&id=eq.${WF.openId}`);
+    if (!doc) { msg(out, 'err', t('wf.gone')); return; }
+    const [project] = await SB.select('pm_project', `select=*&code=eq.${encodeURIComponent(doc.project_code)}`);
+    const [pkgs, pdocs, steps, events, docs, years] = await Promise.all([
+      SB.select('pm_pkg', `select=*&id=eq.${doc.pkg_id}`),
+      SB.select('pm_doc', `select=*&pkg_id=eq.${doc.pkg_id}&status=neq.cancelled`),
+      SB.select('pm_pkg_step', `select=*&pkg_id=eq.${doc.pkg_id}&order=step`),
+      SB.select('pm_pkg_event', `select=*&pkg_id=eq.${doc.pkg_id}&order=at`),
+      SB.select('pm_doc', `select=id,doc_type,doc_no,status,pkg_id,total_value,data&project_code=eq.${encodeURIComponent(doc.project_code)}`),
+      SB.select('pm_budget_year', `select=*&year=eq.${project ? project.year : 0}`)
+    ]);
+    const line = project ? await wfFinalLine(project) : null;
+    const pkg = pkgs[0] || null;
+    if (!WF.pkg || !pkg || WF.pkg.id !== pkg.id) { WF.qcTab = null; WF.adminEdit = false; WF.autoMade = false; }
+    pdocs.sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type));
+    Object.assign(WF, { pkg, pdocs, project, steps, events, docs, year: years[0] || null, line: line || null, dirty: false });
+    WF.drafts = new Map(pdocs.map(d => [d.id, JSON.parse(JSON.stringify(d.data || {}))]));
+    WF.dirtyIds = new Set();
+    // Keep showing the document that was on screen (after a save or an action).
+    const keep = WF.lastOpen === WF.openId && WF.doc && pdocs.find(d => d.doc_type === WF.doc.doc_type && WF.doc.pkg_id === pkg.id);
+    WF.lastOpen = WF.openId;
+    wfSetDoc((keep || pdocs.find(d => d.id === doc.id) || doc).doc_type);
+    // The AM Coordinator at the checking step finds the PA / MC already started.
+    const cur = wfCurStep();
+    if (pkg && pkg.status === 'in_review' && cur && cur.owner_prep && !WF.autoMade && wfCanActPkg()) {
+      const missing = wfPkgTypes(pkg.grp).filter(ty => wfSide(ty) === 'owner' && !pdocs.some(d => d.doc_type === ty)
+        && wfCanPrepare(ty, project.dept_code));
+      if (missing.length) {
+        WF.autoMade = true;
+        for (const ty of missing) {
+          const data = await wfPrefill(project, ty, docs);
+          WF_FORMS[ty].derive(data, wfCtx());
+          await SB.rpc('pm_doc_create', { p_project: project.code, p_type: ty, p_data: data });
+        }
+        WF.doc = { doc_type: missing[0], pkg_id: pkg.id };      // open on the new PA / MC
+        return wfLoad();
+      }
+    }
+    msg(out, '', '');
+    wfRender();
+    // Who the package is waiting for, by name.
+    if (pkg && pkg.status === 'in_review') {
+      try {
+        const who = await SB.rpc('pm_next_actors', { p_id: WF.doc.id });
+        const n = $('#wdWho');
+        if (n) n.textContent = who.length ? who.map(w => w.full_name || w.email).join(', ') : t('wf.nobody');
+      } catch {}
+    }
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+// Put one document of the package on screen (its working copy keeps unsaved edits).
+function wfSetDoc(type) {
+  const d = WF.pdocs.find(x => x.doc_type === type) || WF.pdocs[0];
+  WF.doc = d;
+  WF.data = WF.drafts.get(d.id);
+}
+const wfCurStep = () => WF.pkg && WF.steps.find(s => s.step === WF.pkg.current_step);
+function wfCanActPkg() {
+  const s = wfCurStep();
+  return !!(WF.pkg && WF.pkg.status === 'in_review' && s && can('approval', 'approve')
+    && WF.pkg.created_by !== (ME && ME.id) && wfHasRoleFor(s.role_code, WF.project.dept_code));
+}
+// The small tag after a role: approves / checks.
+const wfKindTag = (kind, ownerPrep) => el('span', { className: 'kt kt-' + (kind || 'approve'),
+  textContent: t(ownerPrep ? 'wf.k.checkPrep' : 'wf.k.' + (kind || 'approve')) });
+
+/* Who may edit which document of the package:
+   - PR / RR / QC: their preparer while the package is a draft or came back;
+   - PA / MC: the AM Coordinator while the package sits at their checking step
+     (or JVC sent them back to the AM team);
+   - admin override: any document not cancelled, switched on with ✎. */
+function wfDocEditable(d) {
+  if (!d || !WF.pkg || !['draft', 'returned'].includes(d.status)) return false;
+  const dept = WF.project.dept_code, mine = x => x === (ME && ME.id);
+  if (wfSide(d.doc_type) === 'owner') {
+    const s = wfCurStep();
+    return WF.pkg.status === 'in_review' && !!s && s.owner_prep && (mine(d.created_by) || wfCanPrepare(d.doc_type, dept));
+  }
+  return ['draft', 'returned'].includes(WF.pkg.status) && (mine(WF.pkg.created_by) || mine(d.created_by) || wfCanPrepare(d.doc_type, dept));
+}
+const wfOwnEditable = () => wfDocEditable(WF.doc);
+// Admin override (22_admin_tools.sql): content of a document in any state but cancelled, switched on with ✎.
+const wfAdminMode = () => !!(WF.adminEdit && WF.doc && WF.doc.status !== 'cancelled' && can('override', 'edit'));
+const wfEditable = () => wfOwnEditable() || wfAdminMode();
+const wfPkgEditable = () => WF.pkg && ['draft', 'returned'].includes(WF.pkg.status)
+  && WF.pdocs.some(d => wfSide(d.doc_type) !== 'owner' && wfDocEditable(d));
+
+function wfRender() {
+  const box = $('#wdBody');
+  box.innerHTML = '';
+  const k = WF.pkg, d = WF.doc, p = WF.project || {};
+  const step = wfCurStep();
+  const nos = WF.pdocs.map(x => x.doc_no).join(' + ');
+  $('#pageTitle').textContent = WF.pdocs.length > 1 ? `${t('wf.pkg')} ${nos}` : `${d.doc_no} — ${wfTypeName(d.doc_type)}`;
+
+  // Header + actions.
+  const head = el('div', { className: 'card' });
+  const top = el('div', { className: 'row', style: 'align-items:center;flex-wrap:wrap;gap:10px;justify-content:flex-start' });
+  const back = el('a', { href: '#', textContent: '← ' + p.code + ' — ' + (p.name || '') });
+  back.onclick = ev => { ev.preventDefault(); PM.prj.open = p.code; showView('projects'); };
+  top.append(el('b', { style: 'font-size:15px', textContent: nos }), wfChip(k.status),
+             el('span', { style: 'color:var(--dim)', textContent: t('wf.version', { n: k.version }) }), back);
+  head.append(top);
+  const info = el('div', { style: 'margin-top:8px;font-size:12.5px;color:var(--dim)' });
+  info.append(document.createTextNode(t('wf.madeBy', { who: k.created_name || k.created_email || '—', at: fmtDate((k.created_at || '').slice(0, 10)) })));
+  if (k.status === 'in_review' && step) {
+    info.append(el('br'), el('span', { className: 'stg band-' + wfBand(step.role_code), textContent: t('wf.waiting', { step: step.step, role: wfRoleName(step.role_code) }) }),
+                document.createTextNode(' '), wfKindTag(step.kind, step.owner_prep), document.createTextNode(' '), el('b', { id: 'wdWho', textContent: '…' }));
+  }
+  head.append(info);
+  // Why it came back, in the words of whoever sent it.
+  const lastBack = [...WF.events].reverse().find(e => ['return', 'return_am', 'reject'].includes(e.action));
+  if (lastBack && (k.status === 'returned' || k.status === 'rejected' || (k.status === 'in_review' && k.returned_to === 'am' && step && step.owner_prep)))
+    head.append(el('div', { className: 'msg ' + (k.status === 'rejected' ? 'err' : 'warn'), style: 'margin-top:10px',
+      textContent: t('wf.back.' + lastBack.action, { who: lastBack.actor_name || lastBack.actor_email || '', note: lastBack.comment || '' }) }));
+  if (wfAdminMode()) head.append(el('div', { className: 'msg warn', style: 'margin-top:10px', textContent: t('wf.adminBanner') }));
+
+  const acts = el('div', { className: 'row', style: 'margin-top:10px;align-items:flex-end;flex-wrap:wrap' });
+  const note = el('textarea', { id: 'wdNote', placeholder: t('wf.notePh'), style: 'min-height:38px;width:340px' });
+  const btn = (k2, cls, fn) => { const b = el('button', { className: 'btn ' + (cls || ''), textContent: t(k2) }); b.onclick = fn; acts.append(b); return b; };
+  if (wfPkgEditable()) {
+    btn('wf.save', '', () => wfSave(false));
+    btn(WF.pdocs.length > 1 || wfPkgTypes(k.grp).length > 1 ? 'wf.submitPkg' : 'wf.submit', 'pri', () => wfSubmit());
+  } else if (wfAdminMode()) {
+    btn('wf.adminSave', 'pri', () => wfSave(false));
+    btn('wf.adminStop', '', () => { if (WF.dirty && !confirm(t('wf.leave'))) return; WF.adminEdit = false; wfLoad(); });
+  } else if (d.status !== 'cancelled' && can('override', 'edit')) {
+    btn('wf.adminEdit', '', () => { WF.adminEdit = true; wfRender(); });
+  }
+  if (wfCanActPkg()) {
+    acts.prepend(el('div', { className: 'fld' }, [el('label', { textContent: t('wf.note') }), note]));
+    if (step.owner_prep) {
+      if (WF.dirtyIds.size || WF.pdocs.some(x => wfSide(x.doc_type) === 'owner' && wfDocEditable(x))) btn('wf.save', '', () => wfSave(false));
+      btn('wf.checkPrepBtn', 'pri', () => wfAct('approve'));
+    } else btn(step.kind === 'check' ? 'wf.checkBtn' : WF.pdocs.length > 1 ? 'wf.approvePkg' : 'wf.approve', 'pri', () => wfAct('approve'));
+    // Back to the preparer — or, once the AM team has checked, the PA / MC alone back to them.
+    const amDone = WF.steps.some(s => s.owner_prep && s.step < step.step);
+    btn(amDone ? 'wf.returnOp' : 'wf.return', '', () => wfAct('return', 'operator'));
+    if (amDone) btn('wf.returnAm', '', () => wfAct('return', 'am'));
+    if (step.kind !== 'check') btn('wf.reject', 'danger', () => wfAct('reject'));
+  }
+  if (!['approved', 'cancelled', 'rejected'].includes(k.status)
+      && (can('project', 'admin') || (k.created_by === (ME && ME.id) && ['draft', 'returned'].includes(k.status))))
+    btn(WF.pdocs.length > 1 ? 'wf.cancelPkg' : 'wf.cancel', 'danger', () => wfCancel());
+  // An RR that turned out not to belong (the project is not a replacement after all).
+  if (wfPkgEditable() && d.doc_type !== wfLead(k.grp) && wfSide(d.doc_type) !== 'owner')
+    btn(t('wf.removeDoc', { no: d.doc_no }), '', () => wfRemoveDoc());
+  if (can('override', 'edit') && !['draft', 'cancelled'].includes(k.status)) btn('wf.adminReopen', '', () => wfAdminReopen());
+  btn('wf.print', '', () => wfPrint());
+  btn('wf.pdf', '', () => wfPdf());
+  if (d.doc_type === 'AH' && d.status === 'approved') btn('wf.toIntake', '', () => wfToIntake());
+  head.append(acts);
+  box.append(head);
+
+  // The chain of this submission (or the planned one), coloured by who acts.
+  const chain = el('div', { className: 'card' });
+  chain.append(el('h2', { textContent: t('wf.chain') }));
+  const planned = WF.steps.length ? WF.steps : wfChain(pmEntity(p.dept_code), wfLead(k.grp)).filter(c => c.step > 0)
+    .map(c => ({ step: c.step, role_code: c.role_code, kind: c.kind === 'check' ? 'check' : 'approve', status: 'planned',
+                 owner_prep: wfPkgTypes(k.grp).some(ty => wfSide(ty) === 'owner'
+                   && (wfChain(pmEntity(p.dept_code), ty).find(x => x.step === 0) || {}).role_code === c.role_code) }));
+  const stName = s => s.status === 'approved' && s.kind === 'check' ? t('wf.st.checked') : t('wf.st.' + s.status);
+  const ol = el('div', { className: 'wfsteps' });
+  const prep = wfChain(pmEntity(p.dept_code), wfLead(k.grp)).find(c => c.step === 0);
+  ol.append(el('div', { className: 'wfstep done' }, [el('span', { className: 'n', textContent: '0' }),
+    el('div', {}, [el('b', { textContent: prep ? wfRoleName(prep.role_code) : '—' }),
+                   el('small', { textContent: t('wf.preparer') + ' · ' + (k.created_name || k.created_email || '') }),
+                   ...sigImg(k.prep_signature, 'wfsig')])]));
+  for (const s of planned) {
+    const cur = k.status === 'in_review' && s.step === k.current_step;
+    const cls = s.status === 'approved' ? 'done' : ['returned', 'rejected'].includes(s.status) ? 'bad' : cur ? 'cur band-' + wfBand(s.role_code) : '';
+    const lines = [el('b', { textContent: wfRoleName(s.role_code) }), wfKindTag(s.kind, s.owner_prep)];
+    if (s.acted_at) lines.push(el('small', { textContent: `${stName(s)} · ${s.acted_name || s.acted_email} · ${fmtDate((s.acted_at || '').slice(0, 10))}` }));
+    else lines.push(el('small', { textContent: cur ? t('wf.nowHere') : s.status === 'planned' ? t('wf.planned') : stName(s) }));
+    if (s.comment) lines.push(el('small', { className: 'cm', textContent: '“' + s.comment + '”' }));
+    lines.push(...sigImg(s.signature, 'wfsig'));
+    ol.append(el('div', { className: 'wfstep ' + cls }, [el('span', { className: 'n', textContent: String(s.step) }), el('div', {}, lines)]));
+  }
+  chain.append(ol);
+  box.append(chain);
+
+  // The documents, one at a time: dots beside CONTENT, arrows under the sheet.
+  const form = el('div', { className: 'card' });
+  const pbtn = el('button', { className: 'btn', textContent: t('wf.print') }); pbtn.onclick = () => wfPrint();
+  const fbtn = el('button', { className: 'btn', textContent: t('wf.pdf') }); fbtn.onclick = () => wfPdf();
+  form.append(el('div', { className: 'chead' }, [el('div', { className: 'row', style: 'align-items:center;gap:12px' },
+    [el('h2', { textContent: t('wf.content') }), wfDots()]), el('div', { className: 'row' }, [pbtn, fbtn])]));
+  form.append(el('div', { id: 'wdWarn' }));
+  form.append(el('div', { className: 'flipwrap' }, el('div', { className: 'fscroll', id: 'wdSheet' }, fsSheet(d.doc_type, wfEditable()))));
+  form.append(wfArrows());
+  box.append(form);
+  wfWarnRender();
+
+  // History of the package.
+  const hist = el('details', { className: 'card' });
+  hist.append(el('summary', { textContent: t('wf.history', { n: WF.events.length }) }));
+  const tb = el('table');
+  tb.append(el('tr', {}, ['wf.h.at', 'wf.h.who', 'wf.h.action', 'wf.h.step', 'wf.h.note'].map(k2 => el('th', { textContent: t(k2) }))));
+  for (const e of WF.events) tb.append(el('tr', {}, [
+    el('td', { textContent: fmtDateTime(e.at) }),
+    el('td', { textContent: e.actor_name || e.actor_email || '' }), el('td', { textContent: t('wf.a.' + e.action) }),
+    el('td', { textContent: e.step != null ? String(e.step) : '' }), el('td', { style: 'white-space:normal', textContent: e.comment || '' })]));
+  hist.append(el('div', { className: 'wrap' }, tb));
+  box.append(hist);
+}
+
+/* The dots: every type of the package in order. A type not in the package yet
+   is grey — RR on a new investment ("not applicable"), PA / MC before the AM
+   team's checking step. */
+function wfDotTypes() {
+  const k = WF.pkg;
+  return wfPkgTypes(k.grp).map(ty => {
+    const d = WF.pdocs.find(x => x.doc_type === ty);
+    const why = d ? '' : ty === 'RR' && !wfIsReplacement(WF.project) ? t('wf.rr.na')
+      : wfSide(ty) === 'owner' ? t('wf.why.owner', { t: wfLead(k.grp) }) : t('wf.dotNone');
+    return { ty, d, why };
+  });
+}
+function wfDots() {
+  const list = wfDotTypes();
+  if (list.length < 2) return '';
+  return el('div', { className: 'wfdots' }, list.map(({ ty, d, why }) => {
+    const b = el('button', { className: 'wfdot' + (d && d.doc_type === WF.doc.doc_type ? ' on' : '') + (d ? '' : ' off'),
+      title: d ? `${d.doc_no} — ${wfTypeName(ty)}` : `${ty} — ${why}`, disabled: !d },
+      [el('b', { textContent: ty }), d ? el('i', { className: 'st wf-' + d.status }) : '']);
+    if (d) b.onclick = () => wfShow(ty);
+    return b;
+  }));
+}
+function wfArrows() {
+  const list = wfDotTypes().filter(x => x.d);
+  if (list.length < 2) return '';
+  const i = list.findIndex(x => x.ty === WF.doc.doc_type);
+  const prev = el('button', { className: 'btn wfarrow', textContent: '‹', title: list[i - 1] ? list[i - 1].d.doc_no : '', disabled: i <= 0 });
+  const next = el('button', { className: 'btn wfarrow', textContent: '›', title: list[i + 1] ? list[i + 1].d.doc_no : '', disabled: i >= list.length - 1 });
+  prev.onclick = () => wfShow(list[i - 1].ty);
+  next.onclick = () => wfShow(list[i + 1].ty);
+  return el('div', { className: 'wfnav' }, [el('span', { className: 'wfpg', textContent: `${i + 1} / ${list.length}` }), prev, next]);
+}
+
+// Turn the page to another document of the package, the way a binder turns.
+function wfShow(type) {
+  if (!WF.doc || type === WF.doc.doc_type) return;
+  const order = wfPkgTypes(WF.pkg.grp);
+  const fwd = order.indexOf(type) > order.indexOf(WF.doc.doc_type);
+  const wrap = document.querySelector('#wdBody .flipwrap');
+  const swap = () => { wfSetDoc(type); wfRender(); };
+  if (!wrap || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return swap();
+  wrap.classList.add(fwd ? 'turn-out-fwd' : 'turn-out-back');
+  setTimeout(() => {
+    swap();
+    const w2 = document.querySelector('#wdBody .flipwrap');
+    if (!w2) return;
+    w2.classList.add(fwd ? 'turn-in-fwd' : 'turn-in-back');
+    setTimeout(() => w2.classList.remove('turn-in-fwd', 'turn-in-back'), 260);
+  }, 220);
+}
+
 async function wfPrefill(p, type, docs) {
   // The approved one, else the one in review: the PA is drawn up while its PR is still being checked.
   const get = tp => docs.find(d => d.doc_type === tp && d.status === 'approved') || docs.find(d => d.doc_type === tp && d.status === 'in_review');
@@ -8010,19 +8353,26 @@ async function wfPrefill(p, type, docs) {
   const qA = (qc.vendors || [])[0] || {};                     // vendor A = the chosen vendor
   const qItems = (qc.qlines || []).length ? qc.qlines.map((l, i) => ({ item: l.item, qty: l.qty, price: (qA.prices || {})[i], spec: (qA.specs || {})[i] }))
                                           : prLines.map(l => ({ item: l.asset_item, qty: l.qty, price: l.unit_price, spec: l.tech_standard }));
-  if (type === 'PR') return {
-    request_date: today, project_type: 'Non-consultancy',
-    investment_type: p.investment_type || line.investment_type || 'Replacement',
-    budget: p.budgeted ? 'Budgeted' : 'Unbudgeted', share_pct: p.share_pct != null ? Number(p.share_pct) : 1,
-    possibility: p.possibility ?? line.possibility ?? null, impact: p.impact ?? line.impact ?? null,
-    reason: p.reason || line.reason || '', cost_benchmark: line.reference || 'Quotation',
-    supplier: p.proposed_supplier || line.supplier || '',
-    lines: [{ asset_item: p.asset_item || line.asset_item || '', rationale: line.rationale || p.rationale || '',
-              tech_standard: line.tech_standard || p.tech_standard || '', location: p.location || line.location || '',
-              qty: line.quantity ?? 1, unit_price: line.unit_price ?? p.estimated_value ?? null }]
-  };
-  if (type === 'RR') return { replacement_level: 'Full replacement', after_replacement: 'Liquidation',
-                              lines: [{ qty: 1, unit: 'pcs' }], evidence: [] };
+  if (type === 'PR') {
+    // Asset item and location only from the catalogues (Master data): the
+    // budget line's words are matched to a catalogue entry, or left empty.
+    const item = wfCatProduct(p.asset_item || line.asset_item || '');
+    return {
+      request_date: today, project_type: 'Non-consultancy', category: p.category || 'FFE', currency: 'VND',
+      investment_type: p.investment_type || line.investment_type || 'Replacement',
+      budget: p.budgeted ? 'Budgeted' : 'Unbudgeted', share_pct: p.share_pct != null ? Number(p.share_pct) : 1,
+      possibility: p.possibility ?? line.possibility ?? null, impact: p.impact ?? line.impact ?? null,
+      reason: p.reason || line.reason || '',
+      cost_benchmark: ['Quotation', 'Previous Project', 'Price Reference'].includes(line.reference) ? line.reference : 'Quotation',
+      supplier: p.proposed_supplier || line.supplier || '', notes: '- Warranty time: \n- Delivery time: \n- Other: ',
+      lines: [{ asset_item: item ? item.name : '', unit: item ? item.unit : null, rationale: line.rationale || p.rationale || '',
+                tech_standard: line.tech_standard || p.tech_standard || '', location: wfCatLocation(p.location || line.location || ''),
+                qty: line.quantity ?? 1, unit_price: line.unit_price ?? p.estimated_value ?? null }]
+    };
+  }
+  if (type === 'RR') return { replacement_level: 'Full replacement', after_replacement: 'Liquidation', currency: 'VND',
+                              request_date: pr.request_date || today,
+                              lines: [{ qty: 1, after: 'Reuse' }], evidence: [] };
   if (type === 'PA') return {
     date: today, comparability: 'Comparable', risk_category: '', emergency: false, recommendation: '', comments: '',
     // The committee on the workbook's example; edit the names when people change.
@@ -8062,221 +8412,6 @@ async function wfPrefill(p, type, docs) {
   return {};
 }
 
-async function wfCreate(p, type, docs, out = '#ppMsg') {
-  try {
-    const data = await wfPrefill(p, type, docs);
-    Object.assign(WF, { project: p, docs, line: null });
-    WF_FORMS[type].derive(data, wfCtx());           // fills in totals and computed boxes
-    const id = await SB.rpc('pm_doc_create', { p_project: p.code, p_type: type, p_data: data });
-    await wfOpen(id);
-  } catch (e) { msg(out, 'err', e.message); }
-}
-
-/* ------------------------------------------------------------ doc screen */
-async function wfOpen(id) {
-  WF.openId = id;
-  showView('doc');
-}
-
-async function wfLoad() {
-  const out = $('#wdMsg');
-  if (!WF.openId) { msg(out, 'info', t('wf.noDoc')); $('#wdBody').innerHTML = ''; return; }
-  msg(out, 'info', t('table.loading'));
-  try {
-    await wfLookups();
-    const [doc] = await SB.select('pm_doc', `select=*&id=eq.${WF.openId}`);
-    if (!doc) { msg(out, 'err', t('wf.gone')); return; }
-    const [project] = await SB.select('pm_project', `select=*&code=eq.${encodeURIComponent(doc.project_code)}`);
-    const [steps, events, docs, years] = await Promise.all([
-      SB.select('pm_doc_step', `select=*&doc_id=eq.${doc.id}&order=step`),
-      SB.select('pm_doc_event', `select=*&doc_id=eq.${doc.id}&order=at`),
-      SB.select('pm_doc', `select=id,doc_type,doc_no,status,current_step,total_value,data&project_code=eq.${encodeURIComponent(doc.project_code)}`),
-      SB.select('pm_budget_year', `select=*&year=eq.${project ? project.year : 0}`)
-    ]);
-    const line = project ? await wfFinalLine(project) : null;
-    if (!WF.doc || WF.doc.id !== doc.id) { WF.qcTab = null; WF.adminEdit = false; }   // a different document opens on its default tab, not in admin edit
-    Object.assign(WF, { doc, project, steps, events, docs, year: years[0] || null, line: line || null, dirty: false });
-    WF.data = JSON.parse(JSON.stringify(doc.data || {}));
-    WF.pair = await wfGroupState(doc, steps.find(s => s.step === doc.current_step), docs, project).catch(() => null);
-    msg(out, '', '');
-    wfRender();
-    // Who the document is waiting for, by name.
-    if (doc.status === 'in_review') {
-      try {
-        const who = await SB.rpc('pm_next_actors', { p_id: doc.id });
-        const n = $('#wdWho');
-        if (n) n.textContent = who.length ? who.map(w => w.full_name || w.email).join(', ') : t('wf.nobody');
-      } catch {}
-    }
-  } catch (e) { msg(out, 'err', e.message); }
-}
-
-/* A document at a "joint" step (JVC approves PR + RR + PA, QC + MC in one go):
-   where the rest of its group is — the client mirror of pm_pair_state.
-   null = nothing to wait for or approve with; otherwise
-   { missing: [types not drawn up], behind: [docs not there yet],
-     together: [docs approved with it], wait: 'missing' | 'behind' | null, label }. */
-async function wfGroupState(doc, cur, docs, project) {
-  if (!doc || doc.status !== 'in_review' || !cur || cur.kind !== 'joint') return null;
-  const others = wfGrpOthers(doc.doc_type);
-  if (!others.length) return null;
-  const out = { missing: [], behind: [], together: [] };
-  for (const ty of others) {
-    const pd = docs.filter(x => x.doc_type === ty && !['cancelled', 'rejected'].includes(x.status)).sort((a, b) => b.id - a.id)[0];
-    if (!pd) { if (wfGrpNeeded(ty, project, [])) out.missing.push(ty); continue; }
-    if (pd.status === 'approved') continue;
-    if (pd.status !== 'in_review') { out.behind.push(pd); continue; }
-    const ps = await SB.select('pm_doc_step', `select=step,role_code,kind,status&doc_id=eq.${pd.id}&order=step`);
-    const m = ps.find(s => s.role_code === cur.role_code && s.kind === 'joint' && s.status === 'pending');
-    if (!m) continue;
-    (pd.current_step === m.step ? out.together : out.behind).push(pd);
-  }
-  out.wait = out.missing.length ? 'missing' : out.behind.length ? 'behind' : null;
-  if (!out.wait && !out.together.length) return null;
-  // "PR + RR + PA": the group as it stands for this project.
-  out.label = [doc.doc_type, ...out.missing, ...out.behind.map(x => x.doc_type), ...out.together.map(x => x.doc_type)]
-    .sort((a, b) => wfSeq(a) - wfSeq(b)).join(' + ');
-  return out;
-}
-// The small tag after a role: approves / checks / approves together with PA.
-const wfKindTag = (kind, pair) => el('span', { className: 'kt kt-' + (kind || 'approve'),
-  textContent: t('wf.k.' + (kind || 'approve'), { pair: pair || '' }) });
-
-// The preparer's own editing: a draft or a returned document.
-const wfOwnEditable = () => WF.doc && ['draft', 'returned'].includes(WF.doc.status)
-  && (WF.doc.created_by === (ME && ME.id) || wfCanPrepare(WF.doc.doc_type, WF.project.dept_code));
-// Admin override (22_admin_tools.sql): content of a document in any state but cancelled, switched on with ✎.
-const wfAdminMode = () => !!(WF.adminEdit && WF.doc && WF.doc.status !== 'cancelled' && can('override', 'edit'));
-const wfEditable = () => wfOwnEditable() || wfAdminMode();
-
-function wfRender() {
-  const box = $('#wdBody');
-  box.innerHTML = '';
-  const d = WF.doc, p = WF.project || {};
-  const step = WF.steps.find(s => s.step === d.current_step);
-  const edit = wfEditable();
-  $('#pageTitle').textContent = `${d.doc_no} — ${wfTypeName(d.doc_type)}`;
-
-  // Header + actions.
-  const head = el('div', { className: 'card' });
-  const top = el('div', { className: 'row', style: 'align-items:center;flex-wrap:wrap;gap:10px;justify-content:flex-start' });
-  const back = el('a', { href: '#', textContent: '← ' + p.code + ' — ' + (p.name || '') });
-  back.onclick = ev => { ev.preventDefault(); PM.prj.open = p.code; showView('projects'); };
-  top.append(el('b', { style: 'font-size:15px', textContent: d.doc_no }), wfChip(d.status),
-             el('span', { style: 'color:var(--dim)', textContent: t('wf.version', { n: d.version }) }), back);
-  head.append(top);
-  const info = el('div', { style: 'margin-top:8px;font-size:12.5px;color:var(--dim)' });
-  info.append(document.createTextNode(t('wf.madeBy', { who: d.created_email || '—', at: fmtDate((d.created_at || '').slice(0, 10)) })));
-  const pairType = wfGrpOthers(d.doc_type).join('/');
-  if (d.status === 'in_review' && step) {
-    info.append(el('br'), document.createTextNode(t('wf.waiting', { step: step.step, role: wfRoleName(step.role_code) }) + ' '),
-                wfKindTag(step.kind, pairType), document.createTextNode(' '), el('b', { id: 'wdWho', textContent: '…' }));
-  }
-  head.append(info);
-  // Joint step: JVC approves the whole group together — say where the rest is.
-  const pr = WF.pair;
-  const jointMsg = () => pr.wait === 'missing' ? t('wf.joint.missing', { grp: pr.label, miss: pr.missing.join(', ') })
-    : pr.wait === 'behind' ? t('wf.joint.behind', { grp: pr.label, no: pr.behind.map(x => x.doc_no).join(', ') })
-    : t('wf.joint.ready', { no: pr.together.map(x => x.doc_no).join(' + ') });
-  if (pr) {
-    const jb = el('div', { className: 'msg ' + (pr.wait ? 'warn' : 'info'), style: 'margin-top:10px' });
-    jb.append(document.createTextNode(jointMsg()));
-    for (const x of [...pr.behind, ...pr.together]) {
-      const a = el('a', { href: '#', style: 'margin-left:10px', textContent: t('wf.joint.open', { no: x.doc_no }) });
-      a.onclick = ev => { ev.preventDefault(); wfOpen(x.id); };
-      jb.append(a);
-    }
-    head.append(jb);
-  }
-
-  if (wfAdminMode()) head.append(el('div', { className: 'msg warn', style: 'margin-top:10px', textContent: t('wf.adminBanner') }));
-  const acts = el('div', { className: 'row', style: 'margin-top:10px;align-items:flex-end;flex-wrap:wrap' });
-  const note = el('textarea', { id: 'wdNote', placeholder: t('wf.notePh'), style: 'min-height:38px;width:340px' });
-  const btn = (k, cls, fn) => { const b = el('button', { className: 'btn ' + (cls || ''), textContent: t(k) }); b.onclick = fn; acts.append(b); return b; };
-  if (wfOwnEditable()) {
-    btn('wf.save', '', () => wfSave(false));
-    btn('wf.submit', 'pri', () => wfSubmit());
-  } else if (wfAdminMode()) {
-    btn('wf.adminSave', 'pri', () => wfSave(false));
-    btn('wf.adminStop', '', () => { if (WF.dirty && !confirm(t('wf.leave'))) return; WF.adminEdit = false; wfLoad(); });
-  } else if (d.status !== 'cancelled' && can('override', 'edit')) {
-    btn('wf.adminEdit', '', () => { WF.adminEdit = true; wfRender(); });
-  }
-  // Admin override: back to draft, so the preparer can change it and send it again.
-  if (can('override', 'edit') && !['draft', 'cancelled'].includes(d.status)) btn('wf.adminReopen', '', () => wfAdminReopen());
-  if (wfCanAct(d, step, p.dept_code)) {
-    acts.prepend(el('div', { className: 'fld' }, [el('label', { textContent: t('wf.note') }), note]));
-    // AM team CHECKS (and may send back to the preparer) — it does not approve or reject.
-    if (step.kind === 'check') btn('wf.checkBtn', 'pri', () => wfAct('approve'));
-    else if (pr) {
-      const b = btn('wf.approve', 'pri', () => wfAct('approve'));
-      if (pr.wait) { b.disabled = true; b.title = jointMsg(); }
-      else b.textContent = t('wf.approveJoint', { list: [d, ...pr.together].sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type)).map(x => x.doc_no).join(' + ') });
-    } else btn('wf.approve', 'pri', () => wfAct('approve'));
-    btn('wf.return', '', () => wfAct('return'));
-    if (step.kind !== 'check') btn('wf.reject', 'danger', () => wfAct('reject'));
-  }
-  if (!['approved', 'cancelled'].includes(d.status)
-      && (can('project', 'admin') || (d.created_by === (ME && ME.id) && ['draft', 'returned'].includes(d.status))))
-    btn('wf.cancel', 'danger', () => wfCancel());
-  // From a PR / RR (QC) in review: draw up the PA (MC) of its group straight
-  // away — AM lands here to check the PR, and the PA is the basis JVC approves on.
-  if (['in_review', 'approved'].includes(d.status) && WF.types.find(x => x.code === d.doc_type)?.side === 'operator')
-    for (const ty of wfGrpOthers(d.doc_type).filter(x => WF.types.find(y => y.code === x)?.side === 'owner'))
-      if (wfCreateState(p, ty, WF.docs).ok) btn(t('wf.createType', { t: ty }), 'pri', () => wfCreate(p, ty, WF.docs, '#wdMsg'));
-  btn('wf.print', '', () => wfPrint());
-  btn('wf.pdf', '', () => wfPdf());
-  if (d.doc_type === 'AH' && d.status === 'approved') btn('wf.toIntake', '', () => wfToIntake());
-  head.append(acts);
-  box.append(head);
-
-  // Chain of this submission.
-  const chain = el('div', { className: 'card' });
-  chain.append(el('h2', { textContent: t('wf.chain') }));
-  const planned = WF.steps.length ? WF.steps : wfChain(pmEntity(p.dept_code), d.doc_type).filter(c => c.step > 0)
-    .map(c => ({ step: c.step, role_code: c.role_code, kind: c.kind, status: 'planned' }));
-  // A passed check step reads "Checked", not "Approved".
-  const stName = s => s.status === 'approved' && s.kind === 'check' ? t('wf.st.checked') : t('wf.st.' + s.status);
-  const ol = el('div', { className: 'wfsteps' });
-  const prep = wfChain(pmEntity(p.dept_code), d.doc_type).find(c => c.step === 0);
-  ol.append(el('div', { className: 'wfstep done' }, [el('span', { className: 'n', textContent: '0' }),
-    el('div', {}, [el('b', { textContent: prep ? wfRoleName(prep.role_code) : '—' }), el('small', { textContent: t('wf.preparer') + ' · ' + (d.created_email || '') }),
-                   ...sigImg(d.prep_signature, 'wfsig')])]));
-  for (const s of planned) {
-    const cur = d.status === 'in_review' && s.step === d.current_step;
-    const cls = s.status === 'approved' ? 'done' : ['returned', 'rejected'].includes(s.status) ? 'bad' : cur ? 'cur' : '';
-    const lines = [el('b', { textContent: wfRoleName(s.role_code) }), wfKindTag(s.kind, pairType)];
-    if (s.acted_email) lines.push(el('small', { textContent: `${stName(s)} · ${s.acted_email} · ${fmtDate((s.acted_at || '').slice(0, 10))}` }));
-    else lines.push(el('small', { textContent: cur ? t('wf.nowHere') : s.status === 'planned' ? t('wf.planned') : stName(s) }));
-    if (s.comment) lines.push(el('small', { className: 'cm', textContent: '“' + s.comment + '”' }));
-    lines.push(...sigImg(s.signature, 'wfsig'));
-    ol.append(el('div', { className: 'wfstep ' + cls }, [el('span', { className: 'n', textContent: String(s.step) }), el('div', {}, lines)]));
-  }
-  chain.append(ol);
-  box.append(chain);
-
-  // The form, drawn as the workbook sheet.
-  const form = el('div', { className: 'card' });
-  const pbtn = el('button', { className: 'btn', textContent: t('wf.print') }); pbtn.onclick = () => wfPrint();
-  const fbtn = el('button', { className: 'btn', textContent: t('wf.pdf') }); fbtn.onclick = () => wfPdf();
-  form.append(el('div', { className: 'chead' }, [el('h2', { textContent: t('wf.content') }), el('div', { className: 'row' }, [pbtn, fbtn])]));
-  form.append(el('div', { id: 'wdWarn' }));
-  form.append(el('div', { className: 'fscroll' }, fsSheet(d.doc_type, edit)));
-  box.append(form);
-  wfWarnRender();
-
-  // History.
-  const hist = el('details', { className: 'card' });
-  hist.append(el('summary', { textContent: t('wf.history', { n: WF.events.length }) }));
-  const tb = el('table');
-  tb.append(el('tr', {}, ['wf.h.at', 'wf.h.who', 'wf.h.action', 'wf.h.step', 'wf.h.note'].map(k => el('th', { textContent: t(k) }))));
-  for (const e of WF.events) tb.append(el('tr', {}, [
-    el('td', { textContent: fmtDateTime(e.at) }),
-    el('td', { textContent: e.actor_email || '' }), el('td', { textContent: t('wf.a.' + e.action) }),
-    el('td', { textContent: e.step != null ? String(e.step) : '' }), el('td', { style: 'white-space:normal', textContent: e.comment || '' })]));
-  hist.append(el('div', { className: 'wrap' }, tb));
-  box.append(hist);
-}
 
 /* ============================================================ FORM SHEETS
    Every procurement document is drawn as the sheet the departments know from
@@ -8449,7 +8584,7 @@ function fsLinks(x, title = 'ATTACHMENTS / TÀI LIỆU ĐÍNH KÈM') {
     if (x.edit) {
       const lab = el('input', { value: e.label || '', placeholder: t('wf.evLabel') });
       const u = el('input', { value: e.url || '', placeholder: 'https://…sharepoint.com/…', spellcheck: false });
-      lab.onchange = () => { e.label = lab.value.trim(); WF.dirty = true; };
+      lab.onchange = () => { e.label = lab.value.trim(); wfMarkDirty(); };
       u.onchange = () => { e.url = u.value.trim(); x.rr(); };
       const del = el('button', { className: 'xbtn', textContent: '×' }); del.onclick = () => { d.evidence.splice(i, 1); x.rr(); };
       box.append(el('div', { className: 'fl2' }, [el('div', { className: 'fv' }, lab), el('div', { className: 'fv' }, u), del,
@@ -8461,28 +8596,8 @@ function fsLinks(x, title = 'ATTACHMENTS / TÀI LIỆU ĐÍNH KÈM') {
   return el('div', {}, [fsBar(title), box]);
 }
 
-/* "Consent by": the preparer, then each approval step of the chain — signature
-   image, who, when. Before submission the chain shows the planned roles. */
-const wfRoleEn = code => { const r = WF.roles.find(x => x.code === code); return r ? r.name_en : code; };
-function fsConsent(x, label = 'Consent by:') {
-  const doc = WF.doc, p = x.p;
-  const chain = wfChain(pmEntity(p.dept_code), doc.doc_type);
-  const prep = chain.find(c => c.step === 0);
-  const steps = WF.steps.length ? WF.steps : chain.filter(c => c.step > 0).map(c => ({ step: c.step, role_code: c.role_code, kind: c.kind }));
-  const boxes = [{ role: 'Prepared by / Người lập', sub: prep ? wfRoleEn(prep.role_code) : '', sig: doc.prep_signature,
-                   who: doc.submitted_at ? doc.created_email : '', at: doc.submitted_at },
-                 // The AM team's boxes read "Checked by" — they check, JVC approves.
-                 ...steps.map(s => ({ role: wfRoleEn(s.role_code),
-                                      sub: s.status && s.status !== 'pending' && s.status !== 'approved' ? t('wf.st.' + s.status)
-                                         : s.kind === 'check' ? 'Checked by / Kiểm tra' : 'Approved by / Duyệt',
-                                      sig: s.status === 'approved' && s.signature, who: s.acted_email || '', at: s.status === 'approved' ? s.acted_at : null }))];
-  return el('div', { className: 'fconsent' }, [el('div', { className: 'fct', textContent: label }),
-    el('div', { className: 'fsigs' }, boxes.map(b => el('div', { className: 'fsig' }, [
-      el('div', { className: 'sr', textContent: b.role }), el('div', { className: 'ss', textContent: b.sub || ' ' }),
-      el('div', { className: 'simg' }, sigPng(b.sig) ? el('img', { src: sigPng(b.sig), alt: '' }) : ''),
-      el('div', { className: 'sn', textContent: b.who || ' ' }),
-      el('div', { className: 'sd', textContent: b.at ? fmtDate(String(b.at).slice(0, 10)) : ' ' })])))]);
-}
+// A change on the sheet on screen: remember which document of the package to save.
+const wfMarkDirty = () => { WF.dirty = true; if (WF.dirtyIds && WF.doc) WF.dirtyIds.add(WF.doc.id); };
 
 /* The sheet for the open document. Re-drawn after every change, so computed
    boxes follow what is typed. */
@@ -8494,9 +8609,9 @@ function fsSheet(type, edit, mode = 'screen') {
   MONEY.year = x.p.year;
   const lock = MONEY.lock;
   MONEY.lock = edit;
-  x.rr = () => { WF.dirty = true; const n = fsSheet(type, edit, mode); x.root.replaceWith(n); wfWarnRender(); };
+  x.rr = () => { wfMarkDirty(); const n = fsSheet(type, edit, mode); x.root.replaceWith(n); wfWarnRender(); };
   try {
-    x.root = el('div', { className: `fsheet ${form.orient} ${edit ? 'edit' : 'print'}${form.wide ? ' wide' : ''}` }, form.build(x));
+    x.root = el('div', { className: `fsheet ${form.orient} ${edit ? 'edit' : 'print'}${form.wide ? ' wide' : ''}${form.xs ? ' xs' : ''}` }, form.build(x));
   } finally { MONEY.lock = lock; }
   return x.root;
 }
@@ -8509,6 +8624,8 @@ function wfWarnRender() {
   const d = WF.data, c = wfCtx(), ty = WF.doc.doc_type;
   const put = (kind, text) => box.append(el('div', { className: 'msg ' + kind, textContent: text }));
   if (wfEditable()) put('info', t('wf.fillHint'));
+  // Not on the workbook sheet, so said beside it: what the procurement decision matrix suggests.
+  if (ty === 'PR' && d.procurement_suggested && wfEditable()) put(d.procurement_type === d.procurement_suggested ? 'ok' : 'warn', t('wf.pr.suggest', { v: d.procurement_suggested }));
   if (ty === 'PA') { const g = paGate(d, c); put(g.ok ? 'ok' : 'warn', g.text); }
   if (ty === 'QC') { const r = qcScore(d); if (r.problems.length) put('warn', r.problems.join('\n')); else if (r.best) put('ok', t('wf.qc.ok', { v: d.chosen_vendor, s: r.best.total })); }
   if (ty === 'MC' && d.mc_over && d.mc_over.length) put('warn', t('wf.mc.over', { items: d.mc_over.join(', ') }));
@@ -8562,85 +8679,371 @@ function fsProjectBlock(x, right = []) {
                  fc('SUPPLIER', I(x, x.d, 'supplier', 'text'), 4)]);
 }
 
+/* --------------------------------------------------- catalogues (Master data)
+   The PR / RR boxes for asset item, location and unit take only entries of the
+   catalogues: Product catalogue (am_product, written "Tiếng Việt/English" as
+   the workbook's Menu!M does), Location (am_location — stored by code, shown
+   "CODE - NAME"), Unit (am_unit). What is missing is added to Master data by
+   the AM team; it cannot be typed in here. */
+const WF_CAT = { loaded: false, products: new Map(), prodNorm: new Map(), locs: new Map(), locNorm: new Map(), units: [] };
+const wfProdLabel = p => [p.std_name_vi, p.std_name_en].map(s => String(s || '').trim()).filter(Boolean).join('/');
+const wfNormName = s => hnorm(String(s || '').replace(/\s*\/\s*/g, '/'));
+const wfLocLabel = l => `${l.code} - ${String(l.name || '').toUpperCase()}`;
+async function wfCatLoad(force) {
+  if (WF_CAT.loaded && !force) return;
+  const [prods, locs, units] = await Promise.all([
+    pmSelectAll('am_product', 'select=std_name_vi,std_name_en,default_unit&order=std_name_vi').catch(() => []),
+    pmSelectAll('am_location', 'select=code,name,active&order=code').catch(() => []),
+    SB.select('am_unit', 'select=code&order=sort_order').catch(() => [])]);
+  WF_CAT.products = new Map(); WF_CAT.prodNorm = new Map();
+  for (const p of prods) {
+    const lbl = wfProdLabel(p);
+    if (!lbl || WF_CAT.products.has(lbl)) continue;
+    WF_CAT.products.set(lbl, p);
+    WF_CAT.prodNorm.set(wfNormName(lbl), lbl);
+    const vi = wfNormName(p.std_name_vi);
+    if (vi && !WF_CAT.prodNorm.has(vi)) WF_CAT.prodNorm.set(vi, lbl);
+  }
+  WF_CAT.locs = new Map(locs.filter(l => l.active !== false).map(l => [l.code, l]));
+  WF_CAT.locNorm = new Map();
+  for (const l of WF_CAT.locs.values()) {
+    WF_CAT.locNorm.set(hnorm(l.code), l.code);
+    if (l.name && !WF_CAT.locNorm.has(hnorm(l.name))) WF_CAT.locNorm.set(hnorm(l.name), l.code);
+  }
+  WF_CAT.units = units.map(u => u.code);
+  // The type-ahead lists behind the boxes.
+  const put = (id, values) => {
+    let dl = document.getElementById(id);
+    if (!dl) { dl = el('datalist', { id }); document.body.append(dl); }
+    dl.innerHTML = '';
+    for (const v of values) dl.append(el('option', { value: v }));
+  };
+  put('wfProdList', WF_CAT.products.keys());
+  put('wfLocList', [...WF_CAT.locs.values()].map(wfLocLabel));
+  WF_CAT.loaded = true;
+}
+// The catalogue entry for a name as the budget or a person wrote it: { name, unit } or null.
+function wfCatProduct(text) {
+  const k = WF_CAT.prodNorm.get(wfNormName(text));
+  if (!k) return null;
+  return { name: k, unit: WF_CAT.products.get(k).default_unit || null };
+}
+const wfCatHasProduct = v => WF_CAT.products.has(v);
+// The location code for what was written (a code, a name, or "CODE - NAME"), or ''.
+function wfCatLocation(text) {
+  const s = String(text || '').trim();
+  if (!s) return '';
+  return WF_CAT.locNorm.get(hnorm(s.split(' - ')[0].trim())) || WF_CAT.locNorm.get(hnorm(s)) || '';
+}
+
+// Asset item: a type-ahead on the Product catalogue; anything else is refused.
+function wfPickProduct(x, l, k = 'asset_item') {
+  if (!x.edit) return fsR(l[k]);
+  const i = el('input', { value: l[k] || '', spellcheck: false, className: l[k] && !wfCatHasProduct(l[k]) ? 'bad' : '',
+                          title: l[k] && !wfCatHasProduct(l[k]) ? t('wf.cat.product', { v: l[k] }) : '' });
+  i.setAttribute('list', 'wfProdList');
+  i.onchange = () => {
+    const v = i.value.trim();
+    if (!v) { l[k] = null; x.rr(); return; }
+    const hit = WF_CAT.products.has(v) ? { name: v, unit: WF_CAT.products.get(v).default_unit } : wfCatProduct(v);
+    if (!hit) { i.classList.add('bad'); i.value = l[k] || ''; msg('#wdMsg', 'warn', t('wf.cat.product', { v })); return; }
+    l[k] = hit.name;
+    if (hit.unit) l.unit = hit.unit;                   // PR keeps the unit out of sight, for the documents after it
+    msg('#wdMsg', '', '');
+    x.rr();
+  };
+  return i;
+}
+// Location: a type-ahead on the Location catalogue, stored by code.
+function wfPickLoc(x, l) {
+  const cur = WF_CAT.locs.get(l.location);
+  if (!x.edit) return fsR(cur ? wfLocLabel(cur) : (l.location || ''));
+  const i = el('input', { value: cur ? wfLocLabel(cur) : (l.location || ''), spellcheck: false, className: l.location && !cur ? 'bad' : '' });
+  i.setAttribute('list', 'wfLocList');
+  i.onchange = () => {
+    const v = i.value.trim();
+    if (!v) { l.location = null; x.rr(); return; }
+    const code = wfCatLocation(v);
+    if (!code) { i.classList.add('bad'); i.value = cur ? wfLocLabel(cur) : ''; msg('#wdMsg', 'warn', t('wf.cat.location', { v })); return; }
+    l.location = code;
+    msg('#wdMsg', '', '');
+    x.rr();
+  };
+  return i;
+}
+// Unit: the Unit catalogue.
+const wfPickUnit = (x, l) => x.edit ? wfInput({ k: 'unit', t: 'select', opts: WF_CAT.units }, l, true, x.rr, []) : fsR(l.unit);
+
+/* RR asset code: search the register (the project's department first) as you
+   type; an exact code fills Asset Item, Unit and Original value from the
+   register, so two assets with the same name are told apart by their code. */
+function wfPickAsset(x, l) {
+  if (!x.edit) return fsR(l.asset_code);
+  const i = el('input', { value: l.asset_code || '', spellcheck: false });
+  i.setAttribute('list', 'wfAssetList');
+  let tmr = null;
+  i.oninput = () => {
+    clearTimeout(tmr);
+    const q = i.value.trim();
+    if (q.length >= 3) tmr = setTimeout(() => wfAssetSearch(q).catch(() => {}), 250);
+  };
+  i.onchange = async () => {
+    l.asset_code = i.value.trim().toUpperCase() || null;
+    try { await wfAssetFill(l); } catch (e) { msg('#wdMsg', 'err', e.message); }
+    x.rr();
+  };
+  return i;
+}
+async function wfAssetSearch(q) {
+  const dept = (WF.project || {}).dept_code;
+  const pat = encodeURIComponent(`*${q.replace(/[*(),]/g, '')}*`);
+  const sel = where => SB.select('am_asset', `select=asset_code,name_vi,name_en&or=(asset_code.ilike.${pat},name_vi.ilike.${pat},name_en.ilike.${pat})${where}&order=asset_code&limit=25`);
+  let rows = dept ? await sel(`&dept_code=eq.${encodeURIComponent(dept)}`) : [];
+  if (!rows.length) rows = await sel('');
+  let dl = document.getElementById('wfAssetList');
+  if (!dl) { dl = el('datalist', { id: 'wfAssetList' }); document.body.append(dl); }
+  dl.innerHTML = '';
+  for (const a of rows) dl.append(el('option', { value: a.asset_code, label: [a.name_vi, a.name_en].filter(Boolean).join('/') }));
+}
+async function wfAssetFill(l) {
+  if (!l.asset_code) return;
+  const [a] = await SB.select('am_asset', `select=asset_code,name_vi,name_en,unit_price,unit_code&asset_code=eq.${encodeURIComponent(l.asset_code)}`);
+  if (!a) { msg('#wdMsg', 'warn', t('wf.assetNone', { code: l.asset_code })); return; }
+  const raw = [a.name_vi, a.name_en].filter(Boolean).join('/');
+  const cat = wfCatProduct(raw) || wfCatProduct(a.name_vi);
+  Object.assign(l, { asset_item: cat ? cat.name : raw, unit: a.unit_code || l.unit || null,
+                     original_value: a.unit_price != null ? Number(a.unit_price) : l.original_value });
+  msg('#wdMsg', '', '');
+}
+
+/* ----------------------------------------- workbook-exact sheets (PR, RR)
+   Drawn on the workbook's own column grid: the column widths of the sheet (in
+   the same proportions), its merged cells, row heights and colours — navy
+   bars, light-blue page, white boxes, 8-pt labels. Each block is a CSS grid
+   over columns A..V; cells are placed by their Excel ranges ('B8:E8'). */
+const XS_W = {
+  PR: [1.38, 6.54, 6.54, 2, 15.84, 1.84, 18.54, 3.3, 13.84, 1.15, 10.3, 0.84, 5.54, 1.15, 5.3, 1, 5.3, 1, 6.84, 1, 8, 1.15],
+  RR: [1.38, 6.54, 6.54, 2, 13.84, 1.84, 20.84, 2.69, 11.69, 1.15, 15.38, 0.84, 10.38, 1.15, 5.3, 1, 5.3, 1, 6.84, 1, 7.3, 1.15]
+};
+const xsCol = L => L.charCodeAt(0) - 64;
+// rows: { excelRow: heightPt }; cells: [[range, kind, content, extraClass]].
+function xsBlock(type, rows, cells, cls = '') {
+  const nums = Object.keys(rows).map(Number).sort((a, b) => a - b);
+  const at = new Map(nums.map((r, i) => [r, i + 1]));
+  const g = el('div', { className: 'xsg ' + cls,
+    style: `grid-template-columns:${XS_W[type].map(w => w + 'fr').join(' ')};grid-template-rows:${nums.map(r => `minmax(${Math.round(rows[r] * 4 / 3)}px,auto)`).join(' ')}` });
+  for (const [range, kind, content, extra] of cells) {
+    const [a, b] = range.split(':');
+    const m1 = /^([A-Z])(\d+)$/.exec(a), m2 = /^([A-Z])(\d+)$/.exec(b || a);
+    const c = el('div', { className: 'xs-' + kind + (extra ? ' ' + extra : ''),
+      style: `grid-column:${xsCol(m1[1])} / ${xsCol(m2[1]) + 1};grid-row:${at.get(+m1[2])} / ${at.get(+m2[2]) + 1}` });
+    if (content != null && content !== '') c.append(typeof content === 'string' || typeof content === 'number' ? document.createTextNode(String(content)) : content);
+    g.append(c);
+  }
+  return g;
+}
+// Rows 1-4: company block, the bilingual title, CODE and the date box.
+function xsHead(x, type, dateLabel, dateNode) {
+  const f = x.form, split = type === 'RR' ? ['B1:F2', 'G1:U2'] : ['B1:G2', 'H1:U2'];
+  return xsBlock(type, { 1: 29.9, 2: 15, 3: 13, 4: 20.5, 5: 15 }, [
+    [split[0], 'co', el('div', {}, FS_CO.map((s, i) => el('div', { className: i === 0 ? 'b' : '', textContent: s })))],
+    [split[1], 'ttl', el('div', {}, [el('div', { textContent: f.title[0].toUpperCase() }), el('div', { textContent: f.title[1].toUpperCase() })])],
+    ['M3:Q3', 'hd', 'CODE'], ['R3:U3', 'hd', dateLabel],
+    ['M4:Q4', 'cv', WF.doc.doc_no], ['R4:U4', 'cv', dateNode]], 'xs-white');
+}
+/* A table on the grid: cols = [[fromCol, toCol, header, cell(line, i), extraClass]].
+   The No. column counts filled lines; the print shows a few empty lines more,
+   as the workbook does. */
+function xsTable(x, type, cols, lines, o = {}) {
+  const rows = { 1: o.headH || 29.9 }, cells = cols.map(([a, b, h, , cls]) => [`${a}1:${b}1`, 'th', h, cls && cls.includes('n') ? 'c' : '']);
+  const pad = x.edit ? 0 : Math.max(0, (o.minRows || 5) - lines.length);
+  const n = lines.length + pad;
+  for (let r = 0; r < n; r++) {
+    const R = r + 2, l = lines[r];
+    rows[R] = o.rowH || 20.5;
+    for (const [a, b, , fn, cls] of cols) cells.push([`${a}${R}:${b}${R}`, 'td', l ? (a === 'B' ? String(r + 1) : fn(l, r)) : '', cls || '']);
+    if (x.edit && l) {
+      const del = el('button', { className: 'xbtn', textContent: '×', title: t('wf.delLine') });
+      del.onclick = () => { lines.splice(r, 1); x.rr(); };
+      cells.push([`V${R}`, 'del', del]);
+    }
+  }
+  const wrap = el('div', { className: 'xstable' }, xsBlock(type, rows, cells, 'xs-tbl'));
+  if (x.edit && o.add) {
+    const add = el('button', { className: 'btn tiny fadd', textContent: t('wf.addLine') });
+    add.onclick = () => { lines.push(o.add()); x.rr(); };
+    wrap.append(add);
+  }
+  return wrap;
+}
+// Money in the form's own currency, as typed (not converted by the VND | USD switch).
+const xsMoney = v => fsR(v == null || !isFinite(v) ? '' : fmtNum(Math.round(Number(v) * 100) / 100));
+const XS_RR_NOTE = 'Condition Description & Reason for Asset Replacement:\n\nCondition Descriptions:\n'
+  + '1. Full operational – In a condition almost identical to a new item.\n'
+  + '2. Poor – The quality has deteriorated compared to the original condition but is still usable.\n'
+  + '3. Damaged – The quality is significantly impaired, and the item is no longer usable.\n\n'
+  + 'Note: The condition must be supported by images/videos documenting the asset\'s current state.\n\n'
+  + 'Reason for Asset Replacement:\n'
+  + '1. High repair cost – The cost of repairing the item exceeds its value or is no longer cost-effective.\n'
+  + '2. Obsolete – The item is outdated and no longer meets the required needs or functions.\n'
+  + '3. Irreparable – The item is damaged beyond repair and cannot be restored to working condition.\n'
+  + '4. Breakage/loss – The item has either been broken or is missing, rendering it unusable or unaccounted for.\n\n'
+  + 'Note: The reason for replacement must be supported by appropriate evidence (e.g., quotation, incident report, work order, etc.).';
+
+/* "Consent by": the signatures of the package, in two rows as on the workbook —
+   the preparer and the hotel approvals, then the AM team's checks and the JVC
+   approvals. Each box: Prepared / Checked / Approved by, the title, the
+   signature, and under it the person's display name (Users → full name) with
+   the date. A PA / MC is prepared by the AM Coordinator at their checking step,
+   so its boxes start there. Before submission the boxes show the planned roles. */
+function fsConsent(x, label = 'Consent by:') {
+  const k = WF.pkg || {}, doc = WF.doc, p = x.p;
+  const lead = wfLead(k.grp || doc.doc_type), ent = pmEntity(p.dept_code);
+  const ownerRoles = wfPkgTypes(k.grp || doc.doc_type).filter(ty => wfSide(ty) === 'owner')
+    .map(ty => (wfChain(ent, ty).find(c => c.step === 0) || {}).role_code);
+  const steps = WF.steps.length ? WF.steps : wfChain(ent, lead).filter(c => c.step > 0)
+    .map(c => ({ step: c.step, role_code: c.role_code, kind: c.kind === 'check' ? 'check' : 'approve', owner_prep: ownerRoles.includes(c.role_code) }));
+  const done = s => s.status === 'approved';
+  const stepBox = s => ({ lbl: s.kind === 'check' ? 'Checked by' : 'Approved by', role: s.role_code, sig: done(s) ? s.signature : null,
+                          name: done(s) ? (s.acted_name || s.acted_email) : '', at: done(s) ? s.acted_at : null,
+                          sub: ['returned', 'rejected'].includes(s.status) ? t('wf.st.' + s.status) : '' });
+  const prepRole = (wfChain(ent, lead).find(c => c.step === 0) || {}).role_code;
+  let boxes;
+  if (wfSide(doc.doc_type) === 'owner') {
+    const op = steps.findIndex(s => s.owner_prep);
+    const s0 = steps[op];
+    boxes = [{ lbl: 'Prepared by', role: s0 ? s0.role_code : '', sig: s0 && done(s0) ? s0.signature : null,
+               name: s0 && done(s0) ? (s0.acted_name || s0.acted_email) : '', at: s0 && done(s0) ? s0.acted_at : null },
+             ...steps.slice(op + 1).map(stepBox)];
+  } else {
+    boxes = [{ lbl: 'Prepared by', role: prepRole, sig: k.prep_signature, name: k.submitted_at ? (k.created_name || k.created_email) : '', at: k.submitted_at },
+             ...steps.map(stepBox)];
+  }
+  // Two rows: up to the AM team, and from the AM team on (a PA / MC starts with them: one row).
+  const split = wfSide(doc.doc_type) === 'owner' ? -1 : boxes.findIndex((b, i) => i > 0 && wfBand(b.role) !== 'op');
+  const rows = split > 0 ? [boxes.slice(0, split), boxes.slice(split)] : [boxes];
+  const cols = Math.max(4, ...rows.map(r => r.length));
+  return el('div', { className: 'fconsent' }, [el('div', { className: 'fct', textContent: label }),
+    ...rows.map(r => el('div', { className: 'fsigs', style: `grid-template-columns:repeat(${cols},minmax(0,1fr))` }, r.map(b => {
+      const [en, vi] = b.role ? wfSigTitle(b.role) : ['', ''];
+      return el('div', { className: 'fsig' }, [
+        el('div', { className: 'sk', textContent: b.lbl }),
+        el('div', { className: 'sr', textContent: en }), el('div', { className: 'ss', textContent: vi || ' ' }),
+        el('div', { className: 'simg' }, sigPng(b.sig) ? el('img', { src: sigPng(b.sig), alt: '' }) : ''),
+        el('div', { className: 'sn', textContent: b.name || ' ' }),
+        el('div', { className: 'sd', textContent: b.sub || (b.at ? fmtDate(String(b.at).slice(0, 10)) : ' ') })]);
+    })))]);
+}
+
+
 const WF_FORMS = {
-  /* -------------------------------------------------------------- PR */
-  PR: { orient: 'portrait', title: ['Purchase Request', 'Yêu cầu mua sắm'],
+  /* -------------------------------------------------------------- PR
+     Workbook sheet "PR", cell for cell: rows 1-4 header, 6-19 general, 21-24
+     detailed, 26-65 the lines, 67-71 note + total, 73-75 conclusion. */
+  PR: { orient: 'portrait', xs: true, title: ['Purchase Request', 'Yêu cầu mua sắm'],
     derive(d) {
       riskOf(d);
       for (const l of d.lines || []) l.amount = n0(l.qty) * n0(l.unit_price);
       d.total = lineSum(d.lines, l => l.amount);
+      d.investment_type = (WF.project && WF.project.investment_type) || d.investment_type || null;
       d.procurement_suggested = procSuggest(d.project_type, d.risk_level, d.total);
       if (!d.procurement_type && d.procurement_suggested) d.procurement_type = d.procurement_suggested;
+      // Notes used to be four separate boxes: they now live in one, as on the sheet.
+      if (d.notes == null && (d.warranty_term || d.delivery_term || d.note))
+        d.notes = [d.warranty_term && `- Warranty time: ${d.warranty_term}`, d.delivery_term && `- Delivery time: ${d.delivery_term}`,
+                   d.note && `- Other: ${d.note}`].filter(Boolean).join('\n');
     },
     build(x) {
-      const { d, p } = x, seg = String(p.code || '').split('.');
+      const { d, p } = x, seg = String(p.code || '').split('.'), T = 'PR';
       d.lines = d.lines || [];
-      return [fsPage([
-        fsHead(x, 'REQUEST DATE', I(x, d, 'request_date', 'date')),
-        fsBar('GENERAL INFORMATION'),
-        fsGrid([fc('PROJECT CODE', fsR(p.code), 3), fc('PROJECT TYPE', I(x, d, 'project_type', 'select', ['Non-consultancy', 'Consultancy']), 2),
-                fc('DEPARTMENT CODE', fsR(p.dept_code), 2), fc('PROJECT NO.', fsR(seg[2]), 1), fc('BUDGET YEAR', fsR(p.year), 1),
-                fc('SUB-PROJECT NO.', fsR(seg[4] || ''), 2), fc('%', I(x, d, 'share_pct', 'pct'), 1),
-                fc('PROJECT NAME', fsR(p.name), 6), fc('DEPARTMENT NAME', fsR(deptName(p.dept_code)), 6),
-                fc('CATEGORY', fsR(p.category || 'FFE'), 2), fc('BUDGET', fsR(d.budget), 2),
-                fc('INVESTMENT TYPE', I(x, d, 'investment_type', 'select', ['Replacement', 'New Investment']), 2),
-                fc('ESTIMATED TOTAL VALUE', fsR(d.total, 'money'), 5, 'num'), fc(' ', fsR(curCode()), 1, 'plain'),
-                fsRisk(x, d, true), fc('REASON/CURRENT CONDITION', I(x, d, 'reason', 'area'), 6, 'tall left'),
-                fc('SUGGESTION', fsR(d.suggestion), 6)]),
-        fsBar('DETAILED INFORMATION', 'Currency : ' + curCode()),
-        fsGrid([fc('COST BENCHMARK', I(x, d, 'cost_benchmark', 'select', ['Quotation', 'Previous Project', 'Price Reference', 'Internet']), 6, 'nav'),
-                fc('SUPPLIER', I(x, d, 'supplier', 'text'), 6, 'nav')]),
-        fsTable(x, [{ h: 'Asset Item', k: 'asset_item', t: 'text', product: true, w: '20%' },
-                    { h: 'Rationale', k: 'rationale', t: 'area', w: '19%' },
-                    { h: 'Technical Standard', k: 'tech_standard', t: 'area', w: '19%' },
-                    { h: 'Location', k: 'location', t: 'text', w: '11%' }, { h: 'Qnt', k: 'qty', t: 'num', w: '6%' },
-                    { h: 'Unit Price', k: 'unit_price', t: 'money', w: '12%' }, { h: 'Amount', k: 'amount', t: 'money', ro: true, w: '13%' }],
-                d.lines, { add: () => ({ qty: 1 }) }),
-        fsTerms(x, [['Warranty term', 'warranty_term', 'text'], ['Delivery term', 'delivery_term', 'text'],
-                    ['Preferred start date', 'start_date', 'date'], ['Other', 'note', 'area']], 'Estimated Total Amount', d.total),
-        fsBar('CONCLUSION'),
-        fsGrid([fc('PROCUREMENT TYPE', I(x, d, 'procurement_type', 'select', PROC_OPTS), 6),
-                fc('SUGGESTED BY THE PROCUREMENT DECISION MATRIX', fsR(d.procurement_suggested), 6)]),
-        fsLinks(x), fsConsent(x)])];
+      const V = (k, ty, opts) => I(x, d, k, ty, opts);
+      const cur = d.currency || 'VND';
+      const prev = d.cost_benchmark === 'Previous Project';
+      return [el('div', { className: 'xspage' }, [
+        xsHead(x, T, 'REQUEST DATE', V('request_date', 'date')),
+        xsBlock(T, { 6: 21, 7: 10.75, 8: 21, 9: 10.75, 10: 21, 11: 10.75, 12: 21, 13: 10.75, 14: 10.75, 15: 21, 16: 5.15, 17: 21, 18: 10.75, 19: 15, 20: 7.95 }, [
+          ['B6:U6', 'bar', 'GENERAL INFORMATION'],
+          ['B7:F7', 'lbl', 'PROJECT CODE'], ['G7:H7', 'lbl', 'PROJECT TYPE'], ['I7:J7', 'lbl', 'DEPARTMENT CODE'], ['K7:L7', 'lbl', 'PROJECT NO.'],
+          ['M7:P7', 'lbl', 'BUDGET YEAR'], ['Q7:T7', 'lbl', 'SUB-PROJECT NO.'], ['U7', 'lbl', '%'],
+          ['B8:E8', 'val', fsR(p.code)], ['G8', 'val', V('project_type', 'select', ['Consultancy', 'Non-consultancy'])],
+          ['I8', 'val', fsR(p.dept_code)], ['K8', 'val', fsR(seg[2] || '')], ['M8:O8', 'val', fsR(p.year)],
+          ['Q8:S8', 'val', fsR(seg[4] || '')], ['U8', 'val', V('share_pct', 'pct')],
+          ['B9:H9', 'lbl', 'PROJECT NAME'], ['I9:U9', 'lbl', 'DEPARTMENT NAME'],
+          ['B10:G10', 'val', fsR(p.name), 'l'], ['I10:U10', 'val', fsR(deptName(p.dept_code)), 'l'],
+          ['B11:D11', 'lbl', 'CATEGORY'], ['E11:F11', 'lbl', 'BUDGET'], ['G11:H11', 'lbl', 'INVESTMENT TYPE'], ['I11:U11', 'lbl', 'ESTIMATED TOTAL VALUE'],
+          ['B12:C12', 'val', V('category', 'select', ['FFE', 'PIP'])], ['E12', 'val', fsR(d.budget)],
+          ['G12', 'val', fsR(d.investment_type ? wfOpt(d.investment_type) : '')],
+          ['I12:Q12', 'val', xsMoney(d.total), 'n'], ['S12:U12', 'val', V('currency', 'select', ['VND', 'USD'])],
+          ['B13:H13', 'lbl', 'RISK-ASSESSMENT'], ['I13:U13', 'lbl', 'REASON/CURRENT CONDITION'],
+          ['B14:C14', 'lbl', 'Posibility'], ['E14', 'lbl', 'Impact'], ['G14', 'lbl', 'Assessment'],
+          ['B15:C15', 'val', V('possibility', 'select', ['1', '2', '3', '4', '5'])], ['D15', 'txt', 'x'],
+          ['E15', 'val', V('impact', 'select', ['1', '2', '3', '4'])], ['F15', 'txt', '='], ['G15', 'val', fsR(d.assessment)],
+          ['I15:U19', 'val', V('reason', 'area'), 'l top small'],
+          ['E17', 'wtxt', 'Risk Level'], ['F17', 'txt', ':'], ['G17', 'val', fsR(d.risk_level)],
+          ['B18:H18', 'lbl', 'SUGGESTION'], ['B19:G19', 'val', fsR(d.suggestion)]]),
+        xsBlock(T, { 21: 21, 22: 3.75, 23: 15, 24: 15, 25: 3.75 }, [
+          ['B21:P21', 'bar', 'DETAILED INFORMATION'], ['Q21:T21', 'bar', 'Currency  :', 'r'], ['U21', 'bar', cur],
+          ['A22:V22', 'band', ''],
+          ['B23:F23', 'nav', 'COST BENCHMARK'], ['G23:H23', 'nav', prev ? 'PREVIOUS PROJECT' : ''], ['I23:U23', 'nav', 'SUPPLIER'],
+          ['B24:F24', 'val', V('cost_benchmark', 'select', ['Quotation', 'Previous Project', 'Price Reference'])],
+          ...(prev ? [['G24:H24', 'val', V('previous_project', 'text')]] : []),
+          ['I24:U24', 'val', V('supplier', 'text')]]),
+        xsTable(x, T, [['B', 'B', 'No.'],
+          ['C', 'F', 'Asset Item', l => wfPickProduct(x, l), 'l'],
+          ['G', 'H', 'Rationale', l => I(x, l, 'rationale', 'area'), 'l small'],
+          ['I', 'J', 'Technical Standard', l => I(x, l, 'tech_standard', 'area'), 'l small'],
+          ['K', 'L', 'Location', l => wfPickLoc(x, l)],
+          ['M', 'N', 'Qnt', l => I(x, l, 'qty', 'num'), 'n'],
+          ['O', 'R', 'Unit Price', l => I(x, l, 'unit_price', 'money'), 'n'],
+          ['S', 'U', 'Amount', l => xsMoney(l.amount), 'n']], d.lines, { headH: 29.9, add: () => ({ qty: 1 }) }),
+        xsBlock(T, { 66: 3.75, 67: 15, 68: 14.25, 69: 15, 70: 15, 71: 15, 72: 15 }, [
+          ['B67:G67', 'nav', 'Note/Ghi chú:'], ['I67:R67', 'wtxt', 'Estimated Total Amount', 'bd'], ['S67:U67', 'val', xsMoney(d.total), 'n bd'],
+          ['B68:G71', 'val', V('notes', 'area'), 'l top bd']]),
+        xsBlock(T, { 73: 15, 74: 15, 75: 15, 76: 15, 77: 9.25 }, [
+          ['B73:U73', 'bar', 'CONCLUSION'], ['B74:H74', 'lbl', 'PROCUREMENT TYPE'],
+          ['B75:E75', 'val', V('procurement_type', 'select', PROC_OPTS)]]),
+        fsConsent(x)]),
+        x.mode === 'screen' ? fsLinks(x) : ''];
     } },
 
-  /* -------------------------------------------------------------- RR */
-  RR: { orient: 'portrait', title: ['Replacement Request', 'Yêu cầu thay thế/cải tạo/nâng cấp'],
+  /* -------------------------------------------------------------- RR
+     Workbook sheet "RR": general (project from the PR), the asset lines found
+     by their code in the register, the total, the guidance box. */
+  RR: { orient: 'portrait', xs: true, title: ['Replacement Request', 'Yêu cầu thay thế/cải tạo/nâng cấp'],
     derive(d, c) {
-      d.request_date = c.prData.request_date || (WF.project || {}).request_date || null;
+      d.request_date = c.prData.request_date || d.request_date || (WF.project || {}).request_date || null;
       d.total_qty = lineSum(d.lines, l => l.qty);
       d.total = lineSum(d.lines, l => n0(l.qty) * n0(l.original_value));
     },
     build(x) {
-      const { d, p } = x;
+      const { d, p } = x, T = 'RR';
       d.lines = d.lines || [];
-      return [fsPage([
-        fsHead(x, 'REQUEST DATE', fsR(d.request_date, 'date')),
-        fsBar('GENERAL INFORMATION'),
-        fsGrid([fc('PROJECT CODE', fsR(p.code), 3), fc('PROJECT NAME', fsR(p.name), 4, 'left'),
-                fc('REPLACEMENT LEVEL', I(x, d, 'replacement_level', 'select', ['Full replacement', 'Partial replacement', 'Upgrade', 'Renovation']), 3),
-                fc('AFTER REPLACEMENT', I(x, d, 'after_replacement', 'select', ['Liquidation', 'Transfer', 'Keep as spare', 'Scrap']), 2)]),
-        fsBar('DETAILED INFORMATION'),
-        fsTable(x, [{ h: 'Asset Item', k: 'asset_item', t: 'text', product: true, w: '21%', left: true },
-                    { h: 'Asset Code', k: 'asset_code', t: 'text', w: '19%',
-                      after: l => { const b = el('button', { className: 'btn tiny', textContent: '↵', title: t('wf.lookup') }); b.onclick = () => wfAssetLookup(l, x.rr); return b; } },
-                    { h: 'Current condition', k: 'condition', t: 'select', opts: WF_COND, w: '11%' },
-                    { h: 'Reason', k: 'reason', t: 'select', opts: WF_RR_REASON, w: '13%' },
-                    { h: 'Dep. Status', k: 'dep_status', t: 'text', w: '8%' }, { h: 'Qnt', k: 'qty', t: 'num', w: '6%' },
-                    { h: 'Unit', k: 'unit', t: 'text', w: '6%' }, { h: 'Original value', k: 'original_value', t: 'money', w: '12%' }],
-                d.lines, { add: () => ({ qty: 1, unit: 'pcs' }), foot: [['Total', 5, { 5: [d.total_qty, 'num'], 7: [d.total, 'money'] }]] }),
-        fsNote('Condition Description & Reason for Asset Replacement:\n\nCondition Descriptions:\n'
-          + '1. Like new – In a condition almost identical to a new item.\n'
-          + '2. Poor – The quality has deteriorated compared to the original condition but is still usable.\n'
-          + '3. Damaged – The quality is significantly impaired, and the item is no longer usable.\n\n'
-          + 'Note: The condition must be supported by images/videos documenting the asset\'s current state.\n\n'
-          + 'Reason for Asset Replacement:\n'
-          + '1. High repair cost – The cost of repairing the item exceeds its value or is no longer cost-effective.\n'
-          + '2. Obsolete – The item is outdated and no longer meets the required needs or functions.\n'
-          + '3. Irreparable – The item is damaged beyond repair and cannot be restored to working condition.\n'
-          + '4. Breakage/loss – The item has either been broken or is missing, rendering it unusable or unaccounted for.'),
-        fsGrid([fc('NOTE', I(x, d, 'note', 'area'), 12, 'tall left')]),
-        fsLinks(x, 'IMAGES / VIDEOS OF THE CURRENT CONDITION (LINKS)'), fsConsent(x)])];
+      const V = (k, ty, opts) => I(x, d, k, ty, opts);
+      return [el('div', { className: 'xspage' }, [
+        xsHead(x, T, 'REQUEST DATE', fsR(d.request_date, 'date')),
+        xsBlock(T, { 6: 21, 7: 10.75, 8: 21, 9: 7.95, 10: 21, 11: 4.95 }, [
+          ['B6:U6', 'bar', 'GENERAL INFORMATION'],
+          ['B7:F7', 'lbl', 'PROJECT CODE'], ['G7:L7', 'lbl', 'PROJECT NAME'], ['M7:R7', 'lbl', 'REPLACEMENT LEVEL'], ['S7:U7', 'lbl', 'AFTER REPLACEMENT'],
+          ['B8:E8', 'val', fsR(p.code)], ['G8:K8', 'val', fsR(p.name), 'l'],
+          ['M8:Q8', 'val', V('replacement_level', 'select', ['Full replacement', 'Partial replacement'])],
+          ['S8:U8', 'val', V('after_replacement', 'select', ['Liquidation', 'Transfer'])],
+          ['B10:P10', 'bar', 'DETAILED INFORMATION'], ['Q10:T10', 'bar', 'Currency  :', 'r'],
+          ['U10', 'bar', x.edit ? V('currency', 'select', ['VND', 'USD']) : (d.currency || 'VND')]]),
+        xsTable(x, T, [['B', 'B', 'No.'],
+          ['C', 'F', 'Asset Item', l => wfPickProduct(x, l), 'l'],
+          ['G', 'H', 'Asset Code', l => wfPickAsset(x, l)],
+          ['I', 'J', 'Current condition', l => I(x, l, 'condition', 'select', WF_COND)],
+          ['K', 'L', 'Reason', l => I(x, l, 'reason', 'select', WF_RR_REASON)],
+          ['M', 'N', 'After replacement', l => I(x, l, 'after', 'select', ['Reuse', 'Spare', 'Liquidation'])],
+          ['O', 'P', 'Qnt', l => I(x, l, 'qty', 'num'), 'n'],
+          ['Q', 'R', 'Unit', l => wfPickUnit(x, l)],
+          ['S', 'U', 'Original value', l => I(x, l, 'original_value', 'money'), 'n']], d.lines,
+          { headH: 36, rowH: 15, add: () => ({ qty: 1, after: 'Reuse' }) }),
+        xsBlock(T, { 52: 3.75, 53: 15 }, [
+          ['K53:N53', 'wtxt', 'Total', 'bd'], ['O53:P53', 'val', fsR(d.total_qty, 'num'), 'n bd'], ['S53:U53', 'val', xsMoney(d.total), 'n bd']]),
+        xsBlock(T, { 54: 5.15, 55: 200.7, 56: 7.4 }, [['B55:U55', 'note', XS_RR_NOTE]]),
+        fsConsent(x)]),
+        x.mode === 'screen' ? fsLinks(x, 'IMAGES / VIDEOS OF THE CURRENT CONDITION (LINKS)') : ''];
     } },
 
   /* -------------------------------------------------------------- PA */
@@ -9002,79 +9405,146 @@ function fsRiskRef() {
 }
 
 /* ------------------------------------------------------------ actions */
-function wfCollect() {
-  // Freeze every computed box into the saved document, so the printed form and
-  // the audit log show the numbers as they were when it was submitted.
-  const d = WF.data;
-  WF_FORMS[WF.doc.doc_type].derive(d, wfCtx());
-  return d;
+// Freeze every computed box into a document before it is saved, so the printed
+// form and the audit log show the numbers as they were when it was sent.
+function wfCollectDoc(d) {
+  const data = WF.drafts.get(d.id);
+  WF_FORMS[d.doc_type].derive(data, wfCtx());
+  return data;
 }
+function wfCollect() { return wfCollectDoc(WF.doc); }
 
+// Save every document of the package that changed, and the one on screen.
 async function wfSave(quiet) {
   try {
-    // Admin override saves through its own function (any state, logged as an admin edit).
-    await SB.rpc(wfOwnEditable() ? 'pm_doc_save' : 'pm_doc_admin_save', { p_id: WF.doc.id, p_data: wfCollect() });
+    const ids = new Set(WF.dirtyIds || []);
+    if (wfEditable()) ids.add(WF.doc.id);
+    for (const d of WF.pdocs) {
+      if (!ids.has(d.id)) continue;
+      const own = wfDocEditable(d);
+      if (!own && !(wfAdminMode() && d.id === WF.doc.id)) continue;
+      // Admin override saves through its own function (any state, logged as an admin edit).
+      await SB.rpc(own ? 'pm_doc_save' : 'pm_doc_admin_save', { p_id: d.id, p_data: wfCollectDoc(d) });
+    }
     WF.dirty = false;
+    WF.dirtyIds.clear();
     if (!quiet) { await wfLoad(); msg('#wdMsg', 'ok', t('wf.saved')); }
     return true;
   } catch (e) { msg('#wdMsg', 'err', e.message); return false; }
 }
 
+/* What has to be right before a document leaves its author: the catalogue
+   entries, the lines, the scores. Listed per document so the message says
+   which of the package's sheets to fix. */
+function wfProblems(d) {
+  const data = wfCollectDoc(d), ty = d.doc_type, out = [], lines = data.lines || [];
+  if (ty === 'PR') {
+    if (!lines.length) out.push(t('wf.chk.noLines'));
+    lines.forEach((l, i) => {
+      if (!l.asset_item) out.push(t('wf.chk.item', { n: i + 1 }));
+      else if (!wfCatHasProduct(l.asset_item)) out.push(t('wf.cat.product', { v: l.asset_item }));
+      if (!l.location) out.push(t('wf.chk.loc', { n: i + 1 }));
+      else if (!WF_CAT.locs.has(l.location)) out.push(t('wf.cat.location', { v: l.location }));
+      if (!n0(l.qty)) out.push(t('wf.chk.qty', { n: i + 1 }));
+    });
+    if (!data.reason) out.push(t('wf.chk.reason'));
+  }
+  if (ty === 'RR') {
+    if (!lines.length) out.push(t('wf.chk.noLines'));
+    lines.forEach((l, i) => {
+      if (!l.asset_code) out.push(t('wf.chk.assetCode', { n: i + 1 }));
+      if (!l.asset_item || !wfCatHasProduct(l.asset_item)) out.push(t('wf.cat.product', { v: l.asset_item || '—' }));
+      if (!l.condition || !l.reason || !l.after) out.push(t('wf.chk.condReason', { n: i + 1 }));
+      if (l.unit && !WF_CAT.units.includes(l.unit)) out.push(t('wf.cat.unit', { v: l.unit }));
+    });
+  }
+  if (ty === 'QC' && qcScore(data).problems.some(p => p === t('wf.qc.w0') || p === t('wf.qc.w100'))) out.push(t('wf.qc.cannotSubmit'));
+  if (ty === 'PA' && !data.recommendation) out.push(t('wf.pa.needRec'));
+  return out.map(s => `${d.doc_no}: ${s}`);
+}
+
+// Send the whole package: every document of the preparer's side, signed once.
 async function wfSubmit() {
-  const d = wfCollect();
-  if (WF.doc.doc_type === 'QC' && qcScore(d).problems.some(p => p === t('wf.qc.w0') || p === t('wf.qc.w100')))
-    return msg('#wdMsg', 'err', t('wf.qc.cannotSubmit'));
-  if (WF.doc.doc_type === 'PA' && !d.recommendation) return msg('#wdMsg', 'err', t('wf.pa.needRec'));
+  const mine = WF.pdocs.filter(d => wfSide(d.doc_type) !== 'owner');
+  const probs = mine.flatMap(wfProblems);
+  if (WF.pkg.grp === 'PR' && wfIsReplacement(WF.project) && !WF.pdocs.some(d => d.doc_type === 'RR')) probs.unshift(t('wf.chk.needRR'));
+  if (probs.length) return msg('#wdMsg', 'err', probs.join('\n'));
   if (!(await wfSave(true))) return;
+  const nos = mine.map(d => d.doc_no).join(' + ');
   // Signing IS the confirmation: the pad says what is being signed.
-  const png = await sigAsk(t('sig.titleSubmit', { no: WF.doc.doc_no }));
+  const png = await sigAsk(t('sig.titleSubmit', { no: nos }));
   if (png === null) return;                     // cancelled; '' = skipped (not compulsory)
   try {
-    await SB.rpc('pm_doc_submit', { p_id: WF.doc.id, p_signature: png ? { png } : null });
+    await SB.rpc('pm_pkg_submit', { p_pkg: WF.pkg.id, p_signature: png ? { png } : null });
     await wfLoad(); wfBadge();
-    msg('#wdMsg', 'ok', t('wf.submitted', { no: WF.doc.doc_no }));
+    msg('#wdMsg', 'ok', t('wf.submitted', { no: nos }));
   } catch (e) { msg('#wdMsg', 'err', e.message); }
 }
 
-async function wfAct(action) {
+/* Approve / check / return / reject the package's current step. At the AM
+   Coordinator's step "Checked" needs the PA / MC complete: it signs the PR / RR
+   (QC) as checked and the PA (MC) as prepared, in one go. A return after the
+   AM team has checked goes either to the preparer (target 'operator') or, for
+   the PA / MC alone, to the AM team (target 'am'). */
+async function wfAct(action, target) {
   const note = ($('#wdNote') || {}).value || '';
   if (action !== 'approve' && !note.trim()) return msg('#wdMsg', 'err', t('wf.needReason'));
-  // Approving is signed; returning or rejecting is a comment, not a signature.
+  const step = wfCurStep() || {};
+  const nos = WF.pdocs.map(d => d.doc_no).join(' + ');
   let png = null;
-  const step = WF.steps.find(s => s.step === WF.doc.current_step) || {};
-  const check = step.kind === 'check';
-  // Approved together with the rest of its group (PR + RR + PA, QC + MC).
-  const with_ = !check && WF.pair && !WF.pair.wait ? WF.pair.together : [];
-  const no = [WF.doc, ...with_].sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type)).map(x => x.doc_no).join(' + ');
   if (action === 'approve') {
-    png = await sigAsk(t(check ? 'sig.titleCheck' : 'sig.titleApprove', { no }));
+    if (step.owner_prep) {
+      const own = WF.pdocs.filter(d => wfSide(d.doc_type) === 'owner');
+      const probs = own.flatMap(wfProblems);
+      const need = wfPkgTypes(WF.pkg.grp).filter(ty => wfSide(ty) === 'owner' && !own.some(d => d.doc_type === ty));
+      if (need.length) probs.unshift(t('wf.chk.needOwner', { t: need.join(', ') }));
+      if (probs.length) return msg('#wdMsg', 'err', probs.join('\n'));
+      if (!(await wfSave(true))) return;
+    }
+    png = await sigAsk(t(step.owner_prep ? 'sig.titleCheckPrep' : step.kind === 'check' ? 'sig.titleCheck' : 'sig.titleApprove', { no: nos }));
     if (png === null) return;
-  } else if (!confirm(t('wf.confirm.' + action, { no: WF.doc.doc_no }))) return;
+  } else if (!confirm(t(action === 'return' && target === 'am' ? 'wf.confirm.returnAm' : 'wf.confirm.' + action, { no: nos }))) return;
   try {
-    const to = await SB.rpc('pm_doc_act', { p_id: WF.doc.id, p_action: action, p_comment: note.trim() || null,
-                                            p_signature: png ? { png } : null });
+    const to = await SB.rpc('pm_pkg_act', { p_pkg: WF.pkg.id, p_action: action, p_comment: note.trim() || null,
+                                            p_signature: png ? { png } : null, p_target: target || null });
     await wfLoad(); wfBadge();
-    const k = action !== 'approve' ? action : to === 'approved' ? 'final' : check ? 'check' : 'approve';
-    msg('#wdMsg', 'ok', t('wf.acted.' + k, { no }));
+    const k = action === 'approve' ? (to === 'approved' ? 'final' : step.owner_prep ? 'checkPrep' : step.kind === 'check' ? 'check' : 'approve')
+      : to === 'returned_am' ? 'returnAm' : action;
+    msg('#wdMsg', 'ok', t('wf.acted.' + k, { no: nos }));
   } catch (e) { msg('#wdMsg', 'err', e.message); }
 }
 
-// Admin override: the document goes back to draft (its approval chain for this
-// submission is dropped); milestones already pushed to the project stay.
+// Admin override: the whole package goes back to draft (its approval chain for
+// this submission is dropped); milestones already pushed to the project stay.
 async function wfAdminReopen() {
-  const why = prompt(t('wf.adminReopenWhy', { no: WF.doc.doc_no }));
+  const nos = WF.pdocs.map(d => d.doc_no).join(' + ');
+  const why = prompt(t('wf.adminReopenWhy', { no: nos }));
   if (why === null) return;
   try { await SB.rpc('pm_doc_admin_reopen', { p_id: WF.doc.id, p_comment: why || null }); await wfLoad(); wfBadge();
-        msg('#wdMsg', 'ok', t('wf.adminReopened', { no: WF.doc.doc_no })); }
+        msg('#wdMsg', 'ok', t('wf.adminReopened', { no: nos })); }
   catch (e) { msg('#wdMsg', 'err', e.message); }
 }
 
 async function wfCancel() {
-  const why = prompt(t('wf.cancelWhy', { no: WF.doc.doc_no }));
+  const nos = WF.pdocs.map(d => d.doc_no).join(' + ');
+  const why = prompt(t('wf.cancelWhy', { no: nos }));
   if (why === null) return;
-  try { await SB.rpc('pm_doc_cancel', { p_id: WF.doc.id, p_comment: why || null }); await wfLoad(); wfBadge();
-        msg('#wdMsg', 'ok', t('wf.cancelled', { no: WF.doc.doc_no })); }
+  try { await SB.rpc('pm_pkg_cancel', { p_pkg: WF.pkg.id, p_comment: why || null }); await wfLoad(); wfBadge();
+        msg('#wdMsg', 'ok', t('wf.cancelled', { no: nos })); }
   catch (e) { msg('#wdMsg', 'err', e.message); }
+}
+
+// Take one document (not the lead) out of a package that is still being prepared.
+async function wfRemoveDoc() {
+  const d = WF.doc;
+  if (!confirm(t('wf.removeConfirm', { no: d.doc_no }))) return;
+  try {
+    await SB.rpc('pm_doc_remove', { p_id: d.id });
+    WF.openId = (WF.pdocs.find(x => x.doc_type === wfLead(WF.pkg.grp)) || d).id;
+    WF.doc = null;
+    await wfLoad();
+    msg('#wdMsg', 'ok', t('wf.removed', { no: d.doc_no }));
+  } catch (e) { msg('#wdMsg', 'err', e.message); }
 }
 
 /* An approved handover becomes the next delivery in the asset intake, with the
@@ -9167,69 +9637,54 @@ async function wfPdf() {
 }
 
 /* ------------------------------------------------------------- inbox */
+/* One line per PACKAGE waiting for this person ("PR.… + RR.… + PA.…"),
+   coloured by who acts — blue hotel, purple AM team, yellow JVC — plus the
+   packages returned to them and the next package they have to draw up. */
 async function wfInboxLoad() {
   MONEY.year = null;
   const out = $('#wiMsg');
   msg(out, 'info', t('table.loading'));
   try {
     await wfLookups();
-    // Documents to check / approve / fix, then the ones still to be drawn up (PA, MC).
-    WF.inbox = [...wfInboxRows(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => []))];
+    WF.inbox = [...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => []))];
     msg(out, WF.inbox.length ? '' : 'ok', WF.inbox.length ? '' : t('wf.inboxEmpty'));
     const head = $('#wiGrid thead'), body = $('#wiGrid tbody');
     head.innerHTML = ''; body.innerHTML = '';
     head.append(el('tr', {}, [['wf.i.kind'], ['wf.i.doc'], ['wf.i.type'], ['pm.col.code'], ['pm.col.name'], ['pm.col.dept'],
       ['wf.i.value', 'num'], ['wf.i.sent'], ['wf.i.step']].map(([k, c]) => el('th', { className: c || '', textContent: t(k) }))));
     for (const r of WF.inbox) {
-      // To do: approve / check / approve together (PR + RR + PA on one line),
-      // or a joint step still waiting for the rest of its group (greyed, not counted).
-      const ms = r.members || [r];
-      const what = r.kind === 'prepare' ? t('wf.i.prepare', { t: r.doc_type }) : r.kind === 'returned' ? t('wf.i.returned') : r.wait ? t('wf.i.wait')
-        : t('wf.i.' + (r.step_kind === 'check' ? 'check' : r.step_kind === 'joint' && r.merged ? 'joint' : 'approve'));
-      const tr = el('tr', { style: 'cursor:pointer', className: r.wait ? 'wiwait' : '' }, [
-        el('td', {}, el('span', { className: 'st ' + (r.kind === 'returned' || r.wait ? 'cancelled' : 'in_progress'), textContent: what })),
+      const owners = wfPkgTypes(r.grp).filter(ty => wfSide(ty) === 'owner').join('/');
+      const band = r.kind === 'returned' ? 'bad' : r.kind === 'prepare' ? 'op' : wfBand(r.role_code);
+      const what = r.kind === 'prepare' ? t('wf.i.prepare', { t: r.doc_type }) : r.kind === 'returned' ? t('wf.i.returned')
+        : r.owner_prep ? t(r.returned_to === 'am' ? 'wf.i.redoOwner' : 'wf.i.checkPrep', { t: owners })
+        : t(r.step_kind === 'check' ? 'wf.i.check' : 'wf.i.approve');
+      const nos = String(r.doc_no || '').split(' + ').filter(Boolean);
+      const tr = el('tr', { style: 'cursor:pointer' }, [
+        el('td', {}, el('span', { className: 'stg band-' + band, textContent: what })),
         r.kind === 'prepare'
           ? el('td', {}, [el('code', { textContent: r.doc_no }), document.createTextNode(' → '),
               el('button', { className: 'btn tiny pri', textContent: t('wf.createType', { t: r.doc_type }),
                 onclick: ev => { ev.stopPropagation(); wfCreateFor(r.project_code, r.doc_type, '#wiMsg'); } })])
-          : el('td', {}, ms.flatMap((m, i) => [...(i ? [document.createTextNode(' + ')] : []), el('code', { textContent: m.doc_no })])),
-        el('td', { textContent: r.kind === 'prepare' ? wfTypeName(r.doc_type) : ms.map(m => wfTypeName(m.doc_type)).join(' + ') }),
+          : el('td', {}, nos.flatMap((n, i) => [...(i ? [document.createTextNode(' + ')] : []), el('code', { textContent: n })])),
+        el('td', { textContent: r.kind === 'prepare' ? wfTypeName(r.doc_type) : nos.map(n => wfTypeName(n.split('.')[0])).join(' + ') }),
         el('td', {}, el('code', { textContent: r.project_code })), el('td', { textContent: r.project_name || '' }),
         el('td', { textContent: r.dept_code }), el('td', { className: 'num', textContent: r.total_value != null ? fmtMoney(r.total_value) : '' }),
-        el('td', { textContent: r.submitted_at ? fmtDate(r.submitted_at.slice(0, 10)) : '' }),
+        el('td', { textContent: r.submitted_at ? fmtDate(String(r.submitted_at).slice(0, 10)) : '' }),
         el('td', { textContent: r.role_code ? `${r.step} · ${wfRoleName(r.role_code)}` : '' })]);
-      tr.onclick = () => wfOpen(r.doc_id);
+      tr.onclick = () => { if (r.doc_id) wfOpen(r.doc_id); };
       body.append(tr);
     }
     wfBadge(wfInboxCount(WF.inbox));
   } catch (e) { msg(out, 'err', e.message); }
 }
-
-/* A group JVC approves together shows as ONE line: the first document of the
-   group (PR / QC) carries the others (RR, PA / MC), whose own lines fold away. */
-function wfInboxRows(rows) {
-  const out = [], groups = new Map();
-  for (const r of rows) {
-    const g = r.kind !== 'returned' && r.step_kind === 'joint' && !r.wait ? wfGrp(r.doc_type) : null;
-    if (!g) { out.push(r); continue; }
-    const k = `${r.project_code}|${g}|${r.role_code}`;
-    if (!groups.has(k)) { const c = { members: [] }; groups.set(k, c); out.push(c); }
-    groups.get(k).members.push(r);
-  }
-  for (const c of groups.values()) {
-    c.members.sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type));
-    Object.assign(c, c.members[0], { members: c.members, merged: c.members.length > 1 });
-  }
-  return out;
-}
 // What the menu badge counts: things the person can do now.
-const wfInboxCount = rows => rows.filter(r => !r.wait).length;   // documents still to draw up count too
+const wfInboxCount = rows => rows.length;
 
-/* The number beside "Waiting for me" in the menu. */
+/* The number beside "To-do list" in the menu. */
 async function wfBadge(n) {
   ntLoad();                            // the bell moves whenever the inbox does
-  if (n == null) { try { await wfLookups(); } catch {}   // types tell PA from PR when folding pairs
-                   try { n = wfInboxCount([...wfInboxRows(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => []))]); } catch { return; } }
+  if (n == null) { try { await wfLookups(); } catch {}   // types name the package's owner documents
+                   try { n = wfInboxCount([...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => []))]); } catch { return; } }
   WF.badgeN = n;                       // buildNav() redraws the menu and re-adds it from here
   const a = $('#nav a[data-view="inbox"]');
   if (!a) return;
@@ -9459,7 +9914,9 @@ async function ntOpen(r) {
   if (!r.read_at) {
     try { await SB.patch('pm_notice', `id=eq.${r.id}`, { read_at: new Date().toISOString() }); } catch {}
   }
-  if (r.doc_id) wfOpen(r.doc_id);
+  // "Your turn to draw up the QC": to the project, whose panel has the button.
+  if (r.kind === 'next' && r.project_code) { PM.prj.open = r.project_code; showView('projects'); }
+  else if (r.doc_id) wfOpen(r.doc_id);
   ntLoad();
 }
 
@@ -9506,12 +9963,14 @@ function wfChainsRender() {
   for (const type of WF_ORDER) {
     const rows = wfChain(WF.entity, type);
     const prep = rows.find(c => c.step === 0);
-    const pair = wfGrpOthers(type).join('/');      // the documents JVC approves it with, e.g. "RR/PA"
-    const steps = rows.filter(c => c.step > 0).map(c => ({ r: c.role_code, k: c.kind || 'approve' }));
-    // What a newly added step does by default: AM team checks, JVC approves
-    // (together with the rest of its group where it has one).
-    const kindFor = r => ['AM_COORD', 'AM_EXEC'].includes(r) ? 'check' : pair && ['CHIEF_ACC', 'JVC_GM'].includes(r) ? 'joint' : 'approve';
-    const kinds = pair ? ['approve', 'check', 'joint'] : ['approve', 'check'];
+    const grp = wfGrp(type), follows = grp && type !== wfLead(grp);   // RR, PA, MC travel on the PR / QC chain
+    const steps = rows.filter(c => c.step > 0).map(c => ({ r: c.role_code, k: c.kind === 'check' ? 'check' : 'approve' }));
+    // The AM Coordinator's step of a PR / QC chain also draws up the PA / MC.
+    const ownerRoles = grp && !follows ? wfPkgTypes(grp).filter(ty => wfSide(ty) === 'owner')
+      .map(ty => (wfChain(WF.entity, ty).find(c => c.step === 0) || {}).role_code) : [];
+    // What a newly added step does by default: the AM team checks, everyone else approves.
+    const kindFor = r => ['AM_COORD', 'AM_EXEC'].includes(r) ? 'check' : 'approve';
+    const kinds = ['approve', 'check'];
     const tr = el('tr');
     tr.append(el('td', {}, [el('b', { textContent: type }), document.createTextNode(' ' + wfTypeName(type))]));
     const prepCell = el('td');
@@ -9521,10 +9980,11 @@ function wfChainsRender() {
     const chips = el('div', { className: 'roles' });
     const draw = () => {
       chips.innerHTML = '';
+      if (follows) { chips.append(el('span', { className: 'wcfollow', textContent: t('wf.c.follows', { t: wfLead(grp) }) })); return; }
       steps.forEach((st, i) => {
         const c = el('span', { className: 'role' }, [el('b', { textContent: `${i + 1}. ` }), document.createTextNode(wfRoleName(st.r))]);
-        const tag = wfKindTag(st.k, pair);
-        if (admin) {                      // click the tag: approves → checks → approves with the group → …
+        const tag = wfKindTag(st.k, st.k === 'check' && ownerRoles.includes(st.r));
+        if (admin) {                      // click the tag: approves ↔ checks
           tag.classList.add('kt-btn');
           tag.title = t('wf.c.kindHint');
           tag.onclick = () => { st.k = kinds[(kinds.indexOf(st.k) + 1) % kinds.length]; draw(); };
@@ -9542,7 +10002,7 @@ function wfChainsRender() {
     tr.append(el('td', {}, chips));
     const act = el('td');
     if (admin) { const save = el('button', { className: 'btn tiny pri', textContent: t('tool.save') });
-      save.onclick = () => wfChainSave(type, prepSel.value, steps); act.append(save); }
+      save.onclick = () => wfChainSave(type, prepSel.value, steps, follows); act.append(save); }
     tr.append(act);
     body.append(tr);
   }
@@ -9550,8 +10010,19 @@ function wfChainsRender() {
 
 /* Upsert the new steps first, then drop the ones past the end — a failure in
    between leaves a chain with extra steps, never a chain with none. */
-async function wfChainSave(type, prep, steps) {
+async function wfChainSave(type, prep, steps, prepOnly) {
   if (!prep) return msg('#wcMsg', 'err', t('wf.c.needPrep'));
+  // RR / PA / MC: only who draws them up — their steps are the PR / QC chain's.
+  if (prepOnly) {
+    try {
+      await SB.call('pm_chain?on_conflict=entity,doc_type,step', { method: 'POST',
+        headers: SB.hdr({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+        body: JSON.stringify([{ entity: WF.entity, doc_type: type, step: 0, role_code: prep, kind: 'approve' }]) });
+      await wfLookups(true); wfChainsRender();
+      msg('#wcMsg', 'ok', t('wf.c.saved', { e: WF.entity, type }));
+    } catch (e) { msg('#wcMsg', 'err', e.message); }
+    return;
+  }
   if (!steps.length) return msg('#wcMsg', 'err', t('wf.c.needStep'));
   // A chain must end with someone who approves, not only checks.
   if (!steps.some(s => s.k !== 'check')) return msg('#wcMsg', 'err', t('wf.c.needApprover'));

@@ -81,25 +81,28 @@ begin
   perform pm_doc_log(p_id, 'admin_edit', d.status, d.status, d.current_step, null);
 end $$;
 
-/* Mở lại chứng từ thành nháp: xoá chuỗi duyệt của lần gửi này, để người lập
-   sửa và gửi lại. Các mốc đã đẩy sang dự án khi duyệt xong KHÔNG tự lùi lại. */
+/* Mở lại CẢ BỘ hồ sơ chứa chứng từ này thành nháp: xoá chuỗi duyệt của lần
+   gửi này, để người lập sửa và gửi lại (PA / MC về nháp cho AM). Các mốc đã
+   đẩy sang dự án khi duyệt xong KHÔNG tự lùi lại. */
 create or replace function pm_doc_admin_reopen(p_id bigint, p_comment text default null)
 returns void
 language plpgsql
 security definer
 set search_path = public
 as $$
-declare d pm_doc;
+declare d pm_doc; k pm_pkg;
 begin
   perform app_require('override', 'edit');
-  select * into d from pm_doc where id = p_id for update;
+  select * into d from pm_doc where id = p_id;
   if d.id is null then raise exception 'Không có chứng từ % / No document %', p_id, p_id; end if;
-  if d.status in ('draft', 'cancelled') then
-    raise exception 'Chứng từ % đang "%" — không cần mở lại. / Document % is "%".', d.doc_no, d.status, d.doc_no, d.status;
+  select * into k from pm_pkg where id = d.pkg_id for update;
+  if k.status in ('draft', 'cancelled') then
+    raise exception 'Bộ hồ sơ đang "%" — không cần mở lại. / Package is "%".', k.status, k.status;
   end if;
-  delete from pm_doc_step where doc_id = p_id;
-  update pm_doc set status = 'draft', current_step = null, decided_at = null, updated_at = now() where id = p_id;
-  perform pm_doc_log(p_id, 'admin_reopen', d.status, 'draft', null, p_comment);
+  delete from pm_pkg_step where pkg_id = k.id;
+  update pm_pkg set status = 'draft', current_step = null, returned_to = null, decided_at = null, updated_at = now() where id = k.id;
+  update pm_doc set status = 'draft', decided_at = null, updated_at = now() where pkg_id = k.id and status <> 'cancelled';
+  perform pm_pkg_log(k.id, 'admin_reopen', k.status, 'draft', null, p_comment);
 end $$;
 
 
@@ -140,7 +143,8 @@ begin
     continue when not (g = any(p_groups));
     if g = 'docs' then
       select count(*) into c from pm_doc;               grp := g; tbl := 'pm_doc'; n := c; return next;
-      if not p_dry then delete from pm_doc; end if;      -- bước duyệt, lịch sử, thông báo đi theo (on delete cascade)
+      select count(*) into c from pm_pkg;               grp := g; tbl := 'pm_pkg'; n := c; return next;
+      if not p_dry then delete from pm_pkg; delete from pm_doc; end if;   -- bước duyệt, lịch sử, thông báo đi theo (on delete cascade)
     elsif g = 'payments' then
       select count(*) into c from pm_pay_alloc;         grp := g; tbl := 'pm_pay_alloc'; n := c; return next;
       select count(*) into c from pm_invoice;           grp := g; tbl := 'pm_invoice'; n := c; return next;
@@ -152,7 +156,7 @@ begin
     elsif g = 'projects' then
       select count(*) into c from pm_project;           grp := g; tbl := 'pm_project'; n := c; return next;
       select count(*) into c from pm_vendor_score;      grp := g; tbl := 'pm_vendor_score'; n := c; return next;
-      if not p_dry then delete from pm_vendor_score; delete from pm_pay_alloc; delete from pm_doc; delete from pm_project; end if;
+      if not p_dry then delete from pm_vendor_score; delete from pm_pay_alloc; delete from pm_pkg; delete from pm_doc; delete from pm_project; end if;
     elsif g = 'budget' then
       select count(*) into c from pm_budget_line;       grp := g; tbl := 'pm_budget_line'; n := c; return next;
       select count(*) into c from pm_budget_round;      grp := g; tbl := 'pm_budget_round'; n := c; return next;

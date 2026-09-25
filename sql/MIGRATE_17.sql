@@ -2056,7 +2056,7 @@ begin
       -- file này sau các file đó không được mở lại chúng.
       and  p.proname not in ('pm_doc_log', 'pm_doc_apply', 'app_user_role_covers',
                              'pm_sig_check', 'pm_notify_trg', 'pm_step_pass', 'pm_pair_state',
-                             'pm_pay_alloc_cleanup', 'pm_code_project', 'pm_auto_alloc',
+                             'pm_pay_alloc_cleanup', 'pm_code_project', 'pm_auto_alloc', 'pm_pkg_log', 'pm_user_name',
                              'app_bootstrap_admin', 'app_lock_anon')
   loop
     execute format('grant execute on function %s to authenticated', r.n);

@@ -1,8 +1,8 @@
 -- =====================================================================
 -- 20_pm_notify.sql — QUẢN LÝ DỰ ÁN, GIAI ĐOẠN 4: THÔNG BÁO + CHỮ KÝ ĐÃ LƯU
 --
--- Chạy SAU 19_pm_workflow.sql (bản có bước kiểm tra / duyệt cùng 25/09/2026 —
--- chạy lại 19 trước nếu đã chạy bản cũ).
+-- Chạy SAU 19_pm_workflow.sql (bản có BỘ HỒ SƠ 26/09/2026 — chạy lại 19 trước
+-- nếu đã chạy bản cũ).
 --
 --   pm_notice     thông báo trong app (chuông ở góc trên): "có chứng từ chờ bạn
 --                 duyệt", "chứng từ của bạn đã được duyệt / bị trả về / bị từ
@@ -59,59 +59,84 @@ on conflict (key) do nothing;
 
 
 -- =====================================================================
--- 2. SINH THÔNG BÁO TỪ NHẬT KÝ CHỨNG TỪ
+-- 2. SINH THÔNG BÁO TỪ NHẬT KÝ BỘ HỒ SƠ
 -- =====================================================================
 
+-- Thông báo mới (26/09/2026): pkg_id, và kind "next" = bộ trước đã duyệt xong,
+-- tới lượt bạn lập chứng từ tiếp theo (vd Thu mua lập QC sau khi bộ PR duyệt).
+alter table pm_notice add column if not exists pkg_id bigint references pm_pkg(id) on delete cascade;
+alter table pm_notice drop constraint if exists pm_notice_kind_check;
+alter table pm_notice add constraint pm_notice_kind_check
+  check (kind in ('todo', 'approved', 'returned', 'rejected', 'cancelled', 'next'));
+
+/* Mọi thay đổi trạng thái của một bộ đi qua pm_pkg_event, nên báo từ đây là
+   không sót đường nào:
+   - bộ đang chờ duyệt: báo "việc cần làm" cho mọi người làm được bước hiện
+     tại (kể cả khi Kế toán trưởng / GM JVC trả PA / MC về AM team);
+   - kết cục (duyệt xong / trả về người lập / từ chối / huỷ): báo người lập;
+   - duyệt xong: báo người lập chứng từ bắt buộc kế tiếp (QC sau bộ PR, PO sau
+     bộ QC, AH sau PO) theo chuỗi của pháp nhân. */
 create or replace function pm_notify_trg()
 returns trigger
 language plpgsql
 security definer
 set search_path = public
 as $$
-declare d pm_doc; p pm_project; s pm_doc_step;
+declare k pm_pkg; p pm_project; s pm_pkg_step; v_nos text; v_lead text; v_first bigint; v_next text;
 begin
-  -- Quản trị sửa nội dung (22_admin_tools.sql): không đổi ai phải làm gì — không báo.
-  if new.action = 'admin_edit' then return null; end if;
-  select * into d from pm_doc where id = new.doc_id;
-  if d.id is null then return null; end if;
-  select * into p from pm_project where code = d.project_code;
+  select * into k from pm_pkg where id = new.pkg_id;
+  if k.id is null then return null; end if;
+  select * into p from pm_project where code = k.project_code;
+  select string_agg(x.doc_no, ' + ' order by t.seq), (array_agg(x.id order by t.seq))[1]
+    into v_nos, v_first
+    from pm_doc x join pm_doc_type t on t.code = x.doc_type
+   where x.pkg_id = k.id and x.status not in ('cancelled');
+  v_lead := pm_grp_lead(k.grp);
 
-  -- Việc "chờ duyệt" cũ của chứng từ này hết đúng rồi: bước đã chuyển, hoặc
-  -- chứng từ đã về tay người lập.
+  -- Việc "chờ duyệt" cũ của bộ này hết đúng rồi: bước đã chuyển, hoặc bộ đã về người lập.
   update pm_notice set read_at = now()
-   where doc_id = d.id and kind = 'todo' and read_at is null;
+   where pkg_id = k.id and kind = 'todo' and read_at is null;
 
-  -- Đang chờ duyệt: báo cho mọi người duyệt được bước hiện tại. Bước "duyệt
-  -- cùng" (PR + RR + PA, QC + MC) chỉ báo khi cả nhóm đã tới — trước đó
-  -- JVC chưa làm được gì.
-  if d.status = 'in_review' then
-    select * into s from pm_doc_step where doc_id = d.id and step = d.current_step;
-    if s.kind = 'joint' and exists (select 1 from pm_pair_state(d.id) x where x.wait is not null) then
-      return null;
-    end if;
-    insert into pm_notice (user_id, doc_id, kind, doc_no, doc_type, project_code, actor_email)
-    select u.id, d.id, 'todo', d.doc_no, d.doc_type, d.project_code, new.actor_email
+  if k.status = 'in_review' then
+    select * into s from pm_pkg_step where pkg_id = k.id and step = k.current_step;
+    insert into pm_notice (user_id, doc_id, pkg_id, kind, doc_no, doc_type, project_code, actor_email, comment)
+    select u.id, v_first, k.id, 'todo', v_nos, v_lead, k.project_code, new.actor_email,
+           case when new.action = 'return_am' then new.comment end
     from   app_user u
-    where  u.active and u.id is distinct from d.created_by
+    where  u.active and u.id is distinct from k.created_by
       and  app_user_role_covers(u.id, s.role_code, p.dept_code)
       and  exists (select 1 from app_user_role ur
                    join app_permission ap on ap.role_code = ur.role_code
                    where ur.user_id = u.id and ap.module_code = 'approval' and ap.can_approve);
   end if;
 
-  -- Kết cục: báo cho người lập (trừ khi chính họ vừa làm, vd tự huỷ).
-  if d.status in ('approved', 'returned', 'rejected', 'cancelled')
-     and new.to_status = d.status
-     and d.created_by is not null and d.created_by is distinct from new.actor
-     and exists (select 1 from app_user where id = d.created_by) then
-    insert into pm_notice (user_id, doc_id, kind, doc_no, doc_type, project_code, actor_email, comment)
-    values (d.created_by, d.id, d.status, d.doc_no, d.doc_type, d.project_code, new.actor_email, new.comment);
+  if k.status in ('approved', 'returned', 'rejected', 'cancelled') and new.to_status = k.status
+     and k.created_by is not null and k.created_by is distinct from new.actor
+     and exists (select 1 from app_user where id = k.created_by) then
+    insert into pm_notice (user_id, doc_id, pkg_id, kind, doc_no, doc_type, project_code, actor_email, comment)
+    values (k.created_by, v_first, k.id, k.status, v_nos, v_lead, k.project_code, new.actor_email, new.comment);
+  end if;
+
+  if k.status = 'approved' and new.to_status = 'approved' then
+    select t.code into v_next from pm_doc_type t
+     where t.required and t.side = 'operator'
+       and t.seq > (select max(x.seq) from pm_doc_type x where x.code = v_lead or x.grp = k.grp)
+     order by t.seq limit 1;
+    if v_next is not null then
+      insert into pm_notice (user_id, doc_id, pkg_id, kind, doc_no, doc_type, project_code, actor_email)
+      select u.id, v_first, k.id, 'next', v_nos, v_next, k.project_code, new.actor_email
+      from   app_user u
+      join   pm_chain c on c.entity = pm_entity(p.dept_code) and c.doc_type = v_next and c.step = 0
+      where  u.active and app_user_role_covers(u.id, c.role_code, p.dept_code);
+    end if;
   end if;
   return null;
 end $$;
 
+-- Thông báo sinh từ BỘ; nhật ký từng chứng từ (lập, sửa quản trị) không báo gì nữa.
 drop trigger if exists pm_notify on pm_doc_event;
-create trigger pm_notify after insert on pm_doc_event
+drop trigger if exists pm_notify on pm_pkg_event;
+create trigger pm_notify after insert on pm_pkg_event
   for each row execute function pm_notify_trg();
 
 
@@ -174,6 +199,6 @@ select 'Bản gửi duyệt cũ đã bỏ (phải = 0)', count(*)::text, '0',
        case when count(*) = 0 then '✔' else '✘ Chạy lại 19_pm_workflow.sql' end
 from   pg_proc where proname = 'pm_doc_submit' and pronargs = 1
 union all
-select 'Bước kiểm tra / duyệt cùng (25/09)', count(*)::text, '1',
+select 'Bộ hồ sơ (26/09): trigger trên nhật ký bộ', count(*)::text, '1',
        case when count(*) = 1 then '✔' else '✘ Chạy lại 19_pm_workflow.sql trước' end
-from   information_schema.columns where table_schema = 'public' and table_name = 'pm_doc_step' and column_name = 'kind';
+from   pg_trigger g join pg_class c on c.oid = g.tgrelid where g.tgname = 'pm_notify' and c.relname = 'pm_pkg_event';

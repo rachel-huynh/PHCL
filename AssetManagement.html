@@ -1153,6 +1153,96 @@
   body.snap details:not([open]) > :not(summary){display:none!important}   /* html2canvas draws closed <details> open */
   @media (max-width:1200px){ .dkpis{grid-template-columns:repeat(4,minmax(0,1fr))} }
   @media (max-width:700px){ .dkpis{grid-template-columns:repeat(2,minmax(0,1fr))} .dkpis .span4{grid-column:span 2} }
+
+  /* ============================================================ PACKAGES 26/09
+     Who has to act, by colour: blue = hotel operator, purple = AM team,
+     yellow = Chief Accountant / JVC GM, green = approved, grey = draft,
+     red = returned / rejected. Used on the chain, the Projects "current step"
+     and the To-do list. */
+  .stg.band-op{background:#e3ecf8;color:#1f5aa6}
+  .stg.band-am{background:#efe6fa;color:#6b3fa0}
+  .stg.band-jvc{background:#fdf1cf;color:#8a5a00}
+  .stg.band-ok{background:#e3f3ea;color:var(--green)}
+  .stg.band-draft{background:#eef1f6;color:#5b6475}
+  .stg.band-bad{background:#fbe5e2;color:var(--red)}
+  .wfstep.cur.band-op{border-color:#2f6fb5;box-shadow:0 0 0 1px #2f6fb5} .wfstep.cur.band-op .n{background:#2f6fb5}
+  .wfstep.cur.band-am{border-color:#7b4bc0;box-shadow:0 0 0 1px #7b4bc0} .wfstep.cur.band-am .n{background:#7b4bc0}
+  .wfstep.cur.band-jvc{border-color:#d9a316;box-shadow:0 0 0 1px #d9a316} .wfstep.cur.band-jvc .n{background:#d9a316}
+  .wfbox.na{opacity:.55}
+  .wfask{margin:6px 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .wcfollow{font-size:11.5px;color:var(--dim);font-style:italic}
+  /* The documents of a package: round dots beside CONTENT, arrows under the sheet, a page turn between. */
+  .wfdots{display:flex;gap:7px}
+  .wfdot{position:relative;width:38px;height:38px;border-radius:50%;border:2px solid var(--navy);background:#fff;color:var(--navy);
+         font-size:11px;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center}
+  .wfdot b{font-weight:800}
+  .wfdot.on{background:var(--navy);color:#fff}
+  .wfdot.off{border-color:#c9d1de;color:#a9b3c3;background:#f3f5f9;cursor:not-allowed}
+  .wfdot i{position:absolute;right:-3px;top:-3px;width:11px;height:11px;border-radius:50%;border:2px solid #fff;padding:0;background:#b8c2d3}
+  .wfdot i::before{display:none}
+  .wfdot i.wf-in_review{background:var(--blue)} .wfdot i.wf-returned{background:var(--amber)}
+  .wfdot i.wf-approved{background:var(--green)} .wfdot i.wf-rejected{background:var(--red)}
+  .wfnav{display:flex;justify-content:flex-end;align-items:center;gap:6px;margin-top:10px}
+  .wfpg{font-size:11.5px;color:var(--dim);margin-right:6px}
+  .wfarrow{width:40px;height:34px;font-size:20px;line-height:1;padding:0}
+  .flipwrap{perspective:1800px}
+  .flipwrap.turn-out-fwd > .fscroll{transform-origin:left center;animation:wfTurnOutF .22s ease-in forwards}
+  .flipwrap.turn-out-back > .fscroll{transform-origin:right center;animation:wfTurnOutB .22s ease-in forwards}
+  .flipwrap.turn-in-fwd > .fscroll{transform-origin:right center;animation:wfTurnIn .26s ease-out}
+  .flipwrap.turn-in-back > .fscroll{transform-origin:left center;animation:wfTurnIn .26s ease-out}
+  @keyframes wfTurnOutF{to{transform:rotateY(-75deg);opacity:.15}}
+  @keyframes wfTurnOutB{to{transform:rotateY(75deg);opacity:.15}}
+  @keyframes wfTurnIn{from{transform:rotateY(55deg);opacity:.2}to{transform:none;opacity:1}}
+  /* Where to type (user 26/09): white boxes as on the workbook, marked by a dashed outline. */
+  .fsheet.edit .fv:has(input:not([type=checkbox]),select,textarea),
+  .fsheet.edit .ftable td:has(input,select,textarea),
+  .fsheet.edit .fvbox:has(input,select,textarea),
+  .fsheet.edit .fcode td:has(input),
+  .fsheet.edit .fkv td.v:has(input,select){background:#fff}
+  .fsheet.edit input:not([type=checkbox]),.fsheet.edit select,.fsheet.edit textarea{border:1px dashed #7d95ba !important;background:#fff !important}
+  .fsheet.edit input.bad{border:1px solid var(--red) !important;background:#fff4f2 !important}
+
+  /* Workbook-exact sheets (PR, RR): the workbook's column grid, merges, row
+     heights and colours — navy #003366 bars, light-blue page, white boxes. */
+  .fsheet.xs{min-width:820px;max-width:1000px;font:13px/1.25 var(--font);color:#000}
+  .xspage{background:#fff}
+  .xsg{display:grid;background:#dae3f3}
+  .xsg.xs-white{background:#fff}
+  .xs-co{font-size:.92em;line-height:1.35;padding:2px 0}
+  .xs-co .b{font-weight:700}
+  .xs-ttl{color:#003366;font-size:1.9em;line-height:1.12;display:flex;align-items:center;justify-content:flex-end;text-align:right}
+  .xs-hd{background:#003366;color:#fff;font-size:.72em;display:flex;align-items:center;padding:0 4px;border:1px solid #000}
+  .xs-cv{background:#fff;border:1px solid #000;border-top:0;display:flex;align-items:center;justify-content:center;padding:0 4px}
+  .xs-bar,.xs-nav{background:#003366;color:#fff;display:flex;align-items:center;padding:0 6px;white-space:nowrap;min-width:0}
+  .xs-bar{font-weight:700}
+  .xs-bar.r{justify-content:flex-end}
+  .xs-bar select{color:#000;font-weight:400}
+  .xs-lbl{font-size:.7em;display:flex;align-items:flex-end;padding:0 2px 1px;white-space:nowrap;overflow:hidden}
+  .xs-val{background:#fff;display:flex;align-items:center;justify-content:center;text-align:center;padding:1px 4px;min-width:0;overflow-wrap:anywhere}
+  .xs-val.l,.xs-td.l{justify-content:flex-start;text-align:left}
+  .xs-val.n,.xs-td.n{justify-content:flex-end;text-align:right}
+  .xs-val.top{align-items:flex-start}
+  .xs-val.small,.xs-td.small{font-size:.82em}
+  .xs-txt{display:flex;align-items:center;justify-content:center}
+  .xs-wtxt{background:#fff;display:flex;align-items:center;padding:0 4px}
+  .xs-band{background:#d7e7f5}
+  .xsg .bd{border:1px solid #000}
+  .xs-th{background:#003366;color:#fff;display:flex;align-items:center;justify-content:center;text-align:center;padding:2px;border:1px solid #000;border-left:0}
+  .xs-th[style^="grid-column:2 /"]{border-left:1px solid #000}
+  .xs-td{background:#fff;display:flex;align-items:center;justify-content:center;text-align:center;padding:1px 4px;min-width:0;
+         border-right:1px solid #000;border-bottom:1px solid #000;overflow-wrap:anywhere;white-space:pre-wrap}
+  .xs-td[style^="grid-column:2 /"]{border-left:1px solid #000}
+  .xs-del{display:flex;align-items:center;overflow:visible;background:transparent}
+  .xs-note{background:#dae3f3;color:#3a3a3a;font-size:.78em;white-space:pre-wrap;padding:6px 8px;line-height:1.45}
+  .xstable .fadd{margin:6px 0 6px 18px}
+  .xs-val input,.xs-val select,.xs-val textarea,.xs-td input,.xs-td select,.xs-td textarea,.xs-bar select{
+      width:100%;min-width:0;font:inherit;text-align:inherit;padding:2px 3px;margin:0;border-radius:2px;height:auto}
+  .xs-val textarea,.xs-td textarea{resize:vertical;min-height:34px;text-align:left}
+  .xs-val.top textarea{min-height:100%}
+  .xspage .fconsent{padding:8px 4px 4px}
+  /* Signature boxes: Prepared / Checked / Approved by, the title, the signature, the name. */
+  .fconsent .fsigs + .fsigs{margin-top:8px}
+  .fsig .sk{font-size:10px;font-weight:700;font-style:italic;text-align:left;color:var(--ink);margin-bottom:2px}
 </style>
 </head>
 <body>
@@ -2009,7 +2099,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260925h"></script>
-<script src="app.js?v=20260925h"></script>
+<script src="i18n.js?v=20260925i"></script>
+<script src="app.js?v=20260925i"></script>
 </body>
 </html>
