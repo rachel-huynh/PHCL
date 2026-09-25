@@ -1495,6 +1495,44 @@
   .srcck td.na{color:var(--ink-3)}
   .srcckkey{display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--dim);margin-top:8px}
   .srcckkey .ok{color:var(--green)} .srcckkey .miss{color:var(--red)}
+  /* ============ Forms — feedback 26/09/2026 ("FFE.KIT.05.2026 - all forms (2).pdf") ============ */
+  /* No frame around the page. */
+  .fpage{border:none}
+  /* One size on screen for every form being approved: portrait sheets one width, landscape pages another. */
+  .fsheet.portrait:not(.pdf):not(.wide),.fsheet.xs:not(.pdf){width:920px;min-width:920px;max-width:920px}
+  .fsheet.landscape:not(.pdf),.fsheet.portrait:not(.pdf):has(> .fpage.land){width:1240px;min-width:1240px;max-width:1240px}
+  .fsheet:not(.pdf) .fpage.land{min-width:0}
+  /* Code / date box: both values left, both in the middle of their row. */
+  .fsheet .fcode td{vertical-align:middle;height:24px;line-height:1.2}
+  /* Boxes a little lower. */
+  .fsheet .fv{min-height:20px;padding:1px 6px}
+  .fsheet .fgrid{row-gap:4px}
+  /* Label / box rows: every cell in the middle of its row; the USD figures right-aligned under each other. */
+  .fsheet .fkv td{vertical-align:middle}
+  .fsheet .fkv td.u.un{text-align:right;min-width:64px}
+  /* QC / MC general block: the project on the left, the figures on the right. */
+  .fkv2{display:grid;grid-template-columns:minmax(0,36fr) minmax(0,64fr);align-items:start;gap:0 18px}
+  .fkv2 .fkv + .fkv td.v{min-width:120px;white-space:nowrap}
+  .fsheet .fkv2 table.fkv{margin:-3px -6px;width:auto;justify-self:start}
+  .fkv2 .fkv td.k{min-width:0}
+  .fkv2 .fkv td.v{min-width:160px}
+  .fsheet .fover,.fsheet .fover .wfro{color:#b42318;font-weight:700}
+  /* QC: the vendor titles at a readable size; the appendix rows lower. */
+  .fqc td.fvh{font-size:12px}
+  .fqc td.fvh small{font-size:10.5px}
+  .fsheet .fqc.fap{border-spacing:6px 2px}
+  .fsheet .fqc.fap td{padding:1px 6px}
+  .fap tr.fbh td{padding-top:2px}
+  .fap tr:first-child td.fvbox,.fap tr:first-child td.fvbox *{text-align:center !important;justify-content:center}
+  /* PR: "Risk Level" centred in its box. */
+  .xs-wtxt.c{justify-content:center}
+  /* PO / AH note: the label as wide as it needs to be; the totals box's edges in line with the table's columns. */
+  .fterms .ftr{grid-template-columns:max-content 1fr}
+  .fterms .ftr .tl{min-width:96px}
+  .ftermrow.tail{column-gap:0}
+  .ftermrow.tail > :first-child{padding-right:10px}
+  .ftotbox .ftl b{display:flex;align-items:center;margin:0}
+  .ftotbox .ftl .fv{margin:0}
 </style>
 </head>
 <body>
@@ -2394,7 +2432,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260926b"></script>
-<script src="app.js?v=20260926b"></script>
+<script src="i18n.js?v=20260926c"></script>
+<script src="app.js?v=20260926c"></script>
 </body>
 </html>

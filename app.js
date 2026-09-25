@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260926b';
+const APP_VERSION = '20260926c';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -8241,6 +8241,7 @@ const WF_BAND = { AM_COORD: 'am', AM_EXEC: 'am', CHIEF_ACC: 'jvc', JVC_DGM: 'jvc
 const wfBand = role => WF_BAND[role] || 'op';
 // Titles under the signature boxes, in the workbook's words.
 const WF_SIG_TITLE = {
+  PURCHASING: ['Purchasing Manager', 'Trưởng phòng Thu mua'],          // feedback 26/09/2026: the preparer of QC / PO / CT
   DEPT_HEAD: ['Head of Department', 'Trưởng bộ phận'], DOF: ['Head of Finance', 'Trưởng bộ phận Tài chính'],
   HOTEL_GM: ['Hotel General Manager', 'Tổng Quản lý KS'], AM_COORD: ['AM Coordinator', 'Điều phối quản lý tài sản'],
   AM_EXEC: ['AM Executive', 'Chuyên viên quản lý tài sản'], CHIEF_ACC: ['JVC Chief Accountant', 'Kế toán trưởng JVC'],
@@ -9289,7 +9290,7 @@ function fsHead(x, dateLabel, dateNode) {
 function fsKv(rows) {
   return el('table', { className: 'fkv' }, rows.map(r => el('tr', {}, [
     el('td', { className: 'k', textContent: r[0] }), el('td', { className: 'v' + (r[2] ? ' n' : '') }, r[1]),
-    ...(r[3] || []).map(n => el('td', { className: 'u' }, n))])));
+    ...(r[3] || []).map((n, i) => el('td', { className: 'u' + (i === 2 && r[3].length >= 4 ? ' un' : '') }, n))])));
 }
 
 /* A form table. cols: { h, k, t, opts, w, ro, get(l,i), obj(l), product, after(l) }.
@@ -9340,6 +9341,8 @@ function fsTable(x, cols, rows, o = {}) {
     add.onclick = () => { rows.push(o.add()); x.rr(); };
     wrap.append(add);
   }
+  // The widths of the last two columns (unit price, amount), so the totals box under the table lines up with them.
+  if (o.tail) { const w = c => /%$/.test(c.w || '') ? parseFloat(c.w) * k : 0; x.tail = [w(cols[cols.length - 2]), w(cols[cols.length - 1])]; }
   return wrap;
 }
 
@@ -9361,11 +9364,13 @@ function fsRisk(x, obj, editable, span = 6) {
 function paMoney(d, c) {
   const cls = d.difference == null ? '' : d.difference > 0 ? ' bad' : ' good';
   const row = (k, v, extra) => el('tr', {}, [el('td', { className: 'k', textContent: k }), el('td', { className: 'v' + (extra || '') }, fsR(v, 'money')),
-    ...fsPair(v, c).map(n => el('td', { className: 'u' }, n))]);
+    ...fsPair(v, c).map((n, i) => el('td', { className: 'u' + (i === 2 ? ' un' : '') }, n))]);
+  // The exchange rate on the ratio's row without a box: its figure under the USD figures, "(exrate)" under "USD" (feedback 26/09/2026).
+  const fx = curUsd() ? [] : [el('td', { className: 'u' }), el('td', { className: 'u' }), el('td', { className: 'u un' }, fsR(c.fx, 'money')),
+                              el('td', { className: 'u', textContent: '(exrate)' })];
   return el('table', { className: 'fkv pakv' }, [row('Budgeted Value:', d.budget_value), row('Project Value:', d.project_value),
     row('Difference:', d.difference, cls),
-    el('tr', {}, [el('td', { className: 'k', textContent: 'Ratio:' }), el('td', { className: 'v' + cls }, fsR(d.ratio, 'pct')),
-      el('td', { className: 'k', textContent: 'Exrate:' }), el('td', { className: 'v', colSpan: 3 }, fsR(c.fx, 'money'))])]);
+    el('tr', {}, [el('td', { className: 'k', textContent: 'Ratio:' }), el('td', { className: 'v' + cls }, fsR(d.ratio, 'pct')), ...fx])]);
 }
 
 // "Note" box with the terms, and a figure on the right. A finished form leaves out the terms left empty.
@@ -9376,9 +9381,13 @@ function fsTerms(x, fields, rightLabel, rightValue) {
     ...shown.map(([lbl, k, ty, opts]) => el('div', { className: 'ftr' + (ty === 'area' ? ' tall' : '') }, [
       el('span', { className: 'tl', textContent: lbl + ':' }),
       el('div', { className: 'fv' }, wfInput({ k, t: ty, opts }, d, x.edit, x.rr, []))]))]);
+  // Under a table that gave its column widths (x.tail): label under "Unit Price", figure under "Amount",
+  // edges in line with the table's (feedback 26/09/2026).
+  const tl = x.tail && x.tail[0] && x.tail[1] ? x.tail : null;
   const right = el('div', { className: 'ftotbox' }, rightLabel ? (Array.isArray(rightLabel) ? rightLabel : [[rightLabel, rightValue]])
-    .map(([l, v]) => el('div', { className: 'ftl' }, [el('b', { textContent: l }), el('div', { className: 'fv' }, fsR(v, 'money'))])) : []);
-  return el('div', { className: 'ftermrow' }, [left, right]);
+    .map(([l, v]) => el('div', { className: 'ftl', style: tl ? `grid-template-columns:${tl[0]}fr ${tl[1]}fr` : '' },
+      [el('b', { textContent: l }), el('div', { className: 'fv' }, fsR(v, 'money'))])) : []);
+  return el('div', { className: 'ftermrow' + (tl ? ' tail' : ''), style: tl ? `grid-template-columns:1fr ${tl[0] + tl[1]}%` : '' }, [left, right]);
 }
 
 // OneDrive / SharePoint links (files stay out of Supabase for now).
@@ -9421,7 +9430,8 @@ function fsSheet(type, edit, mode = 'screen') {
   MONEY.lock = edit;
   x.rr = () => { wfMarkDirty(); const n = fsSheet(type, edit, mode); x.root.replaceWith(n); wfWarnRender(); };
   try {
-    x.root = el('div', { className: `fsheet ${form.orient} ${edit ? 'edit' : 'print'}${form.wide ? ' wide' : ''}${form.xs ? ' xs' : ''}` }, form.build(x));
+    const kids = form.build(x);                       // built first: it tells whether the table is crowded (x.wide)
+    x.root = el('div', { className: `fsheet ${form.orient} ${edit ? 'edit' : 'print'}${form.wide && x.wide !== false ? ' wide' : ''}${form.xs ? ' xs' : ''}` }, kids);
   } finally { MONEY.lock = lock; }
   requestAnimationFrame(() => fsFit(x.root));       // once it is in the page: shrink the one-line texts to fit
   return x.root;
@@ -9438,7 +9448,10 @@ function wfWarnRender() {
   if (wfEditable()) put('info', t('wf.fillHint'));
   // Not on the workbook sheet, so said beside it: what the procurement decision matrix suggests.
   if (ty === 'PR' && d.procurement_suggested && wfEditable()) put(d.procurement_type === d.procurement_suggested ? 'ok' : 'warn', t('wf.pr.suggest', { v: d.procurement_suggested }));
-  if (ty === 'PA') { const g = paGate(d, c); put(g.ok ? 'ok' : 'warn', g.text); }
+  if (ty === 'PA') { const g = paGate(d, c); put(g.ok ? 'ok' : 'warn', g.text);
+                     if (d.procurement_suggested) put('info', t('wf.pa.procRule', { v: d.procurement_suggested, pt: d.project_type, r: d.risk_level })); }
+  // QC: the chosen vendor's total against the budget, by the same gate as the PA (feedback 26/09/2026).
+  if (ty === 'QC' && d.estimated) { const g = paGate(d, Object.assign({}, c, { prTotal: d.estimated })); if (!g.ok) put('warn', g.text); }
   if (ty === 'QC') { const r = qcScore(d); if (r.problems.length) put('warn', r.problems.join('\n')); else if (r.best) put('ok', t('wf.qc.ok', { v: d.chosen_vendor, s: r.best.total })); }
   if (ty === 'MC' && d.mc_over && d.mc_over.length) put('warn', t('wf.mc.over', { items: d.mc_over.join(', ') }));
   if (ty === 'CT' && off100(n0(d.pct_sum))) put('warn', t('wf.ct.pct', { p: Math.round(n0(d.pct_sum) * 100) / 100 }));
@@ -9488,6 +9501,10 @@ function fsAssetCols(x, extra = []) {
   const shown = key => showAll || (filled(key) && !hide.has(key));
   const spec = [...FS_SPEC_COLS.map(([h, k]) => k ? { h, key: k, k, t: 'text', obj: l => (l.spec = l.spec || {}) } : { h, key: 'origin', k: 'origin', t: 'text' }),
                 { h: 'Warranty Period', key: 'warranty_months', k: 'warranty_months', t: 'num' }].filter(c => shown(c.key));
+  // Extra columns (the AH's location) follow the same rule: empty → hidden until the preparer opens every column.
+  extra = extra.filter(c => !c.key || showAll || lines.some(l => l[c.key] != null && String(l[c.key]).trim() !== ''));
+  // Only a crowded table (many spec columns) takes the small type; a few columns keep the form's size (feedback 26/09/2026).
+  x.wide = spec.length + extra.length > 4;
   const fixed = 16 + 5 + 5 + 10 + 11 + (extra.length ? 9 : 0);
   const w = spec.length ? Math.max(3, (100 - 4 - fixed) / spec.length).toFixed(2) + '%' : '';
   return [{ h: 'Asset Item', k: 'asset_item', w: '16%', left: true, cell: l => wfPickProduct(x, l) },
@@ -9704,17 +9721,17 @@ function xsHead(x, type, dateLabel, dateNode) {
     [split[0], 'co', el('div', {}, FS_CO.map((s, i) => el('div', { className: i < 2 ? 'b' : 'sm', textContent: s })))],
     [split[1], 'ttl', el('div', {}, [el('div', { textContent: f.title[0].toUpperCase() }), el('div', { textContent: f.title[1].toUpperCase() })])],
     ['M3:Q3', 'hd', 'CODE'], ['R3:U3', 'hd', dateLabel],
-    ['M4:Q4', 'cv', WF.doc.doc_no, 'l'], ['R4:U4', 'cv', dateNode]], 'xs-white');
+    ['M4:Q4', 'cv', WF.doc.doc_no, 'l'], ['R4:U4', 'cv', dateNode, 'l']], 'xs-white');     // both left (feedback 26/09/2026)
 }
 /* A table on the grid: cols = [[fromCol, toCol, header, cell(line, i), extraClass]].
    Only the filled lines are drawn (no empty rows: the sheet has to fit one page). */
 function xsTable(x, type, cols, lines, o = {}) {
-  const rows = { 1: o.headH || 29.9 }, cells = cols.map(([a, b, h, , cls]) => [`${a}1:${b}1`, 'th', h, cls && cls.includes('n') ? 'c' : '']);
+  const rows = { 1: o.headH || 29.9 }, cells = cols.map(([a, b, h, , cls]) => [`${a}1:${b}1`, 'th', h, typeof cls === 'string' && cls.includes('n') ? 'c' : '']);
   const n = lines.length;
   for (let r = 0; r < n; r++) {
     const R = r + 2, l = lines[r];
     rows[R] = o.rowH || 20.5;
-    for (const [a, b, , fn, cls] of cols) cells.push([`${a}${R}:${b}${R}`, 'td', l ? (a === 'B' ? String(r + 1) : fn(l, r)) : '', cls || '']);
+    for (const [a, b, , fn, cls] of cols) cells.push([`${a}${R}:${b}${R}`, 'td', l ? (a === 'B' ? String(r + 1) : fn(l, r)) : '', (typeof cls === 'function' ? l && cls(l) : cls) || '']);
     if (x.edit && l) {
       const del = el('button', { className: 'xbtn', textContent: '×', title: t('wf.delLine') });
       del.onclick = () => { lines.splice(r, 1); x.rr(); };
@@ -9784,7 +9801,8 @@ function fsConsent(x, label = 'Consent by:') {
   const rows = split > 0 ? [boxes.slice(0, split), boxes.slice(split)] : [boxes];
   const cols = Math.max(4, ...rows.map(r => r.length));
   return el('div', { className: 'fconsent' }, [el('div', { className: 'fct', textContent: label }),
-    ...rows.map(r => el('div', { className: 'fsigs', style: `grid-template-columns:repeat(${cols},minmax(0,1fr))` }, r.map(b => {
+    // A short row (the MC's three boxes) keeps the boxes' width and sits in the middle (feedback 26/09/2026).
+    ...rows.map(r => el('div', { className: 'fsigs', style: `grid-template-columns:repeat(${r.length},calc((100% - ${(cols - 1) * 8}px) / ${cols}));justify-content:center` }, r.map(b => {
       const [en, vi] = b.role ? wfSigTitle(b.role) : ['', ''];
       return el('div', { className: 'fsig' }, [
         el('div', { className: 'sk', textContent: b.lbl }),
@@ -9848,19 +9866,20 @@ const WF_FORMS = {
           ['B15:C15', 'val', V('possibility', 'select', ['1', '2', '3', '4', '5'])], ['D15', 'txt', 'x'],
           ['E15', 'val', V('impact', 'select', ['1', '2', '3', '4'])], ['F15', 'txt', '='], ['G15', 'val', fsR(d.assessment)],
           ['I15:U19', 'val', V('reason', 'area'), 'l top small'],
-          ['E17', 'wtxt', 'Risk Level'], ['F17', 'txt', ':'], ['G17', 'val', fsR(d.risk_level), 'fit'],
+          ['E17', 'wtxt', 'Risk Level', 'c'], ['F17', 'txt', ':'], ['G17', 'val', fsR(d.risk_level), 'fit'],
           ['B18:H18', 'lbl', 'SUGGESTION'], ['B19:G19', 'val', fsR(d.suggestion), 'fit']]),
         xsBlock(T, { 21: 21, 22: 3.75, 23: 15, 24: 15, 25: 3.75 }, [
           ['B21:P21', 'bar', 'DETAILED INFORMATION'], ['Q21:T21', 'bar', 'Currency  :', 'r i'], ['U21', 'bar', cur, 'i'],
           ['A22:V22', 'band', ''],
           // Without a previous project the supplier takes the empty box beside it.
           ['B23:F23', 'nav', 'COST BENCHMARK'], ...(prev ? [['G23:H23', 'nav', 'PREVIOUS PROJECT'], ['I23:U23', 'nav', 'SUPPLIER']] : [['G23:U23', 'nav', 'SUPPLIER']]),
-          ['B24:F24', 'val', V('cost_benchmark', 'select', ['Quotation', 'Previous Project', 'Price Reference'])],
-          ...(prev ? [['G24:H24', 'val', V('previous_project', 'text')], ['I24:U24', 'val', V('supplier', 'text')]] : [['G24:U24', 'val', V('supplier', 'text')]])]),
+          ['B24:F24', 'val', V('cost_benchmark', 'select', ['Quotation', 'Previous Project', 'Price Reference']), 'l'],
+          ...(prev ? [['G24:H24', 'val', V('previous_project', 'text'), 'l'], ['I24:U24', 'val', V('supplier', 'text'), 'l']] : [['G24:U24', 'val', V('supplier', 'text'), 'l']])]),
         xsTable(x, T, [['B', 'B', 'No.'],
           ['C', 'F', 'Asset Item', l => wfPickProduct(x, l), 'l'],
-          ['G', 'H', 'Rationale', l => I(x, l, 'rationale', 'area'), 'l small'],
-          ['I', 'J', 'Technical Standard', l => I(x, l, 'tech_standard', 'area'), 'l small'],
+          // Centred, at the asset item's size; smaller only for a text too long for the box (feedback 26/09/2026).
+          ['G', 'H', 'Rationale', l => I(x, l, 'rationale', 'area'), l => String(l.rationale || '').length > 70 ? 'small' : ''],
+          ['I', 'J', 'Technical Standard', l => I(x, l, 'tech_standard', 'area'), l => String(l.tech_standard || '').length > 70 ? 'small' : ''],
           ['K', 'L', 'Location', l => wfPickLoc(x, l)],
           ['M', 'N', 'Qnt', l => I(x, l, 'qty', 'num'), 'n'],
           ['O', 'R', 'Unit Price', l => I(x, l, 'unit_price', 'money'), 'n'],
@@ -9907,7 +9926,8 @@ const WF_FORMS = {
           ['S', 'U', 'Original value', l => I(x, l, 'original_value', 'money'), 'n']], d.lines,
           { headH: 36, rowH: 15, add: () => ({ qty: 1, after: 'Reuse' }) }),
         xsBlock(T, { 52: 3.75, 53: 15 }, [
-          ['K53:N53', 'wtxt', 'Total', 'bd b'], ['O53:P53', 'val', fsR(d.total_qty, 'num'), 'n bd b'], ['S53:U53', 'val', xsMoney(d.total), 'n bd b']]),
+          // The unit box left white too, so the total row reads as one strip (feedback 26/09/2026).
+          ['K53:N53', 'wtxt', 'Total', 'bd b'], ['O53:P53', 'val', fsR(d.total_qty, 'num'), 'n bd b'], ['Q53:R53', 'val', '', 'bd'], ['S53:U53', 'val', xsMoney(d.total), 'n bd b']]),
         xsBlock(T, { 54: 5.15, 55: 140, 56: 7.4 }, [['B55:U55', 'note', XS_RR_NOTE()]]),     // as tall as its text
         fsConsent(x)]),
         x.mode === 'screen' ? fsLinks(x, 'IMAGES / VIDEOS OF THE CURRENT CONDITION (LINKS)') : ''];
@@ -9925,8 +9945,10 @@ const WF_FORMS = {
       d.budget_value = c.budgetValue; d.project_value = c.prTotal; d.fx = c.fx;
       d.difference = d.budget_value != null ? d.project_value - d.budget_value : null;
       d.ratio = d.budget_value ? d.difference / d.budget_value : null;
+      // The procurement type follows the decision matrix (Menu sheet): project type × risk level × value band.
+      // It is not a free choice on the PA (feedback 26/09/2026); only without a value is it picked by hand.
       d.procurement_suggested = procSuggest(d.project_type, d.risk_level, d.project_value);
-      if (!d.procurement_type && d.procurement_suggested) d.procurement_type = d.procurement_suggested;
+      if (d.procurement_suggested) d.procurement_type = d.procurement_suggested;
       const g = paGate(d, c); d.gate_ok = g.ok; d.gate = g.text;
       d.total = c.prTotal;
     },
@@ -9952,9 +9974,10 @@ const WF_FORMS = {
                     { h: 'Specifications', k: 'specs', t: 'area', w: '20%' }, { h: 'Current Condition', k: 'condition', t: 'select', opts: WF_COND, w: '11%' },
                     { h: 'Notes', k: 'notes', t: 'area', w: '19%' }], d.lines, { add: () => ({ qty: 1 }) }),
         fsBar('CONCLUSION'),
-        // Suggestion over comparability on the left, the procurement type as tall as both on the right.
-        fsGrid([fc('SUGGESTION', fsR(d.suggestion), 6, 'fit'), fc('PROCUREMENT TYPE', I(x, d, 'procurement_type', 'select', PROC_OPTS), 6, 'rows2'),
-                fc('COMPARABILITY', fsR(WF_COMPARE[d.comparability] || ''), 6, 'fit')]),
+        // Suggestion and the procurement type (by the rule, one line) side by side, the comparability under both.
+        fsGrid([fc('SUGGESTION', fsR(d.suggestion), 6, 'fit'),
+                fc('PROCUREMENT TYPE', d.procurement_suggested ? fsR(d.procurement_type) : I(x, d, 'procurement_type', 'select', PROC_OPTS), 6, 'fit'),
+                fc('COMPARABILITY', fsR(WF_COMPARE[d.comparability] || ''), 12, 'fit')]),
         fsRiskRef(x), fsLinks(x), fsConsent(x)])];
     } },
 
@@ -10023,12 +10046,14 @@ const WF_FORMS = {
       return [fsPage([
         fsHead(x, 'DATE', I(x, d, 'date', 'date')),
         fsBar('GENERAL INFORMATION'),
-        fsKv([['Code:', fsR(WF.doc.doc_no)], ['Date:', fsR(d.date, 'date')], ['Project No.:', fsR(p.code)], ['Project Name:', fsR(p.name)],
-              ['Estimated Project Value:', fsR(d.est_value, 'money'), true, [...fsPair(d.est_value, c)]],
-              ['Risk Tolerance:', fsR(MC_TOL, 'pct'), true], ['Exrate:', fsR(c.fx, 'money'), true]]),
+        // The project on the left, the figures on the right (feedback 26/09/2026).
+        el('div', { className: 'fkv2' }, [
+          fsKv([['Code:', fsR(WF.doc.doc_no)], ['Date:', fsR(d.date, 'date')], ['Project No.:', fsR(p.code)], ['Project Name:', fsR(p.name)]]),
+          fsKv([['Estimated Project Value:', fsR(d.est_value, 'money'), true, [...fsPair(d.est_value, c)]],
+                ['Risk Tolerance:', fsR(MC_TOL, 'pct'), true], ['Exrate:', fsR(c.fx, 'money'), true]])]),
         fsBar('DETAILED INFORMATION', 'Time Money Value: price then × (1 + 4.6%)^years'),
         fsTable(x, cols, d.lines, { add: () => ({ qty: 1 }),
-          groups: [[el('span', { textContent: 'UNIT PRICE' }), 3], [el('div', { className: 'fgv col' }, ['A: Chosen Vendor', el('b', { textContent: d.a_vendor || '—' })]), 3],
+          groups: [['', 3], [el('div', { className: 'fgv col' }, ['A: Chosen Vendor', el('b', { textContent: d.a_vendor || '—' })]), 3],
                    ...(hasB ? [[el('div', { className: 'fgv col' }, ['B: Previous Vendor', vname('b_vendor', '[NAME]')]), 5]] : []),
                    ...(hasC ? [[el('div', { className: 'fgv col' }, ['C: Market Price', vname('c_vendor', '[NAME]')]), 3]] : []),
                    ...(D.length ? [['Difference', D.length]] : [])],
@@ -10059,7 +10084,7 @@ const WF_FORMS = {
         fsHead(x, 'ORDER DATE', I(x, d, 'order_date', 'date')),
         fsBar('GENERAL INFORMATION'), fsProjectBlock(x),
         fsBar('DETAILED INFORMATION'), fsColBar(x),
-        fsTable(x, cols, d.lines, { add: () => ({ qty: 1, spec: {} }) }),
+        fsTable(x, cols, d.lines, { add: () => ({ qty: 1, spec: {} }), tail: true }),
         fsOverheads(x),
         fsTerms(x, [['Payment Term', 'payment_term', 'text'], ['Delivery Term', 'delivery_term', 'text'],
                     ['Warranty Term', 'warranty_term', 'text'], ['Progress', 'progress', 'text'], ['Other', 'note', 'area']],
@@ -10105,7 +10130,7 @@ const WF_FORMS = {
     },
     build(x) {
       const d = x.d; d.lines = d.lines || [];
-      const cols = fsAssetCols(x, [{ h: 'Location', w: '9%', cell: l => wfPickLoc(x, l) }]);
+      const cols = fsAssetCols(x, [{ h: 'Location', key: 'location', w: '9%', cell: l => wfPickLoc(x, l) }]);
       return [fsPage([
         fsHead(x, 'HANDOVER DATE', I(x, d, 'handover_date', 'date')),
         fsBar('GENERAL INFORMATION'),
@@ -10116,10 +10141,10 @@ const WF_FORMS = {
                 fc('PROJECT NAME', fsR(x.p.name), 4, 'fit'), fc('DETAILED EVALUATION', I(x, d, 'evaluation_detail', 'area'), 8, 'left rows2'),
                 fc('SUPPLIER', I(x, d, 'supplier', 'text'), 4)]),
         fsBar('DETAILED INFORMATION'), fsColBar(x),
-        fsTable(x, cols, d.lines, { add: () => ({ qty: 1, spec: {} }) }),
+        fsTable(x, cols, d.lines, { add: () => ({ qty: 1, spec: {} }), tail: true }),
         fsTerms(x, [['Warranty Term', 'warranty_term', 'text'], ['Maintenance Term', 'maintenance_term', 'text'],
                     ['Retention amount', 'retained_amount', 'money'], ['Other', 'note', 'area']], 'Total Amount', d.total),
-        fsNote('We agree that all items mentioned above meet your requirements in terms of quantity, quality and these are being handed over to you from owning office by signing this form.\n\n'
+        fsNote('We agree that all items mentioned above meet your requirements in terms of quantity, quality and these are being handed over to you from owning office by signing this form.\n'
           + 'You are expected to protect, maintain and use the items for working purposes only and should not be used for any personal purposes.'),
         fsLinks(x), fsConsent(x)])];
     } }
@@ -10159,20 +10184,24 @@ function qcBuild(x) {
   });
   const oTot = v => (d.olines || []).reduce((s, o, i) => s + n0((v.oprices || {})[i]), 0);   // the vendor's overheads
   const sumCols = [{ h: 'Asset Item', get: l => l.item, t: 'text', w: '26%', left: true }, { h: 'Qnt.', get: l => l.qty, t: 'num', w: '6%' },
-    ...V.map((v, vi) => ({ h: `${vn(v, vi)} — Amount`, get: (l, i) => n0((v.prices || {})[i]) ? n0(l.qty) * n0(v.prices[i]) : null, t: 'money', w: '14%' })),
+    ...V.map((v, vi) => ({ h: vn(v, vi), get: (l, i) => n0((v.prices || {})[i]) ? n0(l.qty) * n0(v.prices[i]) : null, t: 'money', w: '14%' })),   // the vendor's name alone (feedback 26/09/2026)
     { h: '(A-B)/B', get: (l, i) => diff(n0(l.qty) * n0((V[0].prices || {})[i]), n0(l.qty) * n0((V[1].prices || {})[i])), t: 'pct', w: '10%' },
     { h: '(A-C)/C', get: (l, i) => diff(n0(l.qty) * n0((V[0].prices || {})[i]), n0(l.qty) * n0((V[2].prices || {})[i])), t: 'pct', w: '10%' }];
   const page1 = fsPage([
     fsHead(x, 'DATE', I(x, d, 'date', 'date')),
     fsBar('GENERAL INFORMATION'),
-    fsKv([['Code:', fsR(WF.doc.doc_no)], ['Date:', fsR(d.date, 'date')], ['Project No.:', fsR(p.code)], ['Project Name:', fsR(p.name)],
-          ['Project Type:', I(x, d, 'project_type', 'select', QC_PTYPES)],
-          ['Procurement Type:', I(x, d, 'procurement_type', 'select', PROC_OPTS)],
-          ['Budget:', fsR(d.budget_value, 'money'), true, [...fsPair(d.budget_value, c)]],
-          ['Estimated Project Value:', fsR(d.estimated, 'money'), true, [...fsPair(d.estimated, c)]],
-          ['Difference:', fsR(d.difference, 'money'), true, [...fsPair(d.difference, c),
-            fsR(d.budget_value && d.difference != null ? d.difference / d.budget_value : null, 'pct')]],
-          ['Exrate:', fsR(c.fx, 'money'), true]]),
+    // Five rows on the left, the money on the right (feedback 26/09/2026). A difference above the
+    // budget is shown red and says so; the 10 % / USD 5,000 gate is warned beside the form.
+    el('div', { className: 'fkv2' }, [
+      fsKv([['Code:', fsR(WF.doc.doc_no)], ['Date:', fsR(d.date, 'date')], ['Project No.:', fsR(p.code)], ['Project Name:', fsR(p.name)],
+            ['Project Type:', I(x, d, 'project_type', 'select', QC_PTYPES)]]),
+      fsKv([['Procurement Type:', I(x, d, 'procurement_type', 'select', PROC_OPTS)],
+            ['Budget:', fsR(d.budget_value, 'money'), true, [...fsPair(d.budget_value, c)]],
+            ['Estimated Project Value:', fsR(d.estimated, 'money'), true, [...fsPair(d.estimated, c)]],
+            ['Difference:', el('span', { className: d.difference > 0 ? 'fover' : '' }, [fsR(d.difference, 'money')]), true, [...fsPair(d.difference, c),
+              el('span', { className: d.difference > 0 ? 'fover' : '', textContent: (d.budget_value && d.difference != null ? fmtPct(d.difference / d.budget_value) : '')
+                + (d.difference > 0 ? ' over budget' : '') })]],
+            ['Exrate:', fsR(c.fx, 'money'), true]])]),
     fsBar('DETAILED INFORMATION'), crit,
     x.mode === 'screen' ? el('div', { className: 'fhint' }, [t('wf.qc.fromAppendix') + ' ',
       el('a', { href: '#', textContent: t('wf.qc.tabApp') + ' →', onclick: ev => { ev.preventDefault(); goApp(); } })]) : '',
@@ -10188,10 +10217,11 @@ function qcBuild(x) {
   // Page 2 — the appendix, where the scores and prices are entered.
   const ap = el('table', { className: 'fqc fap' });
   const vHead = el('tr', {}, [el('td', { className: 'fnav', textContent: 'Total number of vendor(s)' }), el('td', { className: 'fvbox n' }, I(x, d, 'total_vendors', 'num')),
-    ...V.map((v, i) => el('td', { colSpan: 2, className: 'fvh' }, [el('small', {}, [L[i] + ' ',
+    // Each vendor's name over its score box (the wide one), centred there (feedback 26/09/2026).
+    ...V.map((v, i) => [el('td'), el('td', { className: 'fvh' }, [el('small', {}, [L[i] + ' ',
       ...(x.edit && i > 0 ? [el('button', { className: 'btn tiny', textContent: '⇄ A', title: t('wf.qc.makeA'),
         onclick: () => { const [m] = d.vendors.splice(i, 1); d.vendors.unshift(m); x.rr(); } })] : [])]),
-      x.edit ? wfInput({ k: 'name', t: 'text' }, v, true, x.rr, []) : el('div', { textContent: v.name || '' })]))]);
+      x.edit ? wfInput({ k: 'name', t: 'text' }, v, true, x.rr, []) : el('div', { textContent: v.name || '' })])]).flat()]);
   ap.append(vHead);
   const block = (title, wKey, subsKey, sKey, nKey, scoreKey) => {
     ap.append(el('tr', { className: 'fbh' }, [navc(title), navc('Ratio', 'sm'),
@@ -10219,6 +10249,9 @@ function qcBuild(x) {
   // unit price / amount; the overhead lines (transport, installation,
   // consumables…); the payment term with its score on a row of its own.
   const fin = el('table', { className: 'ftable fin' });
+  // Narrow No. and Qnt., the room to the asset item (feedback 26/09/2026).
+  fin.append(el('colgroup', {}, [['3%'], ['14%'], ['4%'], ...V.map(() => [['8%'], ['8%'], ['7.5%']]).flat(), ['4%'], ['4%'], ...(x.edit ? [['24px']] : [])]
+    .map(([w]) => el('col', { style: `width:${w}` }))));
   const cols = 3 + V.length * 3 + 2 + (x.edit ? 1 : 0);
   const shift = (o, i) => { if (!o) return; const keys = Object.keys(o).map(Number).filter(k => !isNaN(k)).sort((a, b) => a - b);
     const next = {}; for (const k of keys) { if (k < i) next[k] = o[k]; else if (k > i) next[k - 1] = o[k]; } Object.keys(o).forEach(k => delete o[k]); Object.assign(o, next); };
