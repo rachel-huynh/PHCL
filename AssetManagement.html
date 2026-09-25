@@ -1457,6 +1457,27 @@
   .frefbar .btn{background:#fff;color:var(--ink)}
   .fsheet.edit.wide{min-width:1100px}
   .fsheet.edit.wide:has(.fcolbar .chk){min-width:2100px}
+  /* Tender portal panel under the QC (staff side). */
+  .tdcard h3{font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:var(--navy2,#003366);margin:14px 0 6px}
+  .tdcard .dim{color:var(--dim)}
+  .tdnote{font-size:12px;color:var(--dim);margin:4px 0 6px}
+  .tdone{border-top:1px solid var(--line);padding-top:10px;margin-top:6px}
+  .tdone:first-child{border-top:0;margin-top:0}
+  .tdchip{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700;background:#eef1f6;color:#44506a}
+  .tdchip.ok{background:#e3f3ea;color:#15803d} .tdchip.warn{background:#fdf0dc;color:#94600f} .tdchip.bad{background:#fbe5e2;color:#b42318}
+  .tdacts{margin-top:8px;align-items:center;flex-wrap:wrap;gap:6px}
+  .tdtbl td,.tdtbl th{font-size:12.5px;vertical-align:top}
+  .tdtbl td.n{text-align:right;white-space:nowrap}
+  .tdops{min-width:130px} .tdops .btn{margin:0 3px 3px 0}
+  .tdbox{border:1px dashed var(--line);border-radius:8px;padding:8px 12px;margin-top:10px}
+  .tdbox summary{cursor:pointer;font-weight:600}
+  .tdpick{display:block;font-size:12.5px;margin:2px 0}
+  .tdcons{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+  .tdrole{border:1px solid var(--line);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:4px}
+  .tdrole.ok{border-color:#15803d;background:#f1faf4}
+  .tdrole small{font-size:11.5px}
+  .tdlink input{flex:1;font-family:monospace;font-size:11.5px}
+  .tdev{margin-top:12px} .tdev summary{cursor:pointer;color:var(--dim)}
 </style>
 </head>
 <body>
@@ -2354,7 +2375,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260925s"></script>
-<script src="app.js?v=20260925s"></script>
+<script src="i18n.js?v=20260926a"></script>
+<script src="app.js?v=20260926a"></script>
 </body>
 </html>

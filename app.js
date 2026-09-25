@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260925s';
+const APP_VERSION = '20260926a';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -5087,8 +5087,46 @@ let LEG = { rows: [], bad: [], warn: [] };
 
 const legTxt = v => (v == null ? '' : String(v).trim());
 
-/* The export writes dates as dd/mm/yyyy text. */
+/* The same card also takes the app's own "Asset upload (Beetrack, 2 sheets)"
+   form (BT_UNIQUE / BT_LOW): its columns sit elsewhere (category in D, not C),
+   so it is read by header name, both sheets, and turned into rows keyed like
+   the export — the checks below then run unchanged. The sheet says the kind.
+   Returns null when the workbook is not that form. */
+const LEG_UPLOAD_HEAD = {
+  category: 'Mã Danh Mục (*)', name: 'Tên (*)', desc: 'Mô Tả', code: 'Mã Tài Sản', barcode: 'Mã Vạch',
+  location: 'Mã Vị Trí (*)', dept: 'Mã Phòng Ban', company: 'Mã Công Ty Thành Viên (*)', origin: 'Mã Xuất Xứ',
+  serial: 'Số Seri', invoice: 'Số Hóa Đơn', unit: 'Đơn Vị Tính', qty: 'Số Lượng',
+  price: ['Đơn Giá', 'Giá Đơn Vị'], bought: 'Ngày Mua', status: 'Mã Tình Trạng (*)', purpose: 'Mục đích Tài Sản'
+};
+function legUploadGrid(wb) {
+  const norm = s => legTxt(s).normalize('NFC').toLowerCase();
+  const out = [{}];                 // row 0 stands for the header, as in the export grid
+  let found = false;
+  wb.SheetNames.forEach((name, si) => {
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' });
+    const head = (aoa[0] || []).map(norm);
+    if (!head.includes(norm(LEG_UPLOAD_HEAD.category))) return;
+    found = true;
+    const kind = /low|thấp|cùng/i.test(name) || si === 1 ? 'low' : 'unique';
+    const idx = {};
+    for (const [k, h] of Object.entries(LEG_UPLOAD_HEAD))
+      idx[k] = [].concat(h).map(x => head.indexOf(norm(x))).find(i => i >= 0) ?? -1;
+    aoa.slice(1).forEach((r, ri) => {
+      const row = { __line: `${name} · ${ri + 2}`, __kind: kind };
+      for (const [k, i] of Object.entries(idx)) if (i >= 0 && LEG_COL[k]) row[LEG_COL[k]] = r[i];
+      out.push(row);
+    });
+  });
+  return found ? out : null;
+}
+
+/* The export writes dates as dd/mm/yyyy text; a workbook saved in Excel may
+   hold a real date instead, which arrives as its serial number (35796 = 1998-01-01). */
 function legDate(v) {
+  if (typeof v === 'number' || /^\d{5}(\.\d+)?$/.test(legTxt(v))) {
+    const n = Number(v);
+    if (n > 20000 && n < 80000) return new Date(Math.round((n - 25569) * 864e5)).toISOString().slice(0, 10);
+  }
   const s = legTxt(v);
   let m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
   if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
@@ -5133,7 +5171,7 @@ async function legRead() {
   let grid;
   try {
     const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
-    grid = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 'A', defval: '' });
+    grid = legUploadGrid(wb) || XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 'A', defval: '' });
   } catch (e) { return msg(out, 'err', e.message); }
   if (grid.length < 2) return msg(out, 'warn', t('leg.noRows'));
 
@@ -5141,7 +5179,7 @@ async function legRead() {
   const G = LEG_COL;
 
   for (let i = 1; i < grid.length; i++) {
-    const r = grid[i], line = i + 1;
+    const r = grid[i], line = r.__line || i + 1;
     const code = legTxt(r[G.code]), bar = legTxt(r[G.barcode]);
     if (!code && !bar && !legTxt(r[G.name])) continue;   // blank row
 
@@ -5209,7 +5247,7 @@ async function legRead() {
       asset_code: code || `LEGACY-${line}`,
       barcode: bar,
       // "Cung Barcode" means one barcode for the whole batch -> low-value.
-      asset_kind: /cùng/i.test(legTxt(r[G.kind])) ? 'low' : 'unique',
+      asset_kind: r.__kind || (/cùng/i.test(legTxt(r[G.kind])) ? 'low' : 'unique'),
       category_code: catCode,
       group_code: cat.group_code,
       letters: cat.label_letters,
@@ -8523,6 +8561,9 @@ function wfRender() {
   form.append(wfArrows());
   box.append(form);
   wfWarnRender();
+  // A QC in the package: its tender (vendors quote on the portal, bids load into the appendix).
+  const qcDoc = WF.pdocs.find(x => x.doc_type === 'QC');
+  if (qcDoc && qcDoc.id) box.append(tdPanel(qcDoc));
 
   // History of the package.
   const hist = el('details', { className: 'card' });
@@ -8537,6 +8578,320 @@ function wfRender() {
   if (WF.showHist !== false) box.append(hist);
 }
 
+/* ------------------------------------------------ tender portal (staff side)
+   Under the QC of a package (sql/25_pm_tender.sql, vendor page Tender.html):
+   open a tender from the QC, invite vendors with a private link, and — once
+   the bids are in — the three roles of the QC chain (steps 0–2: Purchasing,
+   Head of department, Head of finance) each consent; the third consent opens
+   every sealed bid at once. Opened bids are loaded into the QC as a draft for
+   Purchasing to check, score and submit. Nothing of a sealed bid reaches this
+   screen: the server leaves data and files out until it is opened. */
+const TD = { qc: null, list: null, vendors: null, link: null, busy: false };
+
+function tdPanel(qcDoc) {
+  const card = el('div', { className: 'card tdcard' });
+  const body = el('div');
+  card.append(el('div', { className: 'chead' }, [el('h2', { textContent: t('td.title') }),
+    el('button', { className: 'btn tiny', textContent: '↻', title: t('td.refresh'), onclick: () => tdLoad(qcDoc, body, true) })]),
+    el('div', { id: 'tdMsg' }), body);
+  tdLoad(qcDoc, body, TD.qc !== qcDoc.id);
+  return card;
+}
+
+async function tdLoad(qcDoc, body, fresh) {
+  if (fresh || !TD.list) {
+    body.textContent = t('td.loading');
+    try {
+      TD.list = await SB.rpc('pm_tender_list', { p_project: WF.project.code });
+      TD.qc = qcDoc.id;
+    } catch (e) {
+      // Before sql/25 has run, the function does not exist: say so once, quietly.
+      body.innerHTML = '';
+      body.append(el('div', { className: 'tdnote', textContent: /pm_tender_list|PGRST202|404/.test(e.message) ? t('td.notInstalled') : e.message }));
+      return;
+    }
+  }
+  tdDraw(qcDoc, body);
+}
+
+const tdDt = v => fmtDateTime(v);
+const tdLocal = d => { const z = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; };
+const tdIso = v => v ? new Date(v).toISOString() : null;       // datetime-local (local time) → timestamptz
+const tdTotal = (tn, data) => {
+  if (!data) return null;
+  const items = (tn.items || []).reduce((s, it, i) => s + n0(it.qty) * n0((data.prices || {})[i]), 0);
+  return items + (data.olines || []).reduce((s, o) => s + n0(o.amount), 0);
+};
+// The latest OPENED bid of each vendor (current round first).
+function tdOpened(tn) {
+  const out = [];
+  for (const v of tn.invitees || []) {
+    const op = (v.bids || []).filter(b => b.opened_at).sort((a, b) => (b.round - a.round) || (b.version - a.version));
+    if (op.length) out.push({ inv: v, bid: op[0] });
+  }
+  return out.sort((a, b) => n0(tdTotal(tn, a.bid.data)) - n0(tdTotal(tn, b.bid.data)));
+}
+async function tdCall(fn, args, okText, qcDoc, body) {
+  if (TD.busy) return null;
+  TD.busy = true;
+  try {
+    const r = await SB.rpc(fn, args);
+    if (okText) msg('#tdMsg', 'ok', okText);
+    await tdLoad(qcDoc, body, true);
+    return r;
+  } catch (e) { msg('#tdMsg', 'err', e.message); return null; }
+  finally { TD.busy = false; }
+}
+
+function tdDraw(qcDoc, body) {
+  body.innerHTML = '';
+  const mine = (TD.list || []).filter(x => x.qc_doc_id === qcDoc.id && x.status !== 'cancelled');
+  const canCreate = wfCanPrepare('QC', WF.project.dept_code) || can('project', 'admin');
+  if (!mine.length) {
+    body.append(el('div', { className: 'tdnote', textContent: t('td.none') }));
+    if (canCreate) body.append(tdCreateForm(qcDoc, body));
+    return;
+  }
+  for (const tn of mine) body.append(tdOne(qcDoc, body, tn));
+}
+
+function tdCreateForm(qcDoc, body) {
+  const p = WF.project || {};
+  const prRef = (WF.refs || []).find(r => r.d.doc_type === 'PR');
+  const pr = prRef ? (WF.drafts.get(prRef.d.id) || prRef.d.data || {}) : {};
+  const scope = [pr.reason || p.reason || '', ...(pr.lines || []).filter(l => l.asset_item).map(l => `- ${l.asset_item}${l.qty ? ' × ' + l.qty : ''}${l.tech_standard ? ': ' + l.tech_standard : ''}`)]
+    .filter(Boolean).join('\n');
+  const dl = new Date(); dl.setDate(dl.getDate() + 7); dl.setHours(17, 0, 0, 0);
+  const fTitle = el('input', { value: p.name || '' });
+  const fDl = el('input', { type: 'datetime-local', value: tdLocal(dl) });
+  const fScope = el('textarea', { value: scope, style: 'min-height:90px' });
+  const fTerms = el('textarea', { value: t('td.termsDefault'), style: 'min-height:70px' });
+  const go = el('button', { className: 'btn pri', textContent: t('td.create') });
+  go.onclick = async () => {
+    if (WF.dirty) return msg('#tdMsg', 'warn', t('td.saveFirst'));
+    await tdCall('pm_tender_create', { p_qc: qcDoc.id, p_deadline: tdIso(fDl.value), p_title: fTitle.value.trim(), p_scope: fScope.value, p_terms: fTerms.value },
+      t('td.created'), qcDoc, body);
+  };
+  const f = (k, i) => el('div', { className: 'fld' }, [el('label', { textContent: t(k) }), i]);
+  return el('details', { className: 'tdbox', open: true }, [el('summary', { textContent: t('td.new') }),
+    el('div', { className: 'tdnote', textContent: t('td.newHint') }),
+    el('div', { className: 'row' }, [f('td.f.title', fTitle), f('td.f.deadline', fDl)]),
+    el('div', { className: 'row' }, [f('td.f.scope', fScope)]), el('div', { className: 'row' }, [f('td.f.terms', fTerms)]),
+    el('div', { className: 'row' }, [go])]);
+}
+
+function tdOne(qcDoc, body, tn) {
+  const box = el('div', { className: 'tdone' });
+  const past = new Date(tn.deadline) < new Date();
+  const st = tn.status === 'open' && !past ? ['ok', 'td.st.open'] : tn.status === 'open' ? ['warn', 'td.st.past'] : ['bad', 'td.st.' + tn.status];
+  box.append(el('div', { className: 'row', style: 'align-items:center;gap:10px;flex-wrap:wrap' }, [
+    el('b', { textContent: tn.title || WF.project.name || '' }), el('span', { className: 'tdchip ' + st[0], textContent: t(st[1]) }),
+    el('span', { className: 'dim', textContent: `${t('td.f.deadline')}: ${tdDt(tn.deadline)}` }),
+    tn.round > 1 ? el('span', { className: 'dim', textContent: t('td.round', { n: tn.round }) }) : '',
+    el('span', { className: 'dim', textContent: t('td.counts', { i: (tn.items || []).length, c: (tn.crit || []).length }) })]));
+
+  // Managing the tender: extend / close / cancel / reopen for a new round.
+  if (tn.can_manage) {
+    const nd = new Date(Math.max(Date.now(), new Date(tn.deadline).getTime())); nd.setDate(nd.getDate() + 3);
+    const fDl = el('input', { type: 'datetime-local', value: tdLocal(nd), style: 'width:auto' });
+    const b = (k, cls, fn) => el('button', { className: 'btn ' + cls, textContent: t(k), onclick: fn });
+    const acts = [fDl];
+    if (tn.status === 'open') acts.push(
+      b('td.extend', '', () => tdCall('pm_tender_update', { p_id: tn.id, p_deadline: tdIso(fDl.value), p_scope: null, p_terms: null, p_status: null }, t('td.done'), qcDoc, body)),
+      b('td.close', '', () => confirm(t('td.closeQ')) && tdCall('pm_tender_update', { p_id: tn.id, p_deadline: null, p_scope: null, p_terms: null, p_status: 'closed' }, t('td.done'), qcDoc, body)));
+    acts.push(b('td.reopen', '', () => { const why = prompt(t('td.reopenQ')); if (why && why.trim())
+      tdCall('pm_tender_reopen', { p_id: tn.id, p_deadline: tdIso(fDl.value), p_reason: why.trim() }, t('td.reopened'), qcDoc, body); }),
+      b('td.cancel', 'danger', () => confirm(t('td.cancelQ')) && tdCall('pm_tender_update', { p_id: tn.id, p_deadline: null, p_scope: null, p_terms: null, p_status: 'cancelled' }, t('td.done'), qcDoc, body)));
+    box.append(el('div', { className: 'row tdacts' }, acts));
+  }
+
+  // Invitees and where their bid stands (sealed until the three consents).
+  const tb = el('table', { className: 'tdtbl' });
+  tb.append(el('tr', {}, ['td.h.vendor', 'td.h.link', 'td.h.bid', 'td.h.total', ''].map(k => el('th', { textContent: k ? t(k) : '' }))));
+  for (const v of tn.invitees || []) {
+    const cur = (v.bids || []).filter(x => x.round === tn.round).sort((a, b) => b.version - a.version);
+    const sub = cur.find(x => x.status === 'submitted') || cur.find(x => x.submitted_at);
+    const bidTxt = !cur.length ? t('td.b.none') : !sub ? t('td.b.draft')
+      : `${t('td.b.sub', { v: sub.version, at: tdDt(sub.submitted_at) })} · ${sub.opened_at ? t('td.b.opened') : '🔒 ' + t('td.b.sealed')}`;
+    const expired = new Date(v.expires_at) < new Date();
+    const linkTxt = v.revoked ? t('td.l.revoked') : expired ? t('td.l.expired') : t('td.l.until', { d: tdDt(v.expires_at) });
+    const ops = [];
+    if (tn.can_manage) {
+      const b = (k, fn) => el('button', { className: 'btn tiny', textContent: t(k), onclick: fn });
+      ops.push(b('td.l.extend', () => tdCall('pm_tender_invite_set', { p_invitee: v.id, p_days: 14, p_revoke: false, p_new_token: false }, t('td.done'), qcDoc, body)),
+        b('td.l.new', async () => { if (!confirm(t('td.l.newQ'))) return;
+          const tok = await tdCall('pm_tender_invite_set', { p_invitee: v.id, p_days: 14, p_revoke: false, p_new_token: true }, '', qcDoc, body);
+          if (tok) tdShowLink(v.name, v.email, tok); }));
+      if (!v.revoked) ops.push(b('td.l.revoke', () => confirm(t('td.l.revokeQ')) && tdCall('pm_tender_invite_set', { p_invitee: v.id, p_days: null, p_revoke: true, p_new_token: false }, t('td.done'), qcDoc, body)));
+    }
+    const opened = (v.bids || []).filter(x => x.opened_at).sort((a, b) => (b.round - a.round) || (b.version - a.version))[0];
+    tb.append(el('tr', {}, [el('td', {}, [el('b', { textContent: v.name || '' }), el('br'), el('small', { className: 'dim', textContent: [v.vendor_code, v.email].filter(Boolean).join(' · ') })]),
+      el('td', { className: v.revoked || expired ? 'dim' : '', textContent: linkTxt + (v.last_seen_at ? ' · ' + t('td.l.seen', { d: tdDt(v.last_seen_at) }) : '') }),
+      el('td', { textContent: bidTxt }), el('td', { className: 'n', textContent: opened ? fmtMoney(tdTotal(tn, opened.data)) : '' }),
+      el('td', { className: 'tdops' }, ops)]));
+  }
+  if (!(tn.invitees || []).length) tb.append(el('tr', {}, el('td', { colSpan: 5, className: 'dim', textContent: t('td.noInv') })));
+  box.append(el('h3', { textContent: t('td.invitees') }), el('div', { className: 'wrap' }, tb));
+  if (TD.link && TD.link.tender === tn.id) box.append(TD.link.node);
+  if (tn.can_manage && tn.status === 'open') box.append(tdInviteForm(qcDoc, body, tn));
+
+  // Consent to open: one per role of the QC chain, three different people.
+  const sealed = (tn.invitees || []).reduce((s, v) => s + (v.bids || []).filter(b => b.submitted_at && !b.opened_at).length, 0);
+  const cons = el('div', { className: 'tdcons' });
+  for (const r of tn.open_roles || []) {
+    const c = (tn.consents || []).find(x => x.role === r);
+    const cell = el('div', { className: 'tdrole' + (c ? ' ok' : '') }, [el('b', { textContent: wfRoleName(r) })]);
+    if (c) cell.append(el('small', { textContent: `✓ ${c.user || ''} · ${tdDt(c.at)}` }));
+    else if (sealed && wfHasRoleFor(r, WF.project.dept_code)) cell.append(el('button', { className: 'btn pri tiny', textContent: t('td.consent'),
+      onclick: async () => { if (!confirm(t('td.consentQ'))) return;
+        const res = await tdCall('pm_tender_consent_give', { p_tender: tn.id, p_role: r }, '', qcDoc, body);
+        if (res) msg('#tdMsg', 'ok', t(res === 'opened' ? 'td.openedNow' : 'td.waiting')); } }));
+    else cell.append(el('small', { className: 'dim', textContent: t('td.pending') }));
+    cons.append(cell);
+  }
+  box.append(el('h3', { textContent: t('td.consents') }),
+    el('div', { className: 'tdnote', textContent: sealed ? t('td.sealedN', { n: sealed }) : t('td.noSealed') }), cons);
+
+  // Opened bids: totals, files, into the QC.
+  const op = tdOpened(tn);
+  if (op.length) box.append(el('h3', { textContent: t('td.opened') }), tdOpenedTable(qcDoc, tn, op));
+
+  const ev = el('details', { className: 'tdev' }, [el('summary', { textContent: t('td.events', { n: (tn.events || []).length }) })]);
+  const et = el('table', { className: 'tdtbl' });
+  for (const e of tn.events || []) et.append(el('tr', {}, [el('td', { textContent: tdDt(e.at) }), el('td', { textContent: e.actor || '' }),
+    el('td', { textContent: t('td.ev.' + e.action) !== 'td.ev.' + e.action ? t('td.ev.' + e.action) : e.action }), el('td', { style: 'white-space:normal', textContent: e.detail || '' })]));
+  ev.append(el('div', { className: 'wrap' }, et));
+  box.append(ev);
+  return box;
+}
+
+function tdInviteForm(qcDoc, body, tn) {
+  const det = el('details', { className: 'tdbox' }, [el('summary', { textContent: t('td.invite') })]);
+  det.ontoggle = async () => {
+    if (!det.open || det.dataset.ready) return;
+    det.dataset.ready = '1';
+    let vendors = [], open = [];
+    try {
+      [vendors, open] = await Promise.all([TD.vendors || SB.select('pm_vendor', 'select=code,name,email&order=name'), SB.rpc('pm_tender_open_list')]);
+      TD.vendors = vendors;
+    } catch (e) { msg('#tdMsg', 'err', e.message); }
+    const fV = el('select', {}, [el('option', { value: '', textContent: t('td.pickVendor') }), ...vendors.map(v => el('option', { value: v.code, textContent: v.name }))]);
+    const fName = el('input', {}), fMail = el('input', { type: 'email' }), fDays = el('input', { type: 'number', value: 14, min: 1, max: 90, style: 'width:80px' });
+    fV.onchange = () => { const v = vendors.find(x => x.code === fV.value); if (v) { fName.value = v.name || ''; fMail.value = v.email || ''; } };
+    const picks = open.map(o => { const c = el('input', { type: 'checkbox', checked: o.id === tn.id, value: o.id });
+      return el('label', { className: 'tdpick' }, [c, ` ${o.project_code} — ${o.title || o.project_name || ''} (${tdDt(o.deadline)})`]); });
+    const go = el('button', { className: 'btn pri', textContent: t('td.inviteGo') });
+    go.onclick = async () => {
+      const ids = picks.map(l => l.querySelector('input')).filter(c => c.checked).map(c => Number(c.value));
+      if (!ids.length) ids.push(tn.id);
+      const tok = await tdCall('pm_tender_invite_add', { p_tenders: ids, p_vendor_code: fV.value || null, p_name: fName.value.trim(), p_email: fMail.value.trim(), p_days: Number(fDays.value) || 14 },
+        '', qcDoc, body);
+      if (tok) tdShowLink(fName.value.trim(), fMail.value.trim(), tok, tn.id);
+    };
+    const f = (k, i) => el('div', { className: 'fld' }, [el('label', { textContent: t(k) }), i]);
+    det.append(el('div', { className: 'row' }, [f('td.f.vendor', fV), f('td.f.name', fName), f('td.f.email', fMail), f('td.f.days', fDays)]),
+      picks.length > 1 ? el('div', {}, [el('div', { className: 'tdnote', textContent: t('td.multi') }), ...picks]) : '',
+      el('div', { className: 'row' }, [go]));
+  };
+  return det;
+}
+
+/* The link is shown ONCE: the database keeps only a hash of the code. */
+function tdShowLink(name, email, token, tenderId) {
+  const cfg = encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify({ url: CFG.url, key: CFG.key })))));
+  const link = new URL('Tender.html', location.href.split('#')[0]).href + '#c=' + cfg + '&t=' + token;
+  const inp = el('input', { value: link, readOnly: true, onclick: () => inp.select() });
+  const copy = el('button', { className: 'btn pri', textContent: t('td.copy'), onclick: () => { inp.select(); navigator.clipboard?.writeText(link).catch(() => {}); copy.textContent = t('td.copied'); } });
+  const node = el('div', { className: 'msg ok tdlink' }, [el('b', { textContent: t('td.linkFor', { v: name, e: email || '—' }) }),
+    el('div', { className: 'tdnote', textContent: t('td.linkOnce') }), el('div', { className: 'row', style: 'flex-wrap:nowrap' }, [inp, copy])]);
+  TD.link = { tender: tenderId || (TD.link && TD.link.tender) || ((TD.list || [])[0] || {}).id, node };
+  const host = document.querySelector('#wdBody .tdcard .tdone');
+  if (host) host.append(node);
+  node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+async function tdFile(f) {
+  try {
+    const tok = await authToken();
+    const r = await fetch(`${CFG.url}/storage/v1/object/authenticated/pm-tender/${f.path.split('/').map(encodeURIComponent).join('/')}`,
+      { headers: { apikey: CFG.key, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+    const url = URL.createObjectURL(await r.blob());
+    const a = el('a', { href: url, download: f.name || 'file', target: '_blank', rel: 'noopener' });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { msg('#tdMsg', 'err', e.message); }
+}
+
+function tdOpenedTable(qcDoc, tn, op) {
+  const wrap = el('div');
+  const tb = el('table', { className: 'tdtbl' });
+  tb.append(el('tr', {}, ['', 'td.h.vendor', 'td.h.version', 'td.h.total', 'td.h.terms', 'td.h.files'].map(k => el('th', { textContent: k ? t(k) : '' }))));
+  const checks = op.map((o, i) => {
+    const c = el('input', { type: 'checkbox', checked: i < 3 });
+    const d = o.bid.data || {};
+    tb.append(el('tr', {}, [el('td', { className: 'c' }, c), el('td', { textContent: o.inv.name || '' }),
+      el('td', { textContent: `v${o.bid.version}${o.bid.round > 1 ? ' · ' + t('td.round', { n: o.bid.round }) : ''}${o.bid.note ? ' · ' + o.bid.note : ''}` }),
+      el('td', { className: 'n', textContent: fmtMoney(tdTotal(tn, d)) }),
+      el('td', { style: 'white-space:normal', textContent: [d.pay_term, d.delivery && t('td.t.delivery') + ': ' + d.delivery, d.warranty && t('td.t.warranty') + ': ' + d.warranty,
+        d.validity && t('td.t.validity') + ': ' + d.validity].filter(Boolean).join(' · ') }),
+      el('td', {}, (o.bid.files || []).map(f => el('div', {}, el('a', { href: '#', textContent: (f.kind === 'quotation' ? '★ ' : '') + (f.name || 'file'),
+        onclick: ev => { ev.preventDefault(); tdFile(f); } }))))]));
+    return c;
+  });
+  wrap.append(el('div', { className: 'wrap' }, tb));
+  const qcDraft = WF.drafts.get(qcDoc.id);
+  if (wfDocEditable(qcDoc) || wfAdminMode()) {
+    const go = el('button', { className: 'btn pri', textContent: t('td.load') });
+    go.onclick = () => {
+      const pick = op.filter((o, i) => checks[i].checked);
+      if (!pick.length || pick.length > 3) return msg('#tdMsg', 'warn', t('td.pick3'));
+      if ((qcDraft.vendors || []).some(v => v.name) && !confirm(t('td.loadQ'))) return;
+      tdToQc(qcDoc, tn, pick);
+    };
+    wrap.append(el('div', { className: 'row', style: 'margin-top:8px;align-items:center' }, [go, el('span', { className: 'tdnote', textContent: t('td.loadHint') })]));
+  } else wrap.append(el('div', { className: 'tdnote', textContent: t('td.loadNo') }));
+  return wrap;
+}
+
+/* The chosen bids into the QC appendix, as a draft: items (the tender's, whose
+   order the prices follow), overhead lines (the union of the vendors'), each
+   vendor's prices, spec by field, payment term, and the capability
+   declarations as the notes beside each criterion. Scores stay for
+   Purchasing — kept if the vendor was already in the QC. */
+function tdToQc(qcDoc, tn, pick) {
+  const d = WF.drafts.get(qcDoc.id);
+  const old = d.vendors || [];
+  d.qlines = (tn.items || []).map((it, i) => Object.assign({}, (d.qlines || [])[i] || {}, { item: it.item, qty: it.qty }));
+  const labels = [];
+  for (const o of pick) for (const l of (o.bid.data || {}).olines || []) {
+    const k = String(l.label || '').trim();
+    if (k && !labels.some(x => x.toLowerCase() === k.toLowerCase())) labels.push(k);
+  }
+  d.olines = labels.map(label => ({ label }));
+  const abil = new Set((tn.crit || []).filter(c => c.grp === 'ability').map(c => c.label));
+  d.vendors = pick.map(o => {
+    const b = o.bid.data || {}, prev = old.find(v => v.name && v.name.trim().toLowerCase() === String(o.inv.name || '').trim().toLowerCase()) || {};
+    const oprices = {};
+    (b.olines || []).forEach(l => { const i = labels.findIndex(x => x.toLowerCase() === String(l.label || '').trim().toLowerCase()); if (i >= 0) oprices[i] = n0(oprices[i]) + n0(l.amount); });
+    const n_ability = {}, n_technique = {};
+    for (const [lbl, txt] of Object.entries(b.crit || {})) if (txt) (abil.has(lbl) ? n_ability : n_technique)[lbl] = txt;
+    return Object.assign({}, prev, { name: o.inv.name, prices: Object.assign({}, b.prices), specx: JSON.parse(JSON.stringify(b.specx || {})),
+      specs: Object.assign({}, b.specs), oprices, pay_term: b.pay_term || prev.pay_term || '', n_ability, n_technique,
+      delivery: b.delivery || '', warranty: b.warranty || '', validity: b.validity || '', bid_note: b.note || '',
+      tender_bid: o.bid.id, vendor_code: o.inv.vendor_code || prev.vendor_code || null });
+  });
+  while (d.vendors.length < 3) d.vendors.push({ name: '' });
+  const submitted = (tn.invitees || []).filter(v => (v.bids || []).some(b => b.submitted_at)).length;
+  d.total_vendors = Math.max(n0(d.total_vendors), submitted, pick.length);
+  d.tender_id = tn.id;
+  WF.ref = null;
+  wfSetDoc('QC');
+  WF.qcTab = 'appendix';
+  WF.dirty = true; WF.dirtyIds.add(qcDoc.id);
+  wfRender();
+  msg('#wdMsg', 'ok', t('td.loaded', { n: pick.length }));
+}
 /* The dots: every type of the package in order. A type not in the package yet
    is grey — RR on a new investment ("not applicable"), PA / MC before the AM
    team's checking step. */
