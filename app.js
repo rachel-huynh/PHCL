@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260926a';
+const APP_VERSION = '20260926b';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -764,6 +764,9 @@ function renderGridBody() {
         td.append(treeGuides(item), caret(item));
       }
       first = false;
+      // A long text wraps inside its column's width instead of stretching it
+      // (one 300-character product name made the catalogue several screens wide).
+      if (!c.type || c.type === 'text' || c.type === 'ref') { td.classList.add('gwrap'); td.style.maxWidth = gridW(c) + 'px'; td.style.minWidth = Math.round(gridW(c) * 0.6) + 'px'; }
       if (!EDIT || c.calc) { td.append(cellRead(c, row)); tr.append(td); continue; }
       td.append(cellInput(c, row, (field, val) => {
         row.cur[field] = val;
@@ -1048,7 +1051,7 @@ async function loadCounters() {
       };
       f.oninput = draw;
       draw();
-      out.append(el('div', { style: 'margin-bottom:8px' }, f), host);
+      out.append(el('h2', { textContent: t('cnt.keysH') }), el('div', { style: 'margin-bottom:8px' }, f), host);
     } else {
       out.append(el('div', { className: 'msg warn', textContent: t('cnt.noKeys') }));
     }
@@ -1940,6 +1943,10 @@ function viewModule(v) {
 const canView = v => { if (v === 'pmimport') return ['budget', 'project', 'payment'].some(m => can(m, 'view'));
                       if (v === 'sources') return ['budget', 'project', 'payment', 'system'].some(m => can(m, 'view'));
                       if (v === 'settings') return true;      // the help switch is everyone's; the year settings check their own right
+                      // Change log and Connection: System Admin only (feedback 25/09/2026). Connection still
+                      // opens before anyone is signed in — a first visit has no project address yet.
+                      if (v === 'audit') return can('system', 'admin');
+                      if (v === 'setup') return !ME || can('system', 'admin');
                       const m = viewModule(v); return !m || can(m, 'view'); };
 
 /* Where to land after signing in: the register for anyone allowed to see it,
@@ -2293,7 +2300,7 @@ function showView(view) {
     if (view === 'counter' && SB.ready()) fillPickers();
     if (view === 'alr' && SB.ready()) { fillAlrPickers(); alrHistory(); }
     if (view === 'backup' && SB.ready()) bkCount();
-    if (view === 'sources' && SB.ready()) { if (can('system', 'view')) srcLoad(); pmLookups().catch(() => {}); piShow(); }
+    if (view === 'sources' && SB.ready()) { if (can('system', 'view')) srcLoad(); srcChecklist(); pmLookups().catch(() => {}); piShow(); }
     if (view === 'settings' && SB.ready()) stLoad();
     if (view === 'register' && SB.ready()) { regFillPickers(); regLoad(true); }
     if (view === 'intake' && SB.ready()) inFill();
@@ -3117,13 +3124,71 @@ async function srcLoad() {
         el('td', {}, el('code', { textContent: r.table_name })),
         el('td', { textContent: r.source_file || '' }),
         el('td', { className: 'num', textContent: fmtInt(r.rows_loaded) }),
-        el('td', { textContent: t('src.kind.' + r.source_kind) }),
+        el('td', { textContent: r.loaded_by === SRC_DOSSIER ? t('src.kind.dossier') : t('src.kind.' + r.source_kind) }),
         el('td', { textContent: r.loaded_by || '' })
       ]));
     hist.append(el('div', { className: 'wrap' }, h));
   } catch (e) {
     msg(cur, 'err', e.message + '\nsql/07_data_source.sql');
   }
+}
+
+/* The upload checklist (feedback 25/09/2026): one row per file that has to be
+   uploaded again and again, one column per month of the year. A month is
+   ticked when an upload covers it — the accounting exports by the period they
+   hold, the others by the day they were loaded — with the day beside the tick;
+   a month that has ended without one is marked missing; the rest is not due
+   yet. The budget workbook comes per submission round, so it is never
+   "missing". Rows the person may not read are left out. */
+const SRC_DOSSIER = 'dossier import';
+const SRC_CK = { year: null };
+async function srcChecklist() {
+  let box = $('#srcCheck');
+  if (!box) return;
+  const y = SRC_CK.year || new Date().getFullYear();
+  const mm = d => { const x = new Date(d); return isNaN(x) ? null : { y: x.getFullYear(), m: x.getMonth() + 1 }; };
+  const at = rows => rows.map(r => ({ at: r.at, file: r.file, months: [mm(r.at)].filter(Boolean) }));
+  // The months a period covers (from…to), else the month of the upload.
+  const span = (from, to, when) => {
+    const a = mm(from || when), b = mm(to || from || when), out = [];
+    if (!a || !b) return out;
+    for (let yy = a.y, m = a.m, n = 0; (yy < b.y || (yy === b.y && m <= b.m)) && n < 36; n++) { out.push({ y: yy, m }); if (++m > 12) { m = 1; yy++; } }
+    return out;
+  };
+  const defs = [
+    ['budget', 'round', async () => at((await SB.select('pm_budget_round', 'select=imported_at,source_file,label')).map(r => ({ at: r.imported_at, file: r.source_file || r.label })))],
+    ['dossier', 'month', async () => at((await SB.select('am_data_source', `select=loaded_at,source_file&table_name=eq.pm_project&loaded_by=eq.${encodeURIComponent(SRC_DOSSIER)}`))
+      .map(r => ({ at: r.loaded_at, file: r.source_file })))],
+    ...['invoice', 'payment'].map(kind => [kind, 'month', async () => (await SB.select('pm_pay_import', `select=imported_at,file_name,period_from,period_to&kind=eq.${kind}`))
+      .map(r => ({ at: r.imported_at, file: r.file_name, months: span(r.period_from, r.period_to, r.imported_at) }))]),
+    ['register', 'month', async () => at((await SB.select('am_data_source', 'select=loaded_at,source_file&table_name=eq.am_asset&source_kind=eq.register-scan'))
+      .map(r => ({ at: r.loaded_at, file: r.source_file })))]
+  ];
+  const rows = (await Promise.all(defs.map(async ([k, freq, get]) => { try { return { k, freq, items: await get() }; } catch { return null; } }))).filter(Boolean);
+  const now = new Date(), ended = m => y < now.getFullYear() || (y === now.getFullYear() && m < now.getMonth() + 1);
+  const years = [...new Set([now.getFullYear(), ...rows.flatMap(r => r.items.flatMap(i => i.months.map(x => x.y)))])].sort((a, b) => b - a);
+  const ySel = el('select', {}, years.map(v => el('option', { value: v, textContent: v, selected: v === y })));
+  ySel.onchange = () => { SRC_CK.year = +ySel.value; srcChecklist(); };
+  const tb = el('table', { className: 'srcck' });
+  const monthName = m => new Date(2000, m - 1, 1).toLocaleString(LANG === 'vi' ? 'vi-VN' : 'en-GB', { month: 'short' });
+  tb.append(el('tr', {}, [el('th', { textContent: t('src.ck.file') }), el('th', { textContent: t('src.ck.freq') }),
+    ...Array.from({ length: 12 }, (_, i) => el('th', { className: 'c', textContent: monthName(i + 1) }))]));
+  for (const r of rows) {
+    const tr = el('tr', {}, [el('td', { textContent: t('src.ck.' + r.k) }), el('td', { className: 'dim', textContent: t('src.ck.f.' + r.freq) })]);
+    for (let m = 1; m <= 12; m++) {
+      const hit = r.items.filter(i => i.months.some(x => x.y === y && x.m === m)).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+      if (hit.length) tr.append(el('td', { className: 'c ok', title: hit.map(i => `${fmtDateTime(i.at)} · ${i.file || ''}`).join('\n') },
+        [el('b', { textContent: '✓' }), el('small', { textContent: fmtDate(String(hit[0].at).slice(0, 10)).slice(0, 5) })]));
+      else if (r.freq === 'month' && ended(m)) tr.append(el('td', { className: 'c miss', title: t('src.ck.missing'), textContent: '✗' }));
+      else tr.append(el('td', { className: 'c na', textContent: '·' }));
+    }
+    tb.append(tr);
+  }
+  box.innerHTML = '';
+  box.append(el('div', { className: 'chead' }, [el('h2', { textContent: t('src.ck.h') }), el('div', { className: 'fld', style: 'max-width:110px' }, ySel)]),
+    el('div', { className: 'wrap' }, tb),
+    el('div', { className: 'srcckkey' }, [el('span', { className: 'ok', textContent: '✓ ' + t('src.ck.kOk') }),
+      el('span', { className: 'miss', textContent: '✗ ' + t('src.ck.missing') }), el('span', { className: 'na', textContent: '· ' + t('src.ck.kNa') })]));
 }
 
 /* ------------------------------------------------------ blank templates
@@ -3578,8 +3643,8 @@ function regRenderCols() {
 }
 
 /* Walk the current filter page by page — used by both export paths. */
-async function regFetchAll(onProgress) {
-  const sel = regSelect();
+async function regFetchAll(onProgress, allCols) {
+  const sel = allCols ? '*' : regSelect();
   const sort = REG_JOINED[REG.sort] ? REG_JOINED[REG.sort][0] : REG.sort;
   const all = [];
   for (let off = 0; ; off += 1000) {
@@ -3597,13 +3662,16 @@ async function regXlsx() {
   const out = $('#regMsg');
   try {
     msg(out, 'info', t('reg.exporting'));
-    const rows = await regFetchAll(n => msg(out, 'info', t('reg.exporting') + ' ' + fmtInt(n)));
-    // Reorder each object so the sheet columns follow the chosen order, and add
-    // the running number. A joined column has no raw value, so it is built here
-    // too -- otherwise the sheet would carry an empty "name".
+    // Every field of the asset (feedback 25/09/2026), not only the columns on
+    // screen: the chosen columns first in their order, then all the others.
+    const rows = await regFetchAll(n => msg(out, 'info', t('reg.exporting') + ' ' + fmtInt(n)), true);
+    const rest = [...new Set(rows.flatMap(r => Object.keys(r)))].filter(c => !REG.cols.includes(c));
+    const flat = v => v != null && typeof v === 'object' ? JSON.stringify(v).slice(0, 32000) : v;   // needs_review and other jsonb (an Excel cell holds 32,767 characters)
+    // A joined column has no raw value, so it is built here -- otherwise the sheet would carry an empty "name".
     const shaped = rows.map((r, i) => Object.fromEntries([
       ['#', i + 1],
-      ...REG.cols.map(c => [c, REG_JOINED[c] ? regCell(c, null, r) : r[c]])
+      ...REG.cols.map(c => [c, REG_JOINED[c] ? regCell(c, null, r) : flat(r[c])]),
+      ...rest.map(c => [c, flat(r[c])])
     ]));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(shaped), 'Assets');
@@ -6441,8 +6509,17 @@ async function piDosGo() {
       })));
       await SB.rpc('pm_replace_scores', { p_codes: part.map(it => it.rec.code), p_scores: sc });
     }
+    // Logged for the upload checklist on Data sources (loaded_by marks the dossier import;
+    // the log only takes the kinds of 07_data_source.sql). No right to write the log: never mind.
+    if (ok.length) {
+      try {
+        await SB.insert('am_data_source', [{ table_name: 'pm_project', source_file: [...new Set(ok.map(it => it.file))].slice(0, 20).join('; ').slice(0, 900),
+          source_kind: 'manual', rows_loaded: ok.length, loaded_by: SRC_DOSSIER }]);
+      } catch {}
+    }
     msg(out, failed.length ? 'warn' : 'ok',
         t('pm.imp.dosDone', { n: ok.length }) + (failed.length ? '\n' + t('pm.imp.dosFailed', { n: failed.length }) + '\n' + failed.join('\n') : ''));
+    srcChecklist();
   } catch (e) { msg(out, 'err', e.message); }
   finally { $('#btnPiDosGo').disabled = false; }
 }
@@ -6565,9 +6642,12 @@ function pbYearBox() {
   box.append(stats);
 
   // The year's FX, reserve and caps are set on the Settings screen (user 25/09/2026).
-  const card = el('div', { className: 'card' });
-  const row = el('div', { className: 'pmyear', style: 'justify-content:flex-end' });
+  // Only the round's buttons, on the right, no card or source line (feedback 25/09/2026);
+  // where the round came from stays in the tooltip.
+  const row = el('div', { className: 'pbacts' });
   const acts = el('div', { className: 'acts' });
+  if (round) row.title = t('pm.bud.roundInfo', { file: round.source_file || '—',
+    at: (round.imported_at || '').slice(0, 10) ? fmtDate(round.imported_at.slice(0, 10)) : '—', by: round.imported_by || '—' });
   if (round && !round.is_final && can('budget', 'create')) {
     const fin = el('button', { className: 'btn', textContent: t('pm.bud.makeFinal') });
     fin.onclick = () => pbMakeFinal(round);
@@ -6582,12 +6662,7 @@ function pbYearBox() {
   xl.onclick = pbExport;
   acts.append(xl);
   row.append(acts);
-  card.append(row);
-  if (round) card.append(el('div', { className: 'sd', style: 'margin-top:8px;color:var(--dim);font-size:12px',
-    textContent: t('pm.bud.roundInfo', { file: round.source_file || '—',
-      at: (round.imported_at || '').slice(0, 10) ? fmtDate(round.imported_at.slice(0, 10)) : '—',
-      by: round.imported_by || '—' }) }));
-  box.append(card);
+  box.append(row);
 }
 
 async function pbMakeFinal(round) {
@@ -7031,6 +7106,7 @@ function ppRenderBody(cols = ppCols()) {
   const body = $('#ppGrid tbody');
   body.innerHTML = '';
   const rows = ppRows(cols);
+  ppStats(rows);
   rows.forEach((p, i) => {
     const tr = el('tr', { className: (PM.prj.pick === p.code ? 'pick' : '') + (p.virtual ? ' virtrow' : '') }, [el('td', { className: 'num idx', textContent: fmtInt(i + 1) }), ...cols.map(c => c.td(p))]);
     tr.onclick = () => { PM.prj.pick = p.code; ppRenderBody(cols); if (p.virtual) ppVirtualDetail(p); else ppDetail(p); };
@@ -7058,6 +7134,43 @@ function ppRenderBody(cols = ppCols()) {
     tot.append(el('td'));
   });
   body.append(tot);
+}
+
+/* Score cards over the rows shown (filters and column filters included), in
+   the Budget sheet's style (feedback 25/09/2026): how many projects, their
+   average progress (as the dashboard), the budget of their lines, the
+   estimate, the contract (÷ estimate of the contracted ones, as the Contract
+   column) and paid pre-tax (÷ contract, as the Paid column). */
+function ppStats(rows) {
+  let box = $('#ppStats');
+  if (!box) { box = el('div', { id: 'ppStats', className: 'stats' }); $('#ppMsg').before(box); }
+  box.innerHTML = '';
+  const tile = (label, value, sub, meter) => el('div', { className: 'stat' }, [
+    el('span', { className: 'sl', textContent: label }), el('span', { className: 'sv', textContent: value }),
+    ...(sub ? [el('span', { className: 'sd', textContent: sub })] : []),
+    ...(meter != null ? [el('div', { className: 'meter' + (meter > 1 ? ' over' : '') },
+                            el('i', { style: `width:${Math.min(100, Math.max(0, meter * 100))}%` }))] : [])]);
+  const live = rows.filter(p => p.status !== 'cancelled');
+  const done = live.filter(p => p.status === 'completed').length;
+  const avg = live.length ? live.reduce((s, p) => s + pdCompletion(p, PM.prj.docs ? PM.prj.docs.get(p.code) : []), 0) / live.length : null;
+  // The budget of the lines behind the budgeted rows, each line once (a split project shares its line).
+  const codes = new Set(live.filter(p => p.budgeted).flatMap(p => [p.main_code, p.code]).filter(Boolean));
+  const lines = (PM.prj.finalLines || []).filter(l => codes.has(l.project_code) || (l.current_code && codes.has(l.current_code)));
+  const budget = pmSum(lines, 'estimated_value');
+  const est = pmSum(live, 'estimated_value');
+  const withC = live.filter(p => p.contract_value != null);
+  const contract = pmSum(withC, 'contract_value'), estC = pmSum(withC, 'estimated_value');
+  const ps = live.map(ppPaid).filter(Boolean);
+  const paid = ps.reduce((a, x) => a + x.paid, 0), paidBase = ps.reduce((a, x) => a + (x.base || 0), 0);
+  box.append(
+    tile(t('pm.ps.count'), fmtInt(live.length), t('pm.ps.countSub', { done: fmtInt(done), open: fmtInt(live.length - done) })),
+    tile(t('pm.ps.progress'), avg == null ? '—' : fmtPct(avg, 0), t('pm.ps.progressSub'), avg),
+    tile(t('pm.ps.budget'), fmtM(budget), t('pm.ps.budgetSub', { n: fmtInt(lines.length) })),
+    tile(t('pm.ps.estimate'), fmtM(est), budget ? t('pm.ps.ofBudget', { pct: fmtPct(est / budget) }) : ''),
+    tile(t('pm.ps.contract'), fmtM(contract), estC ? t('pm.ps.contractSub', { pct: fmtPct(contract / estC), n: fmtInt(withC.length) }) : '',
+         estC ? contract / estC : null),
+    ...(PM.prj.money ? [tile(t('pm.ps.paid'), fmtM(paid), paidBase ? t('pm.ps.paidSub', { pct: fmtPct(paid / paidBase) }) : '',
+                             paidBase ? paid / paidBase : null)] : []));
 }
 
 const PM_PROJ_SHOW = [['code', 'pm.col.code'], ['main_code', 'pm.f.mainCode'], ['name', 'pm.col.name'],
@@ -7118,7 +7231,7 @@ async function ppDetail(p) {
     if (sc.length) {
       const tb = el('table');
       tb.append(el('tr', {}, [['pm.vs.vendor'], ['pm.vs.amount', 'num'], ['pm.vs.ability', 'num'],
-        ['pm.vs.technique', 'num'], ['pm.vs.finance', 'num'], ['pm.vs.total', 'num'], ['pm.vs.chosen']]
+        ['pm.vs.technique', 'num'], ['pm.vs.finance', 'num'], ['pm.vs.total', 'num'], ['pm.vs.chosen', 'c']]
         .map(([k, c]) => el('th', { className: c || '', textContent: t(k) }))));
       const f1 = v => v == null ? '' : Number(v).toLocaleString(pmLoc(), { maximumFractionDigits: 1 });
       for (const s of sc) tb.append(el('tr', {}, [
@@ -7668,25 +7781,21 @@ function pdRender() {
   // Three clusters (user 25/09/2026): the money, the projects, the cycle time.
   const fig = (label, value, sub, cls) => el('div', { className: 'dfig' + (cls ? ' ' + cls : '') }, [el('span', { className: 'sl', textContent: label }),
     el('b', { textContent: value }), el('small', { textContent: sub || '' })]);
-  // 1. Money: the approved budget (and the FF&E reserve cap it takes, SSP in
-  //    view), what is committed, what is not yet, and the overrun.
+  // 1. Money, in boxes of equal width (feedback 25/09/2026 — the SSP cap meter
+  //    left this row; the cap still marks the ceiling in Overall progress):
+  //    the approved budget, committed, not yet committed, paid, overrun.
   const nBudget = new Set(lines.map(l => l.project_code)).size;
   const lead = el('div', { className: 'dlead' }, [
     el('span', { className: 'hl', textContent: t('pm.dash.budget', { y }) }),
     el('span', { className: 'hv', textContent: fmtM(budget) }),
     ...(fullYear ? [] : [el('span', { className: 'hs', textContent: t('pm.dash.plannedIn', { p: perLabel, v: fmtM(planned) }).replace(/^ · /, '') })])]);
-  if (cap && (!ent.length || ent.includes('SSP'))) {
-    const r = sspBudget / cap;
-    lead.append(el('div', { className: 'dcap' }, [
-      el('div', { className: 'pgh' }, [el('span', { textContent: t('pm.dash.cap') }), el('b', { textContent: fmtPct(r) })]),
-      el('div', { className: 'meter' + (r > 1 ? ' over' : '') }, el('i', { style: `width:${Math.min(100, Math.max(0, r * 100))}%` })),
-      el('small', { textContent: t('pm.dash.capSub', { v: fmtM(sspBudget), cap: fmtM(cap) }) })]));
-  }
+  const paidAll = pmSum(projects, pdPaidNet);
   const valFigs = [fig(fullYear ? t('pm.dash.committed') : t('pm.dash.committedIn', { p: perLabel }), fmtM(committed),
                        budget ? t('pm.dash.ofBudget', { pct: fmtPct(committed / budget) }) : '')];
   if (fullYear) valFigs.push(fig(t('pm.dash.remaining'), fmtM(budget - committed), budget ? t('pm.dash.ofBudget', { pct: fmtPct((budget - committed) / budget) }) : ''));
+  valFigs.push(fig(t('pm.dash.paid'), fmtM(paidAll), budget ? t('pm.dash.paidSub', { pct: fmtPct(paidAll / budget) }) : ''));
   valFigs.push(fig(t('pm.dash.overrun'), fmtM(overrun), t('pm.dash.overrunSub', { n: fmtInt(overrunRows.length) }), overrun > 0 ? 'down' : ''));
-  const valCard = el('div', { className: 'hero dtop dval' }, [lead, el('div', { className: 'dfigs n' + valFigs.length }, valFigs)]);
+  const valCard = el('div', { className: 'hero dtop dval', style: `grid-template-columns:repeat(${valFigs.length + 1},minmax(0,1fr))` }, [lead, ...valFigs]);
   // 2. Projects: in the budget, outside it, done, and carried forward from earlier years.
   const prjCard = el('div', { className: 'hero dtop' }, [
     el('span', { className: 'hl', textContent: t('pm.dash.projectsH', { y }) }),
@@ -11665,6 +11774,7 @@ async function payImpLoad() {
   try {
     await payLoadProjects();
     PAY.imports = await SB.select('pm_pay_import', 'select=*&order=imported_at.desc&limit=6');
+    if (VIEW === 'sources') srcChecklist();
     payRenderImports();
   } catch (e) {
     msg('#payReadOut', 'err', /pm_invoice|pm_pay|relation|schema cache/i.test(e.message) ? t('pay.noTables') : e.message);
@@ -11688,7 +11798,9 @@ function payStatus(kind, r) {
 const payChip = s => el('span', { className: 'st pay-' + s, textContent: t('pay.st.' + s) });
 function payProjCell(kind, r) {
   const a = payAllocOf(kind, r.id);
-  if (!a.length) return el('td', { className: 'paycodes', textContent: (r.codes_found || []).join(', ') || '—' });
+  // One code per line, so the column is as wide as one code (feedback 25/09/2026).
+  if (!a.length) return el('td', { className: 'paycodes' }, (r.codes_found || []).length
+    ? r.codes_found.map(c => el('div', { textContent: c })) : [document.createTextNode('—')]);
   return el('td', { className: 'paycodes' }, a.map(x => el('div', {}, [el('code', { textContent: x.project_code }),
     Number(x.share) < 1 ? document.createTextNode(' ' + fmtPct(Number(x.share), 0)) : ''])));
 }
@@ -11741,11 +11853,12 @@ function payCols(tab) {
     text('codes', 'pay.c.codes', it => (it.r.codes_found || []).join(', ') || '—', 'paycodes'), nameCol,
     text('doc', 'pay.c.doc', doc, '', true), text('party', 'pay.c.party', party, 'wrapcell'),
     money('amount', 'pay.c.amount', it => Number(it.kind === 'invoice' ? it.r.net : it.r.amount)), desc];
+  // Invoice no. and series after the amount incl. VAT (feedback 25/09/2026).
   if (tab === 'invoice') return [
-    stCol, date('date', 'pay.c.date', it => it.r.post_date), projCol, nameCol,
-    text('doc', 'pay.c.invNo', doc, '', true), text('series', 'pay.c.series', it => it.r.series), text('party', 'pay.c.party', party, 'wrapcell'),
+    stCol, date('date', 'pay.c.date', it => it.r.post_date), projCol, nameCol, text('party', 'pay.c.party', party, 'wrapcell'),
     money('net', 'pay.c.net', it => Number(it.r.net)), money('vat', 'pay.c.vat', it => Number(it.r.vat)),
-    text('rate', 'pay.c.rate', it => it.r.vat_rate), money('gross', 'pay.c.gross', it => Number(it.r.net) + Number(it.r.vat)), desc];
+    text('rate', 'pay.c.rate', it => it.r.vat_rate), money('gross', 'pay.c.gross', it => Number(it.r.net) + Number(it.r.vat)),
+    text('doc', 'pay.c.invNo', doc, '', true), text('series', 'pay.c.series', it => it.r.series), desc];
   if (tab === 'payment') return [
     stCol, date('date', 'pay.c.date', it => it.r.post_date), projCol, nameCol,
     text('doc', 'pay.c.payslip', doc, '', true), text('vcode', 'pay.c.vendor', it => it.r.vendor_code, '', true),
@@ -11757,15 +11870,21 @@ function payCols(tab) {
     text('dept', 'pm.col.dept', it => pmDeptName(it.p.dept_code)),
     money('budget', 'pay.c.budget', it => it.budget),
     Object.assign(money('contract', 'pm.col.contract', it => it.contract), {
-      td: it => ppContractCell({ contract_value: it.contract, estimated_value: it.budget }) }),
+      td: it => ppContractCell({ contract_value: it.contract, estimated_value: it.budget }),
+      totTd: live => { const withC = live.filter(it => it.contract != null);
+        return ppContractCell({ contract_value: withC.reduce((s, it) => s + it.contract, 0), estimated_value: withC.reduce((s, it) => s + (it.budget || 0), 0) }); } }),
     money('inv', 'pay.c.net', it => it.inv), money('vat', 'pay.c.vat', it => it.vat), money('gross', 'pay.c.gross', it => it.gross),
-    money('paid', 'pay.c.paid', it => it.paid),
-    { k: 'paidPct', lbl: 'pay.c.paidPct', num: true, val: it => it.paidPct == null ? null : it.paidPct * 100,
-      txt: it => it.paidPct != null ? fmtPct(it.paidPct, 0) : '',
-      td: it => { const over = it.paidPct != null && it.paidPct > 1.0001;
-                  return el('td', { className: 'num' + (over ? ' payneg' : ''), textContent: it.paidPct != null ? fmtPct(it.paidPct, 0) + (over ? ' ⚠' : '') : '—' }); } },
+    // Paid with its share of the contract as a small pill, like the Contract column (feedback 25/09/2026).
+    Object.assign(money('paid', 'pay.c.paid', it => it.paid), {
+      td: it => payPaidCell(it.paid, it.paidPct),
+      totTd: live => { const withC = live.filter(it => it.contract), b = withC.reduce((s, it) => s + it.contract, 0);
+        return payPaidCell(live.reduce((s, it) => s + it.paid, 0), b ? withC.reduce((s, it) => s + it.paidNet, 0) / b : null); } }),
     date('last', 'pay.c.lastPaid', it => it.last)];
 }
+
+// Paid (gross) with its pill: paid pre-tax ÷ contract; red past 100 %.
+const payPaidCell = (v, pct) => el('td', { className: 'num paidc', title: t('pay.c.paidPctHint') }, [document.createTextNode(fmtVnd(v)),
+  el('small', { className: 'pp' + (pct > 1.0001 ? ' neg' : ''), textContent: pct != null ? fmtPct(pct, 0) : '—' })]);
 
 // The rows of a tab, after the bar above (year, status, search).
 function payItems(tab) {
@@ -11900,11 +12019,8 @@ function payRenderBody(cols) {
     const tot = el('tr', { className: 'tot' }, ticks ? [el('td')] : []);
     cols.forEach((c, i) => {
       if (i === 0) return tot.append(el('td', { textContent: t('pm.total', { n: fmtInt(rows.length) }) }));
+      if (c.totTd) return tot.append(c.totTd(live));
       if (c.sum) return tot.append(el('td', { className: 'num', textContent: fmtVnd(live.reduce((s, it) => s + (Number(c.val(it)) || 0), 0)) }));
-      if (c.k === 'paidPct') {
-        const withC = live.filter(it => it.contract), b = withC.reduce((s, it) => s + it.contract, 0), v = withC.reduce((s, it) => s + it.paidNet, 0);
-        return tot.append(el('td', { className: 'num', textContent: b ? fmtPct(v / b, 0) : '—' }));
-      }
       tot.append(el('td'));
     });
     body.append(tot);
@@ -12201,7 +12317,9 @@ async function payTermTable(code, p, m, pay, share, wrap) {
   }
   tb.append(el('tr', { className: 'tot' }, [
     el('td', { textContent: t('pm.total', { n: fmtInt(n) }) + (terms.length ? ' · ' + fmtNum(sumPct) + '%' : '') }),
-    el('td', { className: 'num', textContent: terms.length ? fmtVnd(sumTerm) : '' }),
+    // No schedule: the contract value (or the purchase value) stands in the term column (feedback 25/09/2026).
+    el('td', { className: 'num', textContent: terms.length ? fmtVnd(sumTerm) : value ? fmtVnd(value) : '',
+               title: terms.length ? '' : t('pay.t.valueHint') }),
     el('td'),
     el('td', { className: 'num', textContent: fmtVnd(sumNet) }),
     el('td', { className: 'num', textContent: fmtVnd(sumGross) }),

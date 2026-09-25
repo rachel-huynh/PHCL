@@ -1188,25 +1188,30 @@
   body.snap .drawer{position:relative;inset:auto;width:760px;height:auto;transform:none;box-shadow:none;border:1px solid var(--line);margin-top:12px}
   body.snap .dbody,body.snap .fscroll{overflow:visible!important}
   body.snap details:not([open]) > :not(summary){display:none!important}   /* html2canvas draws closed <details> open */
+  /* html2canvas draws sticky things where they would sit after a scroll (a total row in mid-table, the top bar over
+     the filters), and a <summary> with a list number: flatten them while capturing. */
+  body.snap .top,body.snap th,body.snap tr.tot td{position:static!important}
+  body.snap summary{display:block;list-style:none}
+  body.snap summary::-webkit-details-marker{display:none}
   @media (max-width:1200px){ .dkpis{grid-template-columns:repeat(4,minmax(0,1fr))} }
   @media (max-width:700px){ .dkpis{grid-template-columns:repeat(2,minmax(0,1fr))} .dkpis .span4{grid-column:span 2} }
   /* Dashboard KPIs as three clusters (user 25/09/2026): money on its own row,
      then the projects and the cycle time side by side. */
   .dkpis3{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:10px;margin:12px 0}
   .dkpis3 > *{margin:0;min-width:0}
-  .dkpis3 .dval{grid-column:1 / -1;display:flex;flex-wrap:nowrap;align-items:stretch;gap:18px}
+  .dkpis3 .dval{grid-column:1 / -1;display:grid;align-items:start;gap:18px}
   .dkpis3 > :nth-child(2){grid-column:span 7} .dkpis3 > :nth-child(3){grid-column:span 5}
   .dkpis3 .hero{padding:9px 12px;gap:2px 10px;align-items:baseline;align-content:flex-start;border-left:5px solid var(--navy)}
   .dkpis3 .hero .hl{font-size:10px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
   .dkpis3 .hero .hv{font-size:24px;line-height:1.15;display:block}
   .dkpis3 .hero .hs{font-size:11px;display:block}
-  .dval .dlead{flex:0 0 280px;display:flex;flex-direction:column;gap:2px}
+  .dval .dlead{display:flex;flex-direction:column;gap:2px;min-width:0}
   .dval .dfigs{flex:1;margin-top:0;align-content:center}
   .dfigs.n4{grid-template-columns:repeat(4,minmax(0,1fr))}
   .dfigs.n2{grid-template-columns:repeat(2,minmax(0,1fr))}
   .dfig.down b{color:var(--red)}
   @media (max-width:1200px){ .dkpis3 > :nth-child(2),.dkpis3 > :nth-child(3){grid-column:1 / -1} }
-  @media (max-width:760px){ .dkpis3 .dval{flex-wrap:wrap} .dval .dlead{flex-basis:100%} .dfigs.n4{grid-template-columns:repeat(2,minmax(0,1fr))} }
+  @media (max-width:760px){ .dkpis3 .dval{grid-template-columns:repeat(2,minmax(0,1fr)) !important} .dfigs.n4{grid-template-columns:repeat(2,minmax(0,1fr))} }
   /* Charts centred in their card's height, so a short chart beside a tall one leaves no gap below it. */
   .chartcard{display:flex;flex-direction:column}
   .chartcard .cbody{flex:1;display:flex;flex-direction:column;justify-content:center}
@@ -1478,6 +1483,18 @@
   .tdrole small{font-size:11.5px}
   .tdlink input{flex:1;font-family:monospace;font-size:11.5px}
   .tdev{margin-top:12px} .tdev summary{cursor:pointer;color:var(--dim)}
+  /* ============ App feedback 25/09/2026 21:42 ("PHCL app EN 20260925-2142.pdf") ============ */
+  .pbacts{display:flex;justify-content:flex-end;margin:0 0 10px}
+  .pmdet td.c,.pmdet th.c{text-align:center}
+  #grid td.gwrap{white-space:normal;overflow-wrap:anywhere}
+  #ppStats{margin:12px 0 0}
+  .srcck th.c,.srcck td.c{text-align:center;min-width:54px}
+  .srcck td.ok b{color:var(--green)}
+  .srcck td.ok small{display:block;font-size:10px;color:var(--dim);line-height:1.1}
+  .srcck td.miss{color:var(--red);font-weight:700;background:#fdf1ef}
+  .srcck td.na{color:var(--ink-3)}
+  .srcckkey{display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--dim);margin-top:8px}
+  .srcckkey .ok{color:var(--green)} .srcckkey .miss{color:var(--red)}
 </style>
 </head>
 <body>
@@ -1633,7 +1650,7 @@
     <!-- Bảng khoá bộ đếm chỉ có bốn cột hẹp; cho nó chiếm cả bề ngang là phí
          chỗ. Panel đặt lại nằm ngay bên phải, cạnh đúng những con số nó sửa. -->
     <div class="grid2">
-      <div id="cntOut"></div>
+      <div id="cntOut" class="card"></div>
 
       <div class="card">
         <h2 data-i18n="cnt.rs.h"></h2>
@@ -2101,6 +2118,8 @@
         <div id="payReadOut"></div>
         <div id="payImports"></div>
       </div>
+    <!-- Which periodic files are in, month by month (srcChecklist). -->
+    <div id="srcCheck" class="card"></div>
     <div id="srcMaster">
     <p class="lead" data-i18n-html="src.lead_html"></p>
 
@@ -2375,7 +2394,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260926a"></script>
-<script src="app.js?v=20260926a"></script>
+<script src="i18n.js?v=20260926b"></script>
+<script src="app.js?v=20260926b"></script>
 </body>
 </html>
