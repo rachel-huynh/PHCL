@@ -1141,6 +1141,16 @@
   .adall .fld input{width:170px}
   .adall .fld.wide{flex:1 1 100%}
   .adall .fld.wide textarea{width:100%;min-height:54px}
+  /* Capture mode (Admin tools → capture the whole app): the window-height
+     layout and the inner scroll boxes are let go, so each screen is captured
+     full length; the project panel sits in the flow to be captured on its own. */
+  body.snap .shell{height:auto}
+  body.snap main{overflow:visible}
+  body.snap .wrap,body.snap .pmgrid,body.snap #v-table .wrap,body.snap #v-register > .wrap{max-height:none!important;overflow:visible!important}
+  body.snap .drawer[hidden]{display:none}
+  body.snap .drawer{position:relative;inset:auto;width:760px;height:auto;transform:none;box-shadow:none;border:1px solid var(--line);margin-top:12px}
+  body.snap .dbody,body.snap .fscroll{overflow:visible!important}
+  body.snap details:not([open]) > :not(summary){display:none!important}   /* html2canvas draws closed <details> open */
   @media (max-width:1200px){ .dkpis{grid-template-columns:repeat(4,minmax(0,1fr))} }
   @media (max-width:700px){ .dkpis{grid-template-columns:repeat(2,minmax(0,1fr))} .dkpis .span4{grid-column:span 2} }
 </style>
@@ -1487,6 +1497,17 @@
   <!-- ============================================ ADMIN TOOLS (testing) -->
   <section id="v-admin">
     <p class="lead" data-i18n-html="ad.lead_html"></p>
+    <div class="card">
+      <h2 data-i18n="snap.h"></h2>
+      <p class="adedit" data-i18n-html="snap.p_html"></p>
+      <div class="row" style="align-items:center;flex-wrap:wrap;gap:14px">
+        <label class="chk"><input type="checkbox" id="snapPdf" checked><span data-i18n="snap.pdf"></span></label>
+        <label class="chk"><input type="checkbox" id="snapZip" checked><span data-i18n="snap.zip"></span></label>
+        <button class="btn pri" id="btnSnap" data-i18n="snap.go"></button>
+        <button class="btn" id="btnSnapStop" hidden data-i18n="snap.stop"></button>
+      </div>
+      <div id="snapOut"></div>
+    </div>
     <div class="card" id="adResetCard">
       <h2 data-i18n="ad.reset.h"></h2>
       <div class="msg warn" data-i18n-html="ad.reset.warn_html"></div>
@@ -1988,7 +2009,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260925g"></script>
-<script src="app.js?v=20260925g"></script>
+<script src="i18n.js?v=20260925h"></script>
+<script src="app.js?v=20260925h"></script>
 </body>
 </html>

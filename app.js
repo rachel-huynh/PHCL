@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260925g';
+const APP_VERSION = '20260925h';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -9657,6 +9657,151 @@ async function adEditors() {
   } catch {}
 }
 
+
+/* ---------------------------------------------- capture every screen
+   Admin tools → "Capture the whole app": opens every screen this person may
+   see — menu items, their sub-items, the Payments tabs, each entity's approval
+   chains, a project's side panel and a document — and captures each one full
+   length (the tall tables unrolled, not cut at the window), then hands back
+   ONE PDF (a page per screen, bookmarked) and / or ONE ZIP of PNGs.
+   The Connection screen is left out: it holds the project's address and key. */
+const SNAP_LIBS = {
+  html2canvas: 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js',
+  jspdf: 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',
+  JSZip: 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js'
+};
+const snapLib = name => window[name] ? Promise.resolve() : new Promise((ok, bad) => {
+  const s = el('script', { src: SNAP_LIBS[name] });
+  s.onload = ok; s.onerror = () => bad(new Error(name));
+  document.head.append(s);
+});
+
+// Every screen to capture, in menu order, with the extra states worth a page of their own.
+async function snapTargets() {
+  const out = [];
+  const add = (view, label, o = {}) => out.push(Object.assign({ view, label }, o));
+  for (const [, items] of NAV)
+    for (const [id, key, ch] of items)
+      for (const [v] of [[id, key], ...(ch || [])]) {
+        if (!v || v === 'setup' || !canView(v)) continue;
+        if (v === 'payments') {
+          for (const tab of PAY_TABS) add(v, `${viewTitle(v)} — ${t('pay.tab.' + tab)}`,
+            { after: () => { PAY.tab = tab; PAY.sel.clear(); payRender(); } });
+        } else if (v === 'chains') {
+          for (const e of PM_ENTITIES) add(v, `${viewTitle(v)} — ${e}`, { after: () => { WF.entity = e; wfChainsRender(); } });
+        } else add(v, viewTitle(v));
+        if (v === 'projects') add(v, `${viewTitle(v)} — ${t('snap.panel')}`, {
+          after: async () => { const r = PM.prj.rows && PM.prj.rows[0]; if (r) { PM.prj.pick = r.code; ppRenderBody(); await ppDetail(r); } },
+          el: '#ppDrawer', skip: () => $('#ppDrawer').hidden });
+      }
+  // One document, drawn as its form, if there is any.
+  if (canView('doc')) {
+    try {
+      const [d] = await SB.select('pm_doc', 'select=id,doc_no&status=neq.cancelled&order=id.desc&limit=1');
+      if (d) add('doc', `${t('page.doc')} — ${d.doc_no}`, { before: () => { WF.openId = d.id; } });
+    } catch {}
+  }
+  return out;
+}
+
+// Wait until the screen has finished loading: no request in flight for a moment.
+let SNAP_INFLIGHT = 0;
+async function snapIdle() {
+  await new Promise(r => setTimeout(r, 350));
+  const t0 = Date.now();
+  let quietSince = Date.now();
+  while (Date.now() - t0 < 15000) {
+    if (SNAP_INFLIGHT > 0) quietSince = Date.now();
+    if (Date.now() - quietSince > 500) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  await new Promise(r => setTimeout(r, 300));          // charts draw after their data
+}
+
+async function snapShot(target) {
+  const node = target.el ? $(target.el) : $('.content');
+  const w = Math.max(node.scrollWidth, node.clientWidth);
+  const h = Math.min(Math.max(node.scrollHeight, node.clientHeight), 16000);   // a register of thousands of rows is cut here
+  const scale = Math.min(1.5, Math.sqrt(40e6 / (w * h)));                       // stays inside the browser's canvas limit
+  return html2canvas(node, { scale, width: w, height: h, windowWidth: document.documentElement.scrollWidth,
+    backgroundColor: getComputedStyle(document.body).backgroundColor, logging: false, useCORS: true });
+}
+
+async function adSnap() {
+  const wantPdf = $('#snapPdf').checked, wantZip = $('#snapZip').checked;
+  const out = $('#snapOut');
+  if (!wantPdf && !wantZip) return msg(out, 'err', t('snap.pickFormat'));
+  const back = VIEW;
+  const btn = $('#btnSnap'), stop = $('#btnSnapStop');
+  btn.disabled = true; stop.hidden = false; AD.snapStop = false;
+  const realFetch = window.fetch;
+  window.fetch = (...a) => { SNAP_INFLIGHT++; return realFetch(...a).finally(() => { SNAP_INFLIGHT--; }); };
+  document.body.classList.add('snap');
+  const shots = [];
+  try {
+    msg(out, 'info', t('snap.loading'));
+    await Promise.all(['html2canvas', ...(wantPdf ? ['jspdf'] : []), ...(wantZip ? ['JSZip'] : [])].map(snapLib));
+    const targets = await snapTargets();
+    for (let i = 0; i < targets.length && !AD.snapStop; i++) {
+      const tg = targets[i];
+      msg(out, 'info', t('snap.progress', { i: i + 1, n: targets.length, name: tg.label }));
+      if (tg.before) tg.before();
+      if (VIEW !== tg.view || tg.before) showView(tg.view);
+      await snapIdle();
+      if (tg.after) { await tg.after(); await snapIdle(); }
+      if (tg.skip && tg.skip()) continue;
+      const main = document.querySelector('main');
+      if (main) main.scrollTop = 0;
+      shots.push({ label: tg.label, canvas: await snapShot(tg) });
+      if (tg.el === '#ppDrawer') ppDrawerClose();
+    }
+    if (!shots.length) throw new Error(t('snap.none'));
+    msg(out, 'info', t('snap.building', { n: shots.length }));
+    const d0 = new Date(), p2 = n => String(n).padStart(2, '0');       // local time in the file name
+    const stamp = `${d0.getFullYear()}${p2(d0.getMonth() + 1)}${p2(d0.getDate())}-${p2(d0.getHours())}${p2(d0.getMinutes())}`;
+    const base = `PHCL app ${LANG.toUpperCase()} ${stamp}`;
+    if (wantPdf) snapPdf(shots).save(base + '.pdf');
+    if (wantZip) {
+      const zip = new JSZip();
+      shots.forEach((s, i) => zip.file(`${String(i + 1).padStart(2, '0')} - ${s.label.replace(/[\\/:*?"<>|]/g, ' ').trim()}.png`,
+        s.canvas.toDataURL('image/png').split(',')[1], { base64: true }));
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const a = el('a', { href: URL.createObjectURL(blob), download: base + '.zip' });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    }
+    msg(out, AD.snapStop ? 'warn' : 'ok', t(AD.snapStop ? 'snap.stopped' : 'snap.done', { n: shots.length }));
+  } catch (e) {
+    msg(out, 'err', t('snap.fail', { err: e.message }));
+  } finally {
+    window.fetch = realFetch;
+    document.body.classList.remove('snap');
+    btn.disabled = false; stop.hidden = true;
+    if (VIEW !== back) showView(back);
+  }
+}
+
+// One page per screen at a fixed width; a very tall screen continues on the next page(s).
+function snapPdf(shots) {
+  const { jsPDF } = window.jspdf;
+  const W = 1000, MAX_H = 14000;                        // points; PDF pages top out near 14,400
+  let doc = null;
+  for (const s of shots) {
+    const c = s.canvas, k = W / c.width, sliceH = Math.floor(MAX_H / k);
+    for (let y = 0, part = 0; y < c.height; y += sliceH, part++) {
+      const hPx = Math.min(sliceH, c.height - y);
+      const piece = document.createElement('canvas');
+      piece.width = c.width; piece.height = hPx;
+      piece.getContext('2d').drawImage(c, 0, y, c.width, hPx, 0, 0, c.width, hPx);
+      const size = [W, hPx * k], orient = size[0] > size[1] ? 'l' : 'p';
+      if (!doc) doc = new jsPDF({ unit: 'pt', format: size, orientation: orient, compress: true });
+      else doc.addPage(size, orient);
+      doc.addImage(piece.toDataURL('image/jpeg', 0.86), 'JPEG', 0, 0, size[0], size[1]);
+      if (part === 0) try { doc.outline.add(null, s.label, { pageNumber: doc.getNumberOfPages() }); } catch {}
+    }
+  }
+  return doc;
+}
 function initAdmin() {
   $('#btnAdCount').onclick = adCount;
   $('#btnAdReset').onclick = adReset;
@@ -9664,6 +9809,8 @@ function initAdmin() {
   $('#btnAdBackup').onclick = () => showView('backup');
   $('#btnAdUsers').onclick = () => showView('users');
   $('#btnAdPerms').onclick = () => showView('perms');
+  $('#btnSnap').onclick = adSnap;
+  $('#btnSnapStop').onclick = () => { AD.snapStop = true; };
 }
 
 /* ============================================================== PAYMENTS
