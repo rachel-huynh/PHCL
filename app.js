@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260925n';
+const APP_VERSION = '20260925o';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -8014,7 +8014,11 @@ async function wfProjectPanel(p, host) {
     SB.select('pm_doc', `select=id,doc_type,doc_no,status,pkg_id,version,total_value,created_by,created_email,submitted_at,decided_at,data&project_code=eq.${encodeURIComponent(p.code)}&order=created_at`),
     SB.select('pm_pkg', `select=id,grp,status,current_step,returned_to&project_code=eq.${encodeURIComponent(p.code)}&order=id`)]);
   const card = el('div', { style: 'margin-top:14px' });
-  card.append(el('h2', { textContent: t('wf.docs') }));
+  // Every form of the project captured at once (PDF / PNG), once there is any.
+  const capOut = el('div');
+  card.append(el('div', { className: 'row', style: 'align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px' }, [
+    el('h2', { textContent: t('wf.docs') }),
+    docs.some(d => !['cancelled', 'rejected'].includes(d.status)) ? el('div', { className: 'row', style: 'gap:6px' }, wfCapButtons(p.code, capOut)) : '']), capOut);
   const strip = el('div', { className: 'wfstrip' });
   for (const type of WF_ORDER) {
     const tt = WF.types.find(x => x.code === type) || {};
@@ -8312,7 +8316,7 @@ function wfRender() {
   const pbtn = el('button', { className: 'btn', textContent: t('wf.print') }); pbtn.onclick = () => wfPrint();
   const fbtn = el('button', { className: 'btn', textContent: t('wf.pdf') }); fbtn.onclick = () => wfPdf();
   form.append(el('div', { className: 'chead' }, [el('div', { className: 'row', style: 'align-items:center;gap:12px' },
-    [el('h2', { textContent: t('wf.content') }), wfDots()]), el('div', { className: 'row' }, [pbtn, fbtn])]));
+    [el('h2', { textContent: t('wf.content') }), wfDots()]), el('div', { className: 'row' }, [pbtn, fbtn, ...wfCapButtons(p.code, '#wdMsg')])]));
   form.append(el('div', { id: 'wdWarn' }));
   form.append(el('div', { className: 'flipwrap' }, el('div', { className: 'fscroll', id: 'wdSheet' }, fsSheet(d.doc_type, wfEditable()))));
   form.append(wfArrows());
@@ -9751,6 +9755,132 @@ async function wfPdf() {
   } catch (e) {
     msg('#wdMsg', 'err', t('wf.pdfFail') + ' ' + (e && e.message || e));
   } finally { if (host) host.remove(); }
+}
+
+/* ----------------------------------------- every form of a project, captured
+   "All forms": each document of the project that is not cancelled / rejected,
+   in the order of the procedure (PR · RR · PA · QC · MC · PO · CT · AH), every
+   page of every form drawn as on paper — each with its own package's
+   signatures — handed back as ONE PDF (an A4 page per form page, bookmarked by
+   document number) or ONE ZIP of PNG pictures. Drawn off-screen: whatever is
+   open stays as it was. */
+const WF_CAP_KEYS = ['project', 'docs', 'line', 'year', 'pkg', 'steps', 'pdocs', 'doc', 'data', 'drafts', 'dirtyIds',
+                     'ref', 'refs', 'qcTab', 'adminEdit', 'events', 'inRef'];
+async function wfCaptureForms(code, fmt, out) {
+  const keep = Object.fromEntries(WF_CAP_KEYS.map(k => [k, WF[k]]));
+  const host = el('div', { className: 'fpdfhost' });
+  const shots = [];
+  try {
+    msg(out, 'info', t('wf.cap.loading'));
+    await Promise.all(['html2canvas', fmt === 'zip' ? 'JSZip' : 'jspdf'].map(snapLib));
+    await wfLookups(); await wfCatLoad();
+    const enc = encodeURIComponent(code);
+    const [[project], docs, pkgs] = await Promise.all([
+      SB.select('pm_project', `select=*&code=eq.${enc}`),
+      SB.select('pm_doc', `select=*&project_code=eq.${enc}`),
+      SB.select('pm_pkg', `select=*&project_code=eq.${enc}`)]);
+    const live = docs.filter(d => !['cancelled', 'rejected'].includes(d.status) && WF_FORMS[d.doc_type])
+      .sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type) || a.id - b.id);
+    if (!project || !live.length) throw new Error(t('wf.cap.none'));
+    const pids = [...new Set(live.map(d => d.pkg_id).filter(Boolean))];
+    const [steps, years, line] = await Promise.all([
+      pids.length ? SB.select('pm_pkg_step', `select=*&pkg_id=in.(${pids.join(',')})&order=step`) : [],
+      SB.select('pm_budget_year', `select=*&year=eq.${Number(project.year) || 0}`),
+      wfFinalLine(project)]);
+    Object.assign(WF, { project, docs, line: line || null, year: years[0] || null, drafts: new Map(), dirtyIds: new Set(),
+                        adminEdit: false, events: [], refs: [], qcTab: null, inRef: false });
+    document.body.append(host);
+    for (const d of live) {
+      msg(out, 'info', t('wf.cap.progress', { no: d.doc_no, n: shots.length + 1 }));
+      const form = WF_FORMS[d.doc_type], land = form.orient === 'landscape';
+      const pkg = pkgs.find(k => k.id === d.pkg_id) || {}, pst = steps.filter(s => s.pkg_id === d.pkg_id);
+      WF.drafts.set(d.id, JSON.parse(JSON.stringify(d.data || {})));
+      // Drawn as a "reference" document: in its own package's context, read-only.
+      Object.assign(WF, { pkg, steps: pst, pdocs: live.filter(o => o.pkg_id === d.pkg_id), doc: d, data: WF.drafts.get(d.id),
+                          ref: { d, pkg, steps: pst, pdocs: live.filter(o => o.pkg_id === d.pkg_id) } });
+      host.innerHTML = '';
+      host.style.width = (land ? 1077 : 748) + 'px';
+      const sheet = fsSheet(d.doc_type, false, 'print');
+      sheet.classList.add('pdf');
+      let nodes;
+      if (form.xs) { host.append(xsFit(sheet, 748, 1.42)); nodes = [host.firstChild]; }
+      else { host.append(sheet); nodes = [...sheet.children].filter(n => n.classList.contains('fpage')); if (!nodes.length) nodes = [sheet]; }
+      // A page taller than the paper continues on the next sheet, cut between
+      // rows / blocks (never through one). PR / RR are already one page (xsFit).
+      const parts = [];
+      for (const node of nodes) {
+        const canvas = await html2canvas(node, { scale: 2, backgroundColor: '#ffffff', logging: false, useCORS: true });
+        for (const c of wfCapSlices(node, canvas, land ? 198 / 285 : 285 / 198)) parts.push(c);
+      }
+      parts.forEach((canvas, i) => shots.push({ label: parts.length > 1 ? `${d.doc_no} (${i + 1}-${parts.length})` : d.doc_no,
+                                                first: i === 0, doc: d.doc_no, land, canvas }));
+    }
+    msg(out, 'info', t('wf.cap.building', { n: shots.length }));
+    const base = `${code} - ${t('wf.cap.file')}`;
+    if (fmt === 'zip') {
+      const zip = new JSZip();
+      shots.forEach((s, i) => zip.file(`${String(i + 1).padStart(2, '0')} - ${s.label.replace(/[\/:*?"<>|]/g, ' ')}.png`,
+        s.canvas.toDataURL('image/png').split(',')[1], { base64: true }));
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const a = el('a', { href: URL.createObjectURL(blob), download: base + '.zip' });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    } else wfCapPdf(shots).save(base + '.pdf');
+    msg(out, 'ok', t('wf.cap.done', { n: shots.length, d: live.length }));
+  } catch (e) {
+    msg(out, 'err', t('wf.cap.fail') + ' ' + (e && e.message || e));
+  } finally {
+    host.remove();
+    Object.assign(WF, keep);
+  }
+}
+/* Cuts a captured page into paper-shaped pieces, each cut at the bottom of a
+   row, block or signature box — never through one. A page up to 15 % taller
+   than the paper stays whole (scaled down a little on the sheet); a longer one
+   is cut into about equal parts, so no sheet carries a stray last line. */
+function wfCapSlices(node, canvas, ratio) {
+  const box = node.getBoundingClientRect(), cssH = box.height, k = canvas.height / cssH;
+  const pageH = box.width * ratio, maxH = pageH * 1.15;
+  const n = Math.ceil(cssH / maxH);
+  if (n <= 1) return [canvas];
+  const cuts = [...new Set([...node.querySelectorAll(':scope > *, tr, .fsig, .fsigs, .fcell, .fbar')]
+    .map(e => Math.round(e.getBoundingClientRect().bottom - box.top)))].sort((a, b) => a - b);
+  const out = [];
+  for (let y = 0; y < cssH - 1;) {
+    const left = n - out.length, rest = cssH - y;
+    const lim = y + Math.min(maxH, (rest / left) * 1.1);
+    const end = rest <= maxH || left <= 1 ? cssH : (cuts.filter(c => c > y + pageH * 0.3 && c <= lim).pop() || lim);
+    const piece = document.createElement('canvas');
+    piece.width = canvas.width; piece.height = Math.round((end - y) * k);
+    piece.getContext('2d').drawImage(canvas, 0, Math.round(y * k), canvas.width, piece.height, 0, 0, canvas.width, piece.height);
+    out.push(piece);
+    y = end;
+  }
+  return out;
+}
+// An A4 page per form page, portrait or landscape as the form, the picture fitted inside 6 mm margins.
+function wfCapPdf(shots) {
+  const { jsPDF } = window.jspdf;
+  let doc = null;
+  for (const s of shots) {
+    const o = s.land ? 'l' : 'p', W = s.land ? 297 : 210, H = s.land ? 210 : 297, m = 6;
+    if (!doc) doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: o, compress: true });
+    else doc.addPage('a4', o);
+    const k = Math.min((W - 2 * m) / s.canvas.width, (H - 2 * m) / s.canvas.height);
+    const w = s.canvas.width * k, h = s.canvas.height * k;
+    doc.addImage(s.canvas.toDataURL('image/jpeg', 0.9), 'JPEG', (W - w) / 2, m, w, h);
+    if (s.first) try { doc.outline.add(null, s.doc, { pageNumber: doc.getNumberOfPages() }); } catch {}
+  }
+  return doc;
+}
+// The two buttons ("All forms · PDF", "· PNG") and where they report.
+function wfCapButtons(code, out) {
+  const b = (fmt, key) => {
+    const x = el('button', { className: 'btn tiny', textContent: t(key), title: t('wf.cap.title') });
+    x.onclick = async () => { x.disabled = true; try { await wfCaptureForms(code, fmt, out); } finally { x.disabled = false; } };
+    return x;
+  };
+  return [b('pdf', 'wf.cap.pdf'), b('zip', 'wf.cap.zip')];
 }
 
 /* ------------------------------------------------------------- inbox */
