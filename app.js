@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260925d';
+const APP_VERSION = '20260925e';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -7807,13 +7807,81 @@ async function wfLookups(force) {
 }
 
 /* ------------------------------------------ the documents of one project */
+/* Can this person draw up a document of this type for the project now — the
+   same rules pm_doc_create enforces — and if not, why (shown under the empty
+   box, so nobody hunts for a button that cannot be there yet):
+   - every earlier required document approved; within an approval group
+     (PR + RR + PA, QC + MC) only SUBMITTED — AM prepares the PA while
+     checking the PR and RR;
+   - one live document per type (AH repeats, one open at a time, until the final one);
+   - an optional step (RR, CT) cannot be slotted in once a later one exists;
+   - the person holds the chain's preparer role (step 0) for the project.
+   { ok } or { ok: false, why } — why is null when the box already holds the document. */
+function wfCreateState(p, type, docs) {
+  const tt = WF.types.find(x => x.code === type) || {};
+  const seq = tt.seq || 0;
+  const replacement = /replace/i.test(p.investment_type || '');
+  const live = docs.filter(d => d.doc_type === type && !['cancelled', 'rejected'].includes(d.status));
+  const finalAH = docs.some(d => d.doc_type === 'AH' && d.status === 'approved' && d.data && d.data.final);
+  const room = tt.repeatable ? !finalAH && !live.some(d => ['draft', 'in_review', 'returned'].includes(d.status)) : !live.length;
+  const later = docs.some(d => !['rejected', 'cancelled'].includes(d.status) && wfSeq(d.doc_type) > seq);
+  if (!room || later) return { ok: false, why: null };
+  const has = (c, sts) => docs.some(d => d.doc_type === c && sts.includes(d.status));
+  const blockers = WF.types.filter(x => x.seq < seq && (x.required || (x.code === 'RR' && replacement)) && !has(x.code, ['approved'])
+    && !(x.grp && x.grp === tt.grp && has(x.code, ['in_review'])));
+  if (blockers.length) return { ok: false, why: t('wf.why.first', { list: blockers.map(x =>
+    t(x.grp && x.grp === tt.grp ? 'wf.why.sent' : 'wf.why.approved', { t: x.code })).join(', ') }) };
+  if (!wfCanPrepare(type, p.dept_code)) {
+    const prep = wfChain(pmEntity(p.dept_code), type).find(c => c.step === 0);
+    return { ok: false, why: prep ? t('wf.why.who', { role: wfRoleName(prep.role_code) }) : null };
+  }
+  return { ok: true };
+}
+
+/* The documents the AM team still has to draw up: a PA (or MC) whose PR / RR
+   (QC) is already in review. They sit in the To-do list, because the approval
+   group cannot reach JVC without them. */
+async function wfPrepTodos() {
+  if (!ME || !can('project', 'create')) return [];
+  await wfLookups();
+  const owners = WF.types.filter(x => x.side === 'owner' && x.grp).map(x => x.code);
+  const mine = owners.filter(ty => PM_ENTITIES.some(e => { const c = wfChain(e, ty).find(c => c.step === 0);
+    return c && ME.roles.some(r => r.role === c.role_code); }));
+  if (!mine.length) return [];
+  const [docs, projects] = await Promise.all([
+    pmSelectAll('pm_doc', 'select=id,project_code,doc_type,doc_no,status,submitted_at,final:data->final&status=not.in.(cancelled,rejected)'),
+    pmSelectAll('pm_project', 'select=code,name,dept_code,investment_type,status&status=not.in.(completed,cancelled)')]);
+  const by = new Map();
+  for (const d of docs) { d.data = { final: d.final === true || d.final === 'true' }; (by.get(d.project_code) || by.set(d.project_code, []).get(d.project_code)).push(d); }
+  const out = [];
+  for (const p of projects) {
+    const pd = by.get(p.code) || [];
+    for (const ty of mine) {
+      const basis = pd.filter(d => d.status === 'in_review' && wfGrp(d.doc_type) === wfGrp(ty)).sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type));
+      if (!basis.length || !wfCreateState(p, ty, pd).ok) continue;
+      out.push({ kind: 'prepare', doc_type: ty, doc_id: basis[0].id, doc_no: basis[0].doc_no, basis: basis[0].doc_type,
+                 project_code: p.code, project_name: p.name, dept_code: p.dept_code, total_value: null,
+                 submitted_at: basis[0].submitted_at, project: p });
+    }
+  }
+  return out;
+}
+
+// Create from somewhere other than the project panel: fetch the project's documents first.
+async function wfCreateFor(projectCode, type, out) {
+  try {
+    const [p] = await SB.select('pm_project', `select=*&code=eq.${encodeURIComponent(projectCode)}`);
+    const docs = await SB.select('pm_doc', `select=id,doc_type,doc_no,status,current_step,total_value,created_by,data&project_code=eq.${encodeURIComponent(projectCode)}&order=created_at`);
+    await wfCreate(p, type, docs, out);
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
 async function wfProjectPanel(p, host) {
   await wfLookups();
   const docs = await SB.select('pm_doc', `select=id,doc_type,doc_no,status,current_step,version,total_value,created_by,created_email,submitted_at,decided_at,data&project_code=eq.${encodeURIComponent(p.code)}&order=created_at`);
   const card = el('div', { style: 'margin-top:14px' });
   card.append(el('h2', { textContent: t('wf.docs') }));
   const strip = el('div', { className: 'wfstrip' });
-  const approved = type => docs.some(d => d.doc_type === type && d.status === 'approved');
   const replacement = /replace/i.test(p.investment_type || '');
   for (const type of WF_ORDER) {
     const tt = WF.types.find(x => x.code === type) || {};
@@ -7826,26 +7894,12 @@ async function wfProjectPanel(p, host) {
       a.onclick = ev => { ev.preventDefault(); wfOpen(d.id); };
       box.append(a);
     }
-    // "Create" only when the earlier required steps are approved — the same
-    // rule pm_doc_create enforces.
-    // Within an approval group (PR + RR + PA, QC + MC) the earlier document only
-    // has to be SUBMITTED: AM prepares the PA while checking the PR and RR.
-    const seq = tt.seq || 0;
-    const sent = c => docs.some(d => d.doc_type === c && d.status === 'in_review');
-    const blockers = WF.types.filter(x => x.seq < seq && (x.required || (x.code === 'RR' && replacement)) && !approved(x.code)
-      && !(x.grp && x.grp === tt.grp && sent(x.code)));
-    // One live document per type; AH repeats (one open at a time) until the final one.
-    const live = mine.filter(d => d.status !== 'rejected');
-    const finalAH = docs.some(d => d.doc_type === 'AH' && d.status === 'approved' && d.data && d.data.final);
-    const room = tt.repeatable ? !finalAH && !live.some(d => ['draft', 'in_review', 'returned'].includes(d.status)) : !live.length;
-    // An optional step (RR, CT) cannot be slotted in once a later one exists.
-    const later = docs.some(d => !['rejected', 'cancelled'].includes(d.status)
-      && ((WF.types.find(x => x.code === d.doc_type) || {}).seq || 0) > seq);
-    if (!blockers.length && room && !later && wfCanPrepare(type, p.dept_code)) {
+    const st = wfCreateState(p, type, docs);
+    if (st.ok) {
       const b = el('button', { className: 'btn tiny pri', textContent: t('wf.create') });
       b.onclick = () => wfCreate(p, type, docs);
       box.append(b);
-    }
+    } else if (st.why) box.append(el('div', { className: 'wfwhy', textContent: st.why }));   // why there is no button yet
     strip.append(box);
   }
   card.append(strip);
@@ -7862,7 +7916,8 @@ async function wfFinalLine(p) {
 }
 
 async function wfPrefill(p, type, docs) {
-  const get = tp => docs.find(d => d.doc_type === tp && d.status === 'approved');
+  // The approved one, else the one in review: the PA is drawn up while its PR is still being checked.
+  const get = tp => docs.find(d => d.doc_type === tp && d.status === 'approved') || docs.find(d => d.doc_type === tp && d.status === 'in_review');
   const line = (await wfFinalLine(p)) || {};
   const today = new Date().toISOString().slice(0, 10);
   const pr = get('PR')?.data || {}, pa = get('PA')?.data || {}, qc = get('QC')?.data || {}, po = get('PO')?.data || {};
@@ -7922,14 +7977,14 @@ async function wfPrefill(p, type, docs) {
   return {};
 }
 
-async function wfCreate(p, type, docs) {
+async function wfCreate(p, type, docs, out = '#ppMsg') {
   try {
     const data = await wfPrefill(p, type, docs);
     Object.assign(WF, { project: p, docs, line: null });
     WF_FORMS[type].derive(data, wfCtx());           // fills in totals and computed boxes
     const id = await SB.rpc('pm_doc_create', { p_project: p.code, p_type: type, p_data: data });
     await wfOpen(id);
-  } catch (e) { msg('#ppMsg', 'err', e.message); }
+  } catch (e) { msg(out, 'err', e.message); }
 }
 
 /* ------------------------------------------------------------ doc screen */
@@ -8067,6 +8122,11 @@ function wfRender() {
   if (!['approved', 'cancelled'].includes(d.status)
       && (can('project', 'admin') || (d.created_by === (ME && ME.id) && ['draft', 'returned'].includes(d.status))))
     btn('wf.cancel', 'danger', () => wfCancel());
+  // From a PR / RR (QC) in review: draw up the PA (MC) of its group straight
+  // away — AM lands here to check the PR, and the PA is the basis JVC approves on.
+  if (['in_review', 'approved'].includes(d.status) && WF.types.find(x => x.code === d.doc_type)?.side === 'operator')
+    for (const ty of wfGrpOthers(d.doc_type).filter(x => WF.types.find(y => y.code === x)?.side === 'owner'))
+      if (wfCreateState(p, ty, WF.docs).ok) btn(t('wf.createType', { t: ty }), 'pri', () => wfCreate(p, ty, WF.docs, '#wdMsg'));
   btn('wf.print', '', () => wfPrint());
   btn('wf.pdf', '', () => wfPdf());
   if (d.doc_type === 'AH' && d.status === 'approved') btn('wf.toIntake', '', () => wfToIntake());
@@ -9005,7 +9065,8 @@ async function wfInboxLoad() {
   msg(out, 'info', t('table.loading'));
   try {
     await wfLookups();
-    WF.inbox = wfInboxRows(await SB.rpc('pm_inbox'));
+    // Documents to check / approve / fix, then the ones still to be drawn up (PA, MC).
+    WF.inbox = [...wfInboxRows(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => []))];
     msg(out, WF.inbox.length ? '' : 'ok', WF.inbox.length ? '' : t('wf.inboxEmpty'));
     const head = $('#wiGrid thead'), body = $('#wiGrid tbody');
     head.innerHTML = ''; body.innerHTML = '';
@@ -9015,12 +9076,16 @@ async function wfInboxLoad() {
       // To do: approve / check / approve together (PR + RR + PA on one line),
       // or a joint step still waiting for the rest of its group (greyed, not counted).
       const ms = r.members || [r];
-      const what = r.kind === 'returned' ? t('wf.i.returned') : r.wait ? t('wf.i.wait')
+      const what = r.kind === 'prepare' ? t('wf.i.prepare', { t: r.doc_type }) : r.kind === 'returned' ? t('wf.i.returned') : r.wait ? t('wf.i.wait')
         : t('wf.i.' + (r.step_kind === 'check' ? 'check' : r.step_kind === 'joint' && r.merged ? 'joint' : 'approve'));
       const tr = el('tr', { style: 'cursor:pointer', className: r.wait ? 'wiwait' : '' }, [
         el('td', {}, el('span', { className: 'st ' + (r.kind === 'returned' || r.wait ? 'cancelled' : 'in_progress'), textContent: what })),
-        el('td', {}, ms.flatMap((m, i) => [...(i ? [document.createTextNode(' + ')] : []), el('code', { textContent: m.doc_no })])),
-        el('td', { textContent: ms.map(m => wfTypeName(m.doc_type)).join(' + ') }),
+        r.kind === 'prepare'
+          ? el('td', {}, [el('code', { textContent: r.doc_no }), document.createTextNode(' → '),
+              el('button', { className: 'btn tiny pri', textContent: t('wf.createType', { t: r.doc_type }),
+                onclick: ev => { ev.stopPropagation(); wfCreateFor(r.project_code, r.doc_type, '#wiMsg'); } })])
+          : el('td', {}, ms.flatMap((m, i) => [...(i ? [document.createTextNode(' + ')] : []), el('code', { textContent: m.doc_no })])),
+        el('td', { textContent: r.kind === 'prepare' ? wfTypeName(r.doc_type) : ms.map(m => wfTypeName(m.doc_type)).join(' + ') }),
         el('td', {}, el('code', { textContent: r.project_code })), el('td', { textContent: r.project_name || '' }),
         el('td', { textContent: r.dept_code }), el('td', { className: 'num', textContent: r.total_value != null ? fmtMoney(r.total_value) : '' }),
         el('td', { textContent: r.submitted_at ? fmtDate(r.submitted_at.slice(0, 10)) : '' }),
@@ -9050,13 +9115,13 @@ function wfInboxRows(rows) {
   return out;
 }
 // What the menu badge counts: things the person can do now.
-const wfInboxCount = rows => rows.filter(r => !r.wait).length;
+const wfInboxCount = rows => rows.filter(r => !r.wait).length;   // documents still to draw up count too
 
 /* The number beside "Waiting for me" in the menu. */
 async function wfBadge(n) {
   ntLoad();                            // the bell moves whenever the inbox does
   if (n == null) { try { await wfLookups(); } catch {}   // types tell PA from PR when folding pairs
-                   try { n = wfInboxCount(wfInboxRows(await SB.rpc('pm_inbox'))); } catch { return; } }
+                   try { n = wfInboxCount([...wfInboxRows(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => []))]); } catch { return; } }
   WF.badgeN = n;                       // buildNav() redraws the menu and re-adds it from here
   const a = $('#nav a[data-view="inbox"]');
   if (!a) return;
