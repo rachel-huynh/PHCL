@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260925e';
+const APP_VERSION = '20260925f';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -7399,26 +7399,30 @@ function pdRender() {
       fig(t('pm.dash.unbudgeted'), fmtInt(unb.length), fmtM(pmSum(unb, p => p.contract_value ?? p.estimated_value))),
       fig(t('pm.dash.completed'), projects.length ? fmtPct(done / projects.length, 0) : '—',
           t('pm.dash.completedSub', { done: fmtInt(done), n: fmtInt(projects.length) }))])]);
-  box.append(el('div', { className: 'dashtop' }, [budCard, prjCard]));
-
-  const stats = el('div', { className: 'stats' });
-  stats.append(tile(fullYear ? t('pm.dash.committed') : t('pm.dash.committedIn', { p: perLabel }), fmtM(committed),
-    budget ? t('pm.dash.ofBudget', { pct: fmtPct(committed / budget) }) : null));
-  if (fullYear) stats.append(tile(t('pm.dash.remaining'), fmtM(budget - committed), null));
-  stats.append(tile(t('pm.dash.overrun'), fmtM(overrun), t('pm.dash.overrunSub', { n: fmtInt(overrunRows.length) }), overrun > 0 ? 'down' : null));
-  stats.append(tile(t('pm.dash.carried'), fmtInt(carried.length), t('pm.dash.carriedSub', { v: fmtM(pmSum(carried, 'estimated_value')) })));
-  box.append(stats);
-
-  // Cycle time between the dated steps — the approval clock before phase 3
-  // starts timing each signature.
+  // Cycle time between the dated steps: one card, three figures.
   const span = (a, b) => { const v = projects.map(p => p[a] && p[b] && p[b] >= p[a] ? (Date.parse(p[b]) - Date.parse(p[a])) / 864e5 : null).filter(v => v != null);
                            return { avg: v.length ? v.reduce((s, x) => s + x, 0) / v.length : null, n: v.length }; };
-  const cyc = el('div', { className: 'stats' });
-  for (const [a, b, k] of [['request_date', 'approve_date', 'pm.dash.cyc1'], ['approve_date', 'purchase_date', 'pm.dash.cyc2'], ['purchase_date', 'handover_date', 'pm.dash.cyc3']]) {
-    const s = span(a, b);
-    cyc.append(tile(t(k), s.avg == null ? '—' : t('pm.dash.days', { n: fmtInt(Math.round(s.avg)) }), t('pm.dash.cycSub', { n: fmtInt(s.n) })));
-  }
-  box.append(cyc);
+  const cycCard = el('div', { className: 'hero dtop' }, [
+    el('span', { className: 'hl', textContent: t('pm.dash.cycH') }),
+    el('div', { className: 'dfigs' }, [['request_date', 'approve_date', 'pm.dash.cyc1'], ['approve_date', 'purchase_date', 'pm.dash.cyc2'],
+                                       ['purchase_date', 'handover_date', 'pm.dash.cyc3']].map(([a, b, k]) => {
+      const s = span(a, b);
+      return fig(t(k), s.avg == null ? '—' : t('pm.dash.days', { n: fmtInt(Math.round(s.avg)) }), t('pm.dash.cycSub', { n: fmtInt(s.n) }));
+    }))]);
+  // Every figure in two rows of one grid (six columns on a wide screen):
+  //   budget ×2 · projects ×2 · committed · not yet committed
+  //   overrun · carried forward · cycle times ×4
+  const kpis = el('div', { className: 'dkpis' });
+  budCard.classList.add('span2'); prjCard.classList.add('span2'); cycCard.classList.add('span4');
+  const com = tile(fullYear ? t('pm.dash.committed') : t('pm.dash.committedIn', { p: perLabel }), fmtM(committed),
+    budget ? t('pm.dash.ofBudget', { pct: fmtPct(committed / budget) }) : null);
+  if (!fullYear) com.classList.add('span2');              // no "not yet committed" for a part of the year
+  kpis.append(budCard, prjCard, com);
+  if (fullYear) kpis.append(tile(t('pm.dash.remaining'), fmtM(budget - committed), null));
+  kpis.append(tile(t('pm.dash.overrun'), fmtM(overrun), t('pm.dash.overrunSub', { n: fmtInt(overrunRows.length) }), overrun > 0 ? 'down' : null),
+              tile(t('pm.dash.carried'), fmtInt(carried.length), t('pm.dash.carriedSub', { v: fmtM(pmSum(carried, 'estimated_value')) })),
+              cycCard);
+  box.append(kpis);
 
   const charts = el('div', { className: 'charts' });
   const C1 = 'var(--series-1)', C2 = 'var(--series-2)';
