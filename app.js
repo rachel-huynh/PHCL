@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260926c';
+const APP_VERSION = '20260926d';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -39,6 +39,9 @@ function colLabel(c) {
 /* ---------------------------------------------------------------- config */
 const LS_KEY = 'asset-intake.sb';
 let CFG = { url: '', key: '' };
+/* Tablet / phone mode (tbDetect): declared up here because showView and firstView read it from the start. */
+const TB_VIEWS = ['pmdash', 'inbox', 'doc', 'settings', 'setup'];
+const TB = { on: false, pages: [], i: 0, key: null, busy: false };
 
 function loadCfg() {
   const m = /[#&]sbcfg=([^&]+)/.exec(location.hash);
@@ -1952,6 +1955,7 @@ const canView = v => { if (v === 'pmimport') return ['budget', 'project', 'payme
 /* Where to land after signing in: the register for anyone allowed to see it,
    otherwise the first screen the menu offers them. */
 function firstView() {
+  if (TB.on) return canView('inbox') ? 'inbox' : 'pmdash';
   if (canView('register')) return 'register';
   for (const [, items] of NAV)
     for (const [id, , ch] of items) {
@@ -2272,6 +2276,8 @@ function showView(view) {
   // A screen this user may not open (rights changed, or it was the last screen
   // of the previous person) falls back to one they may.
   if (!canView(view)) view = ME ? firstView() : 'setup';
+  // Tablet / phone: only the dashboard, the to-do list and the package to sign (tbDetect).
+  if (TB.on && ME && !TB_VIEWS.includes(view)) view = canView('inbox') ? 'inbox' : 'pmdash';
   if (viewTable(VIEW) && view !== VIEW && CUR) {
     const n = CUR.rows.filter(r => r.isNew || r.dirty || r.del).length;
     if (n && !confirm(t('table.confirmLeave', { n }))) return;
@@ -2288,6 +2294,7 @@ function showView(view) {
   $$('section').forEach(s => s.classList.toggle('on', s.id === sect));
   buildTools(view);
   $('#pageTitle').textContent = viewTitle(view);
+  tbBarRender();
 
   if (table) {
     $('#tableLead').textContent = tblSub(table);
@@ -2428,6 +2435,7 @@ function init() {
   $('#appVer').textContent = 'v' + APP_VERSION;
   helpLoad();
   $('#stHelp').onchange = e => helpSet(e.target.checked);
+  tbInit();
   $$('#langSeg button').forEach(b => { b.onclick = () => switchLang(b.dataset.lang); });
   buildNav();
 
@@ -3296,7 +3304,28 @@ const REG_DATE  = new Set(['purchase_date', 'in_use_date', 'created_at']);
 // Yes / no columns, centred: a label printed shows ✓, not yet ✗ (user 25/09/2026).
 const REG_MID   = new Set(['label_printed', 'depreciate']);
 
+/* Asset status codes ("Mã Tình Trạng"), as Beetrack defines them (the note on
+   the column of its upload template, user 26/09/2026). Two lists: an asset with
+   its own barcode (unique) and a batch sharing one barcode (low-value). The
+   code is what is stored and exported; the words are shown beside it. */
+const AM_STATUS = {
+  unique: [['0', 'Đã mất', 'Lost'], ['1', 'Đang sử dụng', 'In use'], ['2', 'Chưa được sử dụng', 'Not yet in use'],
+           ['3', 'Hư hỏng, đang chờ được sửa chữa', 'Damaged, awaiting repair'], ['4', 'Hư hỏng, không thể sửa chữa', 'Damaged beyond repair'],
+           ['5', 'Đang sửa chữa', 'Under repair'], ['6', 'Đang bảo dưỡng', 'Under maintenance'], ['7', 'Đã thanh lí', 'Liquidated'],
+           ['8', 'Chờ thanh lí', 'Awaiting liquidation'], ['9', 'Đã hủy', 'Destroyed'], ['10', 'Không sử dụng', 'Not in use'],
+           ['120', 'Chờ duyệt', 'Awaiting approval']],
+  low:    [['20', 'Hoạt động', 'Operating'], ['21', 'Không hoạt động', 'Not operating'], ['22', 'Tạm dừng', 'Suspended'],
+           ['23', 'Thanh lý một phần', 'Partly liquidated'], ['24', 'Chờ Thanh lý', 'Awaiting liquidation'],
+           ['25', 'Hư hỏng, đang chờ được sửa chữa', 'Damaged, awaiting repair'], ['119', 'Chờ duyệt', 'Awaiting approval']]
+};
+const amStatusRow = code => { const c = String(code ?? '').trim(); for (const k of ['unique', 'low']) { const r = AM_STATUS[k].find(s => s[0] === c); if (r) return [k, r]; } return null; };
+// "1 · Đang sử dụng" / "1 · In use"; an unknown code as it is.
+const amStatusLabel = code => { const h = amStatusRow(code); return h ? `${h[1][0]} · ${LANG === 'vi' ? h[1][1] : h[1][2]}` : String(code ?? ''); };
+// Which list a code belongs to ('unique' | 'low'), or null.
+const amStatusKind = code => (amStatusRow(code) || [null])[0];
+
 function regCell(col, v, row) {
+  if (col === 'status_code' && v != null && v !== '') return amStatusLabel(v);
   if (REG_JOINED[col])
     return REG_JOINED[col].map(f => (row?.[f] || '').trim())
                           .filter(Boolean).join(' / ');
@@ -3538,7 +3567,7 @@ function regBulkBar() {
   const all = $('#btnRegSelAll');
   all.textContent = t('reg.bk.all', { n: fmtInt(REG.total) });
   all.hidden = n >= REG.total;
-  $('#btnRegBulkSave').disabled = !$('#regBulkLoc').value && !$('#regBulkDept').value;
+  $('#btnRegBulkSave').disabled = !$('#regBulkLoc').value && !$('#regBulkDept').value && !$('#regBulkSt').value;
 }
 
 /* Tick every row the current filter matches, not just the page on screen.
@@ -3568,26 +3597,40 @@ async function regBulkSave() {
   const out = $('#regMsg');
   const loc = $('#regBulkLoc').value || null;
   const dep = $('#regBulkDept').value || null;
-  if (!loc && !dep) return;
+  const st = $('#regBulkSt').value || null;
+  if (!loc && !dep && !st) return;
   const ids = [...REG.sel];
+
+  // A status belongs to one kind of asset: a low-value code on a unique asset (or the reverse) is refused.
+  if (st) {
+    try {
+      const kinds = new Set();
+      for (let i = 0; i < ids.length; i += 300) {
+        const part = await SB.select('am_asset', `select=asset_kind&id=in.(${ids.slice(i, i + 300).join(',')})`);
+        part.forEach(r => kinds.add(r.asset_kind));
+      }
+      const need = amStatusKind(st);
+      if ([...kinds].some(k => k !== need)) return msg(out, 'err', t('reg.bk.stKind', { s: amStatusLabel(st), k: t('reg.st.' + need) }));
+    } catch (e) { return msg(out, 'err', e.message); }
+  }
 
   /* Changing department is not an edit to one cell. am_asset_code_ck ties the
      asset code to the department, so the code is REISSUED and any label already
      printed now shows the wrong one. Say that before it happens, not after. */
   const ask = dep ? t('reg.bk.confirmDept', { n: fmtInt(ids.length), dept: dep })
-                  : t('reg.bk.confirmLoc', { n: fmtInt(ids.length), loc });
+                  : loc ? t('reg.bk.confirmLoc', { n: fmtInt(ids.length), loc }) : t('reg.bk.confirmSt', { n: fmtInt(ids.length), s: amStatusLabel(st) });
   if (!confirm(ask)) return;
 
   msg(out, 'info', t('reg.bk.saving'));
   try {
     const r = (await SB.rpc('am_bulk_update',
-      { p_ids: ids, p_location: loc, p_dept: dep }))[0] || {};
+      { p_ids: ids, p_location: loc, p_dept: dep, p_status: st }))[0] || {};
     const parts = [t('reg.bk.doneUpd', { n: fmtInt(r.updated || 0) })];
     if (r.recoded) parts.push(t('reg.bk.doneRecode', { n: fmtInt(r.recoded) }));
     if (r.relabel) parts.push(t('reg.bk.doneRelabel', { n: fmtInt(r.relabel) }));
     if (r.skipped_legacy) parts.push(t('reg.bk.doneLegacy', { n: fmtInt(r.skipped_legacy) }));
     REG.sel.clear();
-    $('#regBulkLoc').value = ''; $('#regBulkDept').value = '';
+    $('#regBulkLoc').value = ''; $('#regBulkDept').value = ''; $('#regBulkSt').value = '';
     await regLoad();          // regLoad clears #regMsg, so report after it
     msg(out, r.skipped_legacy ? 'warn' : 'ok', parts.join(' '));
   } catch (e) { msg(out, 'err', e.message); }
@@ -3863,6 +3906,7 @@ function initRegister() {
   $('#btnRegSelNone').onclick = () => { REG.sel.clear(); REG.anchor = -1; regRender(); };
   $('#regBulkLoc').onchange = regBulkBar;   // Apply stays dead until a target is set
   $('#regBulkDept').onchange = regBulkBar;
+  $('#regBulkSt').onchange = regBulkBar;
   $('#btnRegBulkSave').onclick = regBulkSave;
   $('#btnRegBulkDel').onclick = regBulkDelete;
 }
@@ -3876,6 +3920,16 @@ function regFillBulk() {
     sel.append(el('option', { value: '', textContent: t('reg.bk.keep') }));
     for (const o of list) sel.append(el('option', { value: o.v, textContent: o.t }));
     sel.value = keep;
+  }
+  // The status: the two lists of codes, each under its own heading.
+  const st = $('#regBulkSt');
+  if (st) {
+    const keep = st.value;
+    st.innerHTML = '';
+    st.append(el('option', { value: '', textContent: t('reg.bk.keep') }));
+    for (const k of ['unique', 'low'])
+      st.append(el('optgroup', { label: t('reg.st.' + k) }, AM_STATUS[k].map(s => el('option', { value: s[0], textContent: amStatusLabel(s[0]) }))));
+    st.value = keep;
   }
 }
 
@@ -5302,6 +5356,11 @@ async function legRead() {
     const unit = check(r[G.unit], master.unit, 'unit_code', 'leg.wNoUnit');
     const iso = check(legTxt(r[G.origin]).toUpperCase(), master.origin,
                       'origin_iso2', 'leg.wNoOrigin');
+
+    // The status must be one of Beetrack's codes for this kind of asset (AM_STATUS): kept, but flagged when not.
+    const rawSt = legTxt(r[G.status]);
+    const kindNow = r.__kind || (/cùng/i.test(legTxt(r[G.kind])) ? 'low' : 'unique');
+    if (rawSt && amStatusKind(rawSt) !== kindNow) warns.push(t('leg.wStatus', { v: rawSt, k: t('reg.st.' + kindNow) }));
 
     if (errs.length) { LEG.bad.push({ line, code, why: errs.join(' · ') }); continue; }
     if (code) seenCode.add(code);
@@ -8563,6 +8622,7 @@ const wfPkgEditable = () => WF.pkg && ['draft', 'returned'].includes(WF.pkg.stat
   && WF.pdocs.some(d => wfSide(d.doc_type) !== 'owner' && wfDocEditable(d));
 
 function wfRender() {
+  if (TB.on) return tbDocRender();         // tablet / phone: the paper reader
   const box = $('#wdBody');
   box.innerHTML = '';
   const k = WF.pkg, d = WF.doc, p = WF.project || {};
@@ -10474,6 +10534,8 @@ async function wfAct(action, target) {
     await wfLoad(); wfBadge();
     const k = action === 'approve' ? (to === 'approved' ? 'final' : step.owner_prep ? 'checkPrep' : step.kind === 'check' ? 'check' : 'approve')
       : to === 'returned_am' ? 'returnAm' : action;
+    // On a tablet the next thing to do is the next task: back to the list, the result said there.
+    if (TB.on) { TB.flash = t('wf.acted.' + k, { no: nos }); return showView('inbox'); }
     msg('#wdMsg', 'ok', t('wf.acted.' + k, { no: nos }));
   } catch (e) { msg('#wdMsg', 'err', e.message); }
 }
@@ -10720,7 +10782,7 @@ async function wfInboxLoad() {
     await wfLookups();
     WF.inbox = [...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => []))];
     WF.done = await wfDoneLoad().catch(() => []);
-    msg(out, '', '');
+    msg(out, TB.flash ? 'ok' : '', TB.flash || ''); TB.flash = null;      // the result of a signature on a tablet
     wfInboxRender();
     wfBadge(wfInboxCount(WF.inbox));
   } catch (e) { msg(out, 'err', e.message); }
@@ -10791,6 +10853,7 @@ function wfInboxRender() {
     tr.onclick = () => { if (r.doc_id) wfOpen(r.doc_id); };
     body.append(tr);
   }
+  if (TB.on) tbInboxCards(rows);
 }
 // What the menu badge counts: things the person can do now.
 const wfInboxCount = rows => rows.length;
@@ -10801,6 +10864,7 @@ async function wfBadge(n) {
   if (n == null) { try { await wfLookups(); } catch {}   // types name the package's owner documents
                    try { n = wfInboxCount([...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => []))]); } catch { return; } }
   WF.badgeN = n;                       // buildNav() redraws the menu and re-adds it from here
+  tbBarRender();
   const a = $('#nav a[data-view="inbox"]');
   if (!a) return;
   a.querySelector('.tag')?.remove();
@@ -12451,4 +12515,246 @@ function initPay() {
   const dl = el('datalist', { id: 'payProjList' });
   document.body.append(dl);
   PAY.fillList = () => { dl.innerHTML = ''; for (const p of PAY.projects) dl.append(el('option', { value: p.code, label: p.name || '' })); };
+}
+
+/* ================================================================ TABLET / PHONE
+   Signing will be done on a tablet or a phone (user 26/09/2026). There only
+   three things matter: the dashboard, the to-do list and the package waiting
+   for a signature — no grids, no data entry. On: a touch screen (coarse
+   pointer) or a narrow window; Settings can force it on or off, so it can be
+   looked at on a PC as well.
+   The package reads like paper: every page of every document of the package,
+   one A4 page at a time, turned with a swipe. The page lifts from its bottom
+   corner — the right one to go on, the left one to go back — and turns on its
+   spine, gently; a tap near the edge turns it too. Under the page, the sign
+   bar: approve / check (the signature pad takes a finger or a stylus), return,
+   reject. After signing, straight back to the list for the next task. */
+const TB_KEY = 'asset-intake.tablet';
+const tbPref = () => { try { return localStorage.getItem(TB_KEY) || 'auto'; } catch { return 'auto'; } };
+function tbDetect() {
+  const p = tbPref();
+  const on = p === 'on' || (p === 'auto' && (matchMedia('(pointer: coarse)').matches || innerWidth <= 820));
+  const changed = on !== TB.on;
+  TB.on = on;
+  document.body.classList.toggle('tab', on);
+  return changed;
+}
+function tbInit() {
+  tbDetect();
+  const sel = $('#stTab');
+  if (sel) {
+    sel.value = tbPref();
+    sel.onchange = () => { try { localStorage.setItem(TB_KEY, sel.value); } catch {} tbApply(); };
+  }
+  let tm = null;
+  window.addEventListener('resize', () => { clearTimeout(tm); tm = setTimeout(() => { if (tbDetect()) tbApply(); else if (TB.on && VIEW === 'doc' && TB.pages.length) tbShowPage(TB.i); }, 250); });
+  document.addEventListener('keydown', e => {
+    if (!TB.on || VIEW !== 'doc' || /^(INPUT|TEXTAREA|SELECT)$/.test((e.target || {}).tagName || '')) return;
+    if (e.key === 'ArrowRight') tbFlip(1); else if (e.key === 'ArrowLeft') tbFlip(-1);
+  });
+}
+// The mode changed (a turned device, the Settings switch): redraw the screen in the new mode.
+function tbApply() {
+  tbDetect();
+  TB.key = null;
+  if (ME) showView(VIEW);
+  tbBarRender();
+}
+
+/* The bar at the bottom of the screen: Dashboard · To-do (with its count) · Sign out. */
+function tbBarRender() {
+  let bar = $('#tbBar');
+  if (!bar) { bar = el('nav', { id: 'tbBar', className: 'tbbar' }); document.body.append(bar); }
+  bar.hidden = !TB.on || !ME;
+  if (bar.hidden) return;
+  bar.innerHTML = '';
+  const item = (view, key, icon, n) => {
+    const b = el('button', { className: 'tbitem' + (VIEW === view || (view === 'inbox' && VIEW === 'doc') ? ' on' : ''), type: 'button',
+      onclick: () => showView(view) }, [el('span', { className: 'ic', textContent: icon }), el('span', { textContent: t(key) })]);
+    if (n) b.append(el('span', { className: 'tag', textContent: String(n) }));
+    return b;
+  };
+  if (canView('pmdash')) bar.append(item('pmdash', 'tb.dash', '▦'));
+  if (canView('inbox')) bar.append(item('inbox', 'tb.todo', '✓', WF.badgeN));
+  bar.append(el('button', { className: 'tbitem', type: 'button', onclick: () => authSignOut() },
+    [el('span', { className: 'ic', textContent: '⏻' }), el('span', { textContent: t('auth.signOut') })]));
+}
+
+/* The to-do list as cards: what to do, the documents, the project, the value. */
+function tbInboxCards(rows) {
+  let box = $('#wiCards');
+  if (!box) { box = el('div', { id: 'wiCards', className: 'tbcards' }); $('#wiMsg').after(box); }
+  box.innerHTML = '';
+  const todo = rows.filter(r => r.kind !== 'done' && r.kind !== 'prepare');
+  if (!todo.length) box.append(el('div', { className: 'tbempty', textContent: t('tb.nothing') }));
+  for (const r of todo) {
+    const owners = wfPkgTypes(r.grp).filter(ty => wfSide(ty) === 'owner').join('/');
+    const band = r.kind === 'returned' ? 'bad' : wfBand(r.role_code);
+    const what = r.kind === 'returned' ? t('wf.i.returned')
+      : r.owner_prep ? t(r.returned_to === 'am' ? 'wf.i.redoOwner' : 'wf.i.checkPrep', { t: owners })
+      : t(r.step_kind === 'check' ? 'wf.i.check' : 'wf.i.approve');
+    const c = el('button', { className: 'tbcard band-' + band, type: 'button', onclick: () => { if (r.doc_id) wfOpen(r.doc_id); } }, [
+      el('div', { className: 'r1' }, [el('span', { className: 'stg band-' + band, textContent: what }),
+        el('span', { className: 'when', textContent: r.submitted_at ? fmtDate(String(r.submitted_at).slice(0, 10)) : '' })]),
+      el('div', { className: 'nos', textContent: String(r.doc_no || '').replace(/ \+ /g, ' · ') }),
+      el('div', { className: 'pn', textContent: r.project_name || '' }),
+      el('div', { className: 'r3' }, [el('span', { textContent: `${r.project_code || ''} · ${pmDeptName(r.dept_code)}` }),
+        el('b', { textContent: r.total_value != null ? fmtMoney(r.total_value) : '' })])]);
+    box.append(c);
+  }
+}
+
+/* ------------------------------------------------------------- the reader */
+function tbDocRender() {
+  const box = $('#wdBody');
+  box.innerHTML = '';
+  const k = WF.pkg || {}, p = WF.project || {}, step = wfCurStep();
+  const docs = WF.pdocs.slice().sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type));
+  $('#pageTitle').textContent = docs.map(d => d.doc_no).join(' · ');
+  const back = el('button', { className: 'btn tbback', type: 'button', textContent: '‹ ' + t('tb.todo'), onclick: () => showView('inbox') });
+  const head = el('div', { className: 'tbhead' }, [back,
+    el('div', { className: 'tbt' }, [el('b', { textContent: p.name || '' }), el('small', { textContent: `${p.code || ''} · ${pmDeptName(p.dept_code)}` })]),
+    wfChip(k.status)]);
+  if (k.status === 'in_review' && step)
+    head.append(el('div', { className: 'tbwho' }, [el('span', { className: 'stg band-' + wfBand(step.role_code),
+      textContent: t('wf.waiting', { step: step.step, role: wfRoleName(step.role_code) }) })]));
+  // Every page of every document of the package, drawn as on paper (built once per state of the package).
+  const key = [k.id, k.version, k.status, k.current_step, LANG, docs.map(d => d.id + d.status).join()].join('|');
+  if (TB.key !== key) {
+    const keepDoc = WF.doc;
+    TB.pages = [];
+    for (const d of docs) {
+      wfSetDoc(d.doc_type);
+      WF.ref = null;
+      try { for (const pg of fsPages(fsSheet(d.doc_type, false, 'print'))) TB.pages.push(Object.assign(pg, { doc: d })); } catch (e) { console.warn(e); }
+    }
+    WF.doc = keepDoc; WF.data = WF.drafts.get(keepDoc.id);
+    TB.key = key; TB.i = 0;
+  }
+  const tabs = el('div', { className: 'tbtabs' }, docs.map(d => Object.assign(el('button', { className: 'tbtab', type: 'button',
+    textContent: d.doc_type, title: d.doc_no, onclick: () => tbGo(TB.pages.findIndex(pg => pg.doc.id === d.id)) }), { _doc: d.id })));
+  const count = el('span', { className: 'tbcount' });
+  const stage = el('div', { className: 'tbstage' });
+  box.append(head, el('div', { className: 'tbnavrow' }, [tabs, count]), stage, tbActs(step));
+  Object.assign(TB, { stage, tabs, count });
+  tbSwipe(stage);
+  requestAnimationFrame(() => tbShowPage(TB.i));
+}
+
+// The sign bar: what this person can do with the package now, or where it stands.
+function tbActs(step) {
+  const bar = el('div', { className: 'tbacts' });
+  if (!wfCanActPkg()) {
+    const k = WF.pkg || {};
+    bar.append(el('div', { className: 'tbstate', textContent: k.status === 'in_review' && step
+      ? t('wf.waiting', { step: step.step, role: wfRoleName(step.role_code) }) : t('wf.st.' + (k.status || 'draft')) }));
+    return bar;
+  }
+  const note = el('textarea', { id: 'wdNote', placeholder: t('tb.notePh'), rows: 1 });
+  const b = (key, cls, fn) => el('button', { className: 'btn ' + cls, type: 'button', textContent: t(key), onclick: fn });
+  const amDone = WF.steps.some(s => s.owner_prep && s.step < step.step);
+  const main = step.owner_prep ? 'wf.checkPrepBtn' : step.kind === 'check' ? 'wf.checkBtn' : WF.pdocs.length > 1 ? 'wf.approvePkg' : 'wf.approve';
+  bar.append(note, el('div', { className: 'tbbtns' }, [
+    b(amDone ? 'wf.returnOp' : 'wf.return', '', () => wfAct('return', 'operator')),
+    ...(amDone ? [b('wf.returnAm', '', () => wfAct('return', 'am'))] : []),
+    ...(step.kind !== 'check' ? [b('wf.reject', 'danger', () => wfAct('reject'))] : []),
+    b(main, 'pri tbsign', () => wfAct('approve'))]));
+  return bar;
+}
+
+// One page, scaled to the stage: the whole page on a tablet, the page's width on a phone (it then scrolls down).
+function tbPageEl(i) {
+  const pg = TB.pages[i];
+  if (!pg) return null;
+  const st = TB.stage, W = st.clientWidth - 16, H = st.clientHeight - 16;
+  const bw = parseFloat(pg.box.style.width) || 733, bh = parseFloat(pg.box.style.height) || 1040;
+  let s = W / bw;
+  if (bh * s > H && W >= 600) s = Math.max(H / bh, 0.2);
+  const inner = el('div', { className: 'tbpin', style: `width:${bw}px;height:${bh}px;transform:scale(${s})` }, pg.box);
+  return el('div', { className: 'tbpage', style: `width:${Math.round(bw * s)}px;height:${Math.round(bh * s)}px` }, [inner, el('i', { className: 'tbshade' })]);
+}
+function tbShowPage(i) {
+  if (!TB.stage || !TB.pages.length) return;
+  TB.i = Math.max(0, Math.min(TB.pages.length - 1, i));
+  TB.stage.innerHTML = '';
+  const pgEl = tbPageEl(TB.i);
+  pgEl.classList.add('cur');
+  TB.stage.append(pgEl, el('button', { className: 'tbcorner l', type: 'button', title: t('tb.prev'), onclick: () => tbFlip(-1), hidden: TB.i === 0 }),
+    el('button', { className: 'tbcorner r', type: 'button', title: t('tb.next'), onclick: () => tbFlip(1), hidden: TB.i === TB.pages.length - 1 }));
+  TB.count.textContent = `${TB.i + 1} / ${TB.pages.length}`;
+  const doc = TB.pages[TB.i].doc;
+  for (const tb of TB.tabs.children) tb.classList.toggle('on', tb._doc === doc.id);
+}
+const tbGo = i => { if (i >= 0 && i !== TB.i) tbFlip(i > TB.i ? 1 : -1, i); };
+
+/* The turn. Going on: the page on top turns on its left spine, 0° → −180°,
+   its bottom-right corner leading, and the next page is under it. Going back:
+   the previous page comes back over, −180° → 0°, its bottom-left corner
+   leading. p (0..1) is how far the turn has gone. */
+const TB_EASE = 'transform .6s cubic-bezier(.22,.7,.28,1), box-shadow .6s ease';
+function tbPose(pageEl, dir, p) {
+  const a = dir > 0 ? -180 * p : -180 * (1 - p);
+  pageEl.style.transform = `rotateY(${a}deg) rotateZ(${a * 0.028}deg)`;
+  pageEl.style.setProperty('--sh', String(Math.sin(Math.PI * Math.min(1, Math.abs(a) / 180)) * 0.5));
+}
+function tbStart(dir, to) {
+  const target = to != null ? to : TB.i + dir;
+  if (TB.busy || target < 0 || target >= TB.pages.length) return null;
+  const cur = TB.stage.querySelector('.tbpage.cur');
+  if (dir > 0) {
+    const under = tbPageEl(target); under.classList.add('under');
+    TB.stage.insertBefore(under, cur);
+    cur.classList.add('turning', 'fwd');
+    return { dir, target, moving: cur };
+  }
+  const over = tbPageEl(target); over.classList.add('turning', 'back');
+  TB.stage.append(over);
+  tbPose(over, -1, 0);
+  return { dir, target, moving: over };
+}
+function tbFinish(f, commit) {
+  if (!f) return;
+  TB.busy = true;
+  f.moving.style.transition = TB_EASE;
+  requestAnimationFrame(() => tbPose(f.moving, f.dir, commit ? 1 : 0));
+  let done = false;
+  const end = () => { if (done) return; done = true; TB.busy = false; tbShowPage(commit ? f.target : TB.i); };
+  f.moving.addEventListener('transitionend', end, { once: true });
+  setTimeout(end, 800);                                   // in case the event never comes
+}
+function tbFlip(dir, to) { const f = tbStart(dir, to); if (f) tbFinish(f, true); }
+
+// A finger (or the mouse) turns the page: it follows the finger, and is let go past a quarter of the page or with a flick.
+function tbSwipe(stage) {
+  let x0 = 0, y0 = 0, t0 = 0, f = null, dragging = false, id = null;
+  stage.addEventListener('pointerdown', e => {
+    if (TB.busy || e.button > 0 || e.target.closest('.tbcorner')) return;
+    x0 = e.clientX; y0 = e.clientY; t0 = performance.now(); f = null; dragging = false; id = e.pointerId;
+  });
+  stage.addEventListener('pointermove', e => {
+    if (id !== e.pointerId || TB.busy) return;
+    const dx = e.clientX - x0, dy = e.clientY - y0;
+    if (!dragging) {
+      if (Math.abs(dx) < 10 || Math.abs(dx) < Math.abs(dy)) return;     // a scroll down the page, not a turn
+      f = tbStart(dx < 0 ? 1 : -1);
+      if (!f) { id = null; return; }
+      dragging = true;
+      try { stage.setPointerCapture(e.pointerId); } catch {}
+    }
+    const W = stage.clientWidth;
+    const p = Math.max(0, Math.min(1, (f.dir > 0 ? -dx : dx) / (W * 0.9)));
+    f.moving.style.transition = 'none';
+    tbPose(f.moving, f.dir, p);
+  });
+  const up = e => {
+    if (id !== e.pointerId) return;
+    id = null;
+    if (!dragging || !f) return;
+    const dx = e.clientX - x0, v = Math.abs(dx) / Math.max(1, performance.now() - t0);
+    const go = (f.dir > 0 ? -dx : dx) > stage.clientWidth * 0.25 || (v > 0.6 && Math.sign(-dx) === f.dir);
+    tbFinish(f, go);
+    f = null; dragging = false;
+  };
+  stage.addEventListener('pointerup', up);
+  stage.addEventListener('pointercancel', up);
 }

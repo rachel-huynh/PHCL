@@ -1533,6 +1533,74 @@
   .ftermrow.tail > :first-child{padding-right:10px}
   .ftotbox .ftl b{display:flex;align-items:center;margin:0}
   .ftotbox .ftl .fv{margin:0}
+  /* ============ Tablet / phone mode (body.tab, tbDetect) — 26/09/2026 ============ */
+  body.tab aside{display:none}
+  body.tab .top{padding:9px 14px}
+  body.tab #tools,body.tab #liveTop{display:none}
+  body.tab main{padding-bottom:84px}
+  .tbbar{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;justify-content:space-around;gap:4px;
+         background:var(--panel);border-top:1px solid var(--line);padding:6px 10px calc(6px + env(safe-area-inset-bottom));box-shadow:0 -4px 16px rgba(11,31,58,.06)}
+  .tbitem{position:relative;flex:1;max-width:220px;display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:0;
+          border-radius:10px;padding:7px 4px;font:600 12px/1.2 var(--font);color:var(--dim);cursor:pointer}
+  .tbitem .ic{font-size:19px;line-height:1}
+  .tbitem.on{color:var(--navy);background:#eef3fb}
+  .tbitem .tag{position:absolute;top:2px;left:calc(50% + 8px);background:var(--red);color:#fff;border-radius:9px;font-size:10.5px;padding:0 6px}
+  /* To-do: cards, no filters or grid. */
+  body.tab #v-inbox > .lead,body.tab #v-inbox > .card,body.tab #v-inbox > .wrap{display:none}
+  .tbcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:6px}
+  .tbcard{display:flex;flex-direction:column;gap:5px;text-align:left;background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--navy);
+          border-radius:12px;padding:13px 15px;cursor:pointer;font:inherit;color:var(--ink);box-shadow:0 2px 8px rgba(11,31,58,.05)}
+  .tbcard:active{transform:scale(.99)}
+  .tbcard.band-am{border-left-color:#7c4dbe} .tbcard.band-jvc{border-left-color:#d4a017} .tbcard.band-bad{border-left-color:var(--red)}
+  .tbcard .r1,.tbcard .r3{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .tbcard .when,.tbcard .r3 span{font-size:12px;color:var(--dim)}
+  .tbcard .nos{font:700 15px/1.3 var(--font);color:var(--navy)}
+  .tbcard .pn{font-size:14px}
+  .tbcard .r3 b{font-size:15px;color:var(--navy)}
+  .tbempty{padding:40px 10px;text-align:center;color:var(--dim);font-size:15px}
+  /* The reader: header, document tabs, the page, the sign bar. */
+  .tbhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:9px 12px}
+  .tbhead .tbt{flex:1;min-width:160px;display:flex;flex-direction:column}
+  .tbhead .tbt b{font-size:15px} .tbhead .tbt small{color:var(--dim)}
+  .tbhead .tbwho{flex-basis:100%}
+  .tbback{padding:6px 10px}
+  .tbnavrow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:10px 2px 6px}
+  .tbtabs{display:flex;gap:6px;flex-wrap:wrap}
+  .tbtab{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:6px 14px;font:700 13px/1 var(--font);color:var(--navy);cursor:pointer}
+  .tbtab.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+  .tbcount{font:600 13px/1 var(--font);color:var(--dim)}
+  .tbstage{position:relative;height:calc(100dvh - 330px);min-height:380px;overflow-x:hidden;overflow-y:auto;perspective:2600px;perspective-origin:50% 60%;
+           touch-action:pan-y;user-select:none;-webkit-user-select:none;background:#e7ebf1;border-radius:12px}
+  .tbpage{position:absolute;left:0;right:0;top:0;margin:8px auto;background:#fff;box-shadow:0 6px 22px rgba(11,31,58,.18);
+          transform-origin:0 50%;backface-visibility:hidden;-webkit-backface-visibility:hidden;will-change:transform;overflow:hidden}
+  .tbpin{transform-origin:0 0}
+  .tbpin .xsfit{box-shadow:none}
+  .tbshade{position:absolute;inset:0;pointer-events:none;opacity:var(--sh,0);
+           background:linear-gradient(100deg,rgba(0,0,0,0) 30%,rgba(0,0,0,.22) 70%,rgba(255,255,255,.35) 96%)}
+  .tbpage.under{box-shadow:0 2px 8px rgba(11,31,58,.12)}
+  .tbpage.turning{z-index:2}
+  .tbpage.back .tbshade{background:linear-gradient(260deg,rgba(0,0,0,0) 30%,rgba(0,0,0,.22) 70%,rgba(255,255,255,.35) 96%)}
+  /* The folded corners: tap to turn, a hint of where the page lifts. */
+  .tbcorner{position:absolute;bottom:10px;z-index:3;width:54px;height:54px;border:0;cursor:pointer;background:none;padding:0}
+  .tbcorner.r{right:10px} .tbcorner.l{left:10px}
+  .tbcorner::before{content:"";position:absolute;inset:0;border-radius:4px;
+                    background:linear-gradient(135deg,transparent 50%,rgba(11,31,58,.10) 50%,#f4f6fa 64%,#fff 100%);box-shadow:-2px -2px 6px rgba(11,31,58,.12)}
+  .tbcorner.l::before{background:linear-gradient(225deg,transparent 50%,rgba(11,31,58,.10) 50%,#f4f6fa 64%,#fff 100%);box-shadow:2px -2px 6px rgba(11,31,58,.12)}
+  .tbacts{position:sticky;bottom:74px;z-index:5;margin-top:10px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;
+          display:flex;gap:10px;align-items:center;flex-wrap:wrap;box-shadow:0 -2px 14px rgba(11,31,58,.08)}
+  .tbacts textarea{flex:1 1 220px;min-height:44px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;resize:vertical}
+  .tbbtns{display:flex;gap:8px;flex-wrap:wrap}
+  .tbbtns .btn{min-height:44px;padding:0 16px;font-size:14px}
+  .tbbtns .tbsign{min-width:150px;font-size:15px}
+  .tbstate{color:var(--dim);font-size:14px;padding:6px 2px}
+  @media (max-width:600px){
+    .tbstage{height:calc(100dvh - 420px);min-height:300px}
+    .tbacts{flex-direction:column;align-items:stretch;padding:8px 10px}
+    .tbacts textarea{flex:none;min-height:40px;height:40px}
+    .tbbtns .btn{min-height:40px;padding:0 10px;font-size:13px}
+    .tbbtns .btn{flex:1}
+  }
+  @media (prefers-reduced-motion:reduce){ .tbpage{transition:none !important} }
 </style>
 </head>
 <body>
@@ -1922,6 +1990,8 @@
     <div class="card">
       <h2 data-i18n="st.h.display"></h2>
       <label class="chk"><input type="checkbox" id="stHelp"><span data-i18n="st.help"></span></label>
+      <div class="fld" style="max-width:360px;margin-top:10px"><label data-i18n="st.tab"></label>
+        <select id="stTab"><option value="auto" data-i18n="st.tab.auto"></option><option value="on" data-i18n="st.tab.on"></option><option value="off" data-i18n="st.tab.off"></option></select></div>
     </div>
     <div class="card" id="stDocCard" hidden>
       <h2 data-i18n="st.h.doc"></h2>
@@ -2091,6 +2161,8 @@
           <select id="regBulkLoc"></select></div>
         <div class="fld" style="max-width:210px"><label data-i18n="reg.bk.dept"></label>
           <select id="regBulkDept"></select></div>
+        <div class="fld" style="max-width:240px"><label data-i18n="reg.bk.status"></label>
+          <select id="regBulkSt"></select></div>
         <!-- The two things that actually write are pushed to the right edge,
              together, away from the fields that only describe what to write. -->
         <div class="acts">
@@ -2432,7 +2504,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260926c"></script>
-<script src="app.js?v=20260926c"></script>
+<script src="i18n.js?v=20260926d"></script>
+<script src="app.js?v=20260926d"></script>
 </body>
 </html>
