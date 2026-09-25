@@ -593,7 +593,7 @@ language plpgsql
 security definer
 set search_path = public
 as $$
-declare k pm_pkg; p pm_project; v_lead text; v_ent text; v_first int; v_from text; v_sig jsonb;
+declare k pm_pkg; p pm_project; v_lead text; v_grp text; v_ent text; v_first int; v_from text; v_sig jsonb;
 begin
   select * into k from pm_pkg where id = p_pkg for update;
   if k.id is null then raise exception 'Không có bộ hồ sơ % / No package %', p_pkg, p_pkg; end if;
@@ -606,7 +606,37 @@ begin
   if not (k.created_by = auth.uid() or pm_can_prepare(v_lead, p.dept_code)) then
     raise exception 'Chỉ người lập mới gửi được bộ hồ sơ này.' using errcode = '42501';
   end if;
+  -- Gửi RR là gửi luôn PR (và ngược lại): chứng từ cùng nhóm của dự án còn nằm
+  -- ở bộ khác đang soạn / bị trả về (bộ tách từ trước khi có bộ hồ sơ) được
+  -- gộp vào bộ này trước khi gửi.
+  v_grp := coalesce((select grp from pm_doc_type where code = k.grp), k.grp);
+  if exists (select 1 from pm_doc_type where grp = v_grp) then
+    update pm_doc d set pkg_id = k.id
+      from pm_pkg o
+     where d.pkg_id = o.id and o.id <> k.id and o.project_code = k.project_code
+       and o.status in ('draft', 'returned')
+       and (o.grp = v_grp or o.grp in (select code from pm_doc_type where grp = v_grp));
+    update pm_pkg_event e set pkg_id = k.id
+      from pm_pkg o
+     where e.pkg_id = o.id and o.id <> k.id and o.project_code = k.project_code
+       and o.status in ('draft', 'returned')
+       and (o.grp = v_grp or o.grp in (select code from pm_doc_type where grp = v_grp));
+    delete from pm_pkg o
+     where o.id <> k.id and o.project_code = k.project_code
+       and o.status in ('draft', 'returned')
+       and (o.grp = v_grp or o.grp in (select code from pm_doc_type where grp = v_grp))
+       and not exists (select 1 from pm_doc d where d.pkg_id = o.id);
+    if k.grp <> v_grp then
+      update pm_pkg set grp = v_grp where id = k.id;
+      k.grp := v_grp;
+      v_lead := pm_grp_lead(v_grp);
+    end if;
+  end if;
   if not exists (select 1 from pm_doc where pkg_id = k.id and doc_type = v_lead and status in ('draft', 'returned')) then
+    if exists (select 1 from pm_doc d join pm_pkg o on o.id = d.pkg_id
+                where o.project_code = k.project_code and d.doc_type = v_lead and o.status = 'in_review') then
+      raise exception '% của dự án đang được duyệt ở một bộ khác — không gửi riêng chứng từ này được. Quản trị: chạy 23_pm_pkg_merge.sql.', v_lead;
+    end if;
     raise exception 'Bộ hồ sơ chưa có %.', v_lead;
   end if;
   -- Dự án thay thế: RR đi cùng PR.

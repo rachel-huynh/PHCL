@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260925i';
+const APP_VERSION = '20260925l';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -7890,7 +7890,9 @@ async function wfLookups(force) {
    every document in it — while each document keeps its own content.
    The chain is the lead type's (PR / QC); its AM Coordinator step is where
    the AM team checks AND draws up the PA / MC (owner_prep). */
-const wfPkgTypes = grp => { const ts = WF.types.filter(x => x.grp === grp).sort((a, b) => a.seq - b.seq).map(x => x.code); return ts.length ? ts : [grp]; };
+// A package named after a member type ("RR", from before 23_pm_pkg_merge.sql) counts as its group.
+const wfGrpOf = grp => (WF.types.find(x => x.code === grp) || {}).grp || grp;
+const wfPkgTypes = grp => { grp = wfGrpOf(grp); const ts = WF.types.filter(x => x.grp === grp).sort((a, b) => a.seq - b.seq).map(x => x.code); return ts.length ? ts : [grp]; };
 const wfLead = grp => { const x = WF.types.filter(t => t.grp === grp && t.side === 'operator').sort((a, b) => a.seq - b.seq)[0]; return x ? x.code : grp; };
 const wfSide = ty => (WF.types.find(x => x.code === ty) || {}).side;
 const wfIsReplacement = p => /replace/i.test((p || {}).investment_type || '');
@@ -8096,7 +8098,17 @@ async function wfLoad() {
       SB.select('pm_budget_year', `select=*&year=eq.${project ? project.year : 0}`)
     ]);
     const line = project ? await wfFinalLine(project) : null;
-    const pkg = pkgs[0] || null;
+    let pkg = pkgs[0] || null;
+    // Documents of the same group still in another package being drawn up (split
+    // before packages existed): shown, signed and sent with this one — submitting
+    // the RR submits its PR too; the server merges the packages (pm_pkg_submit).
+    if (pkg && ['draft', 'returned'].includes(pkg.status)) {
+      const g = wfGrpOf(pkg.grp), grpOf = ty => (WF.types.find(x => x.code === ty) || {}).grp;
+      const sib = docs.filter(x => x.pkg_id !== pkg.id && ['draft', 'returned'].includes(x.status) && wfSide(x.doc_type) === 'operator'
+        && grpOf(x.doc_type) === g && !pdocs.some(y => y.doc_type === x.doc_type));
+      if (sib.length) pdocs.push(...await SB.select('pm_doc', `select=*&id=in.(${sib.map(x => x.id).join(',')})`));
+      if (g !== pkg.grp) pkg = { ...pkg, grp: g };
+    }
     if (!WF.pkg || !pkg || WF.pkg.id !== pkg.id) { WF.qcTab = null; WF.adminEdit = false; WF.autoMade = false; }
     pdocs.sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type));
     Object.assign(WF, { pkg, pdocs, project, steps, events, docs, year: years[0] || null, line: line || null, dirty: false });
@@ -8300,19 +8312,34 @@ function wfDotTypes() {
     const d = WF.pdocs.find(x => x.doc_type === ty);
     const why = d ? '' : ty === 'RR' && !wfIsReplacement(WF.project) ? t('wf.rr.na')
       : wfSide(ty) === 'owner' ? t('wf.why.owner', { t: wfLead(k.grp) }) : t('wf.dotNone');
-    return { ty, d, why };
+    // A replacement's RR missing from a package still being drawn up (made
+    // before the RR came along automatically): its dot adds it.
+    const add = !d && ty === 'RR' && wfIsReplacement(WF.project) && wfPkgEditable() && wfCanPrepare(ty, WF.project.dept_code);
+    return { ty, d, why: add ? t('wf.dotAdd', { t: ty }) : why, add };
   });
 }
 function wfDots() {
   const list = wfDotTypes();
   if (list.length < 2) return '';
-  return el('div', { className: 'wfdots' }, list.map(({ ty, d, why }) => {
-    const b = el('button', { className: 'wfdot' + (d && d.doc_type === WF.doc.doc_type ? ' on' : '') + (d ? '' : ' off'),
-      title: d ? `${d.doc_no} — ${wfTypeName(ty)}` : `${ty} — ${why}`, disabled: !d },
-      [el('b', { textContent: ty }), d ? el('i', { className: 'st wf-' + d.status }) : '']);
+  return el('div', { className: 'wfdots' }, list.map(({ ty, d, why, add }) => {
+    const b = el('button', { className: 'wfdot' + (d && d.doc_type === WF.doc.doc_type ? ' on' : '') + (d ? '' : add ? ' add' : ' off'),
+      title: d ? `${d.doc_no} — ${wfTypeName(ty)}` : `${ty} — ${why}`, disabled: !d && !add },
+      [el('b', { textContent: ty }), d ? el('i', { className: 'st wf-' + d.status }) : add ? el('i', { className: 'plus', textContent: '+' }) : '']);
     if (d) b.onclick = () => wfShow(ty);
+    else if (add) b.onclick = () => wfAddToPkg(ty);
     return b;
   }));
+}
+// Adds a missing document to the package being drawn up, then turns to it.
+async function wfAddToPkg(ty) {
+  if (!(await wfSave(true))) return;
+  try {
+    const p = WF.project, data = await wfPrefill(p, ty, WF.docs);
+    WF_FORMS[ty].derive(data, wfCtx());
+    await SB.rpc('pm_doc_create', { p_project: p.code, p_type: ty, p_data: data });
+    WF.doc = { doc_type: ty, pkg_id: WF.pkg.id };
+    await wfLoad();
+  } catch (e) { msg('#wdMsg', 'err', e.message); }
 }
 function wfArrows() {
   const list = wfDotTypes().filter(x => x.d);
@@ -8846,18 +8873,16 @@ function xsBlock(type, rows, cells, cls = '') {
 function xsHead(x, type, dateLabel, dateNode) {
   const f = x.form, split = type === 'RR' ? ['B1:F2', 'G1:U2'] : ['B1:G2', 'H1:U2'];
   return xsBlock(type, { 1: 29.9, 2: 15, 3: 13, 4: 20.5, 5: 15 }, [
-    [split[0], 'co', el('div', {}, FS_CO.map((s, i) => el('div', { className: i === 0 ? 'b' : '', textContent: s })))],
+    [split[0], 'co', el('div', {}, FS_CO.map((s, i) => el('div', { className: i < 2 ? 'b' : 'sm', textContent: s })))],
     [split[1], 'ttl', el('div', {}, [el('div', { textContent: f.title[0].toUpperCase() }), el('div', { textContent: f.title[1].toUpperCase() })])],
     ['M3:Q3', 'hd', 'CODE'], ['R3:U3', 'hd', dateLabel],
     ['M4:Q4', 'cv', WF.doc.doc_no], ['R4:U4', 'cv', dateNode]], 'xs-white');
 }
 /* A table on the grid: cols = [[fromCol, toCol, header, cell(line, i), extraClass]].
-   The No. column counts filled lines; the print shows a few empty lines more,
-   as the workbook does. */
+   Only the filled lines are drawn (no empty rows: the sheet has to fit one page). */
 function xsTable(x, type, cols, lines, o = {}) {
   const rows = { 1: o.headH || 29.9 }, cells = cols.map(([a, b, h, , cls]) => [`${a}1:${b}1`, 'th', h, cls && cls.includes('n') ? 'c' : '']);
-  const pad = x.edit ? 0 : Math.max(0, (o.minRows || 5) - lines.length);
-  const n = lines.length + pad;
+  const n = lines.length;
   for (let r = 0; r < n; r++) {
     const R = r + 2, l = lines[r];
     rows[R] = o.rowH || 20.5;
@@ -8878,17 +8903,22 @@ function xsTable(x, type, cols, lines, o = {}) {
 }
 // Money in the form's own currency, as typed (not converted by the VND | USD switch).
 const xsMoney = v => fsR(v == null || !isFinite(v) ? '' : fmtNum(Math.round(Number(v) * 100) / 100));
-const XS_RR_NOTE = 'Condition Description & Reason for Asset Replacement:\n\nCondition Descriptions:\n'
-  + '1. Full operational – In a condition almost identical to a new item.\n'
-  + '2. Poor – The quality has deteriorated compared to the original condition but is still usable.\n'
-  + '3. Damaged – The quality is significantly impaired, and the item is no longer usable.\n\n'
-  + 'Note: The condition must be supported by images/videos documenting the asset\'s current state.\n\n'
-  + 'Reason for Asset Replacement:\n'
-  + '1. High repair cost – The cost of repairing the item exceeds its value or is no longer cost-effective.\n'
-  + '2. Obsolete – The item is outdated and no longer meets the required needs or functions.\n'
-  + '3. Irreparable – The item is damaged beyond repair and cannot be restored to working condition.\n'
-  + '4. Breakage/loss – The item has either been broken or is missing, rendering it unusable or unaccounted for.\n\n'
-  + 'Note: The reason for replacement must be supported by appropriate evidence (e.g., quotation, incident report, work order, etc.).';
+// The guidance box of the RR sheet, styled as on the workbook: underlined title,
+// bold headings, italic notes. Blank lines are the sheet's own spacing.
+const XS_RR_NOTE = () => el('div', {}, [
+  ['u', 'Condition Description & Reason for Asset Replacement:'], [''],
+  ['b', 'Condition Descriptions:'],
+  ['', '1. Full operational – In a condition almost identical to a new item.'],
+  ['', '2. Poor – The quality has deteriorated compared to the original condition but is still usable.'],
+  ['', '3. Damaged – The quality is significantly impaired, and the item is no longer usable.'], [''],
+  ['i', 'Note: The condition must be supported by images/videos documenting the asset\'s current state.'], [''],
+  ['b', 'Reason for Asset Replacement:'],
+  ['', '1. High repair cost – The cost of repairing the item exceeds its value or is no longer cost-effective.'],
+  ['', '2. Obsolete – The item is outdated and no longer meets the required needs or functions.'],
+  ['', '3. Irreparable – The item is damaged beyond repair and cannot be restored to working condition.'],
+  ['', '4. Breakage/loss – The item has either been broken or is missing, rendering it unusable or unaccounted for.'], [''],
+  ['i', 'Note: The reason for replacement must be supported by appropriate evidence (e.g., quotation, incident report, work order, etc.).']
+].map(([c, s]) => el('div', { className: c, textContent: s || ' ' })));
 
 /* "Consent by": the signatures of the package, in two rows as on the workbook —
    the preparer and the hotel approvals, then the AM team's checks and the JVC
@@ -8982,7 +9012,7 @@ const WF_FORMS = {
           ['E17', 'wtxt', 'Risk Level'], ['F17', 'txt', ':'], ['G17', 'val', fsR(d.risk_level)],
           ['B18:H18', 'lbl', 'SUGGESTION'], ['B19:G19', 'val', fsR(d.suggestion)]]),
         xsBlock(T, { 21: 21, 22: 3.75, 23: 15, 24: 15, 25: 3.75 }, [
-          ['B21:P21', 'bar', 'DETAILED INFORMATION'], ['Q21:T21', 'bar', 'Currency  :', 'r'], ['U21', 'bar', cur],
+          ['B21:P21', 'bar', 'DETAILED INFORMATION'], ['Q21:T21', 'bar', 'Currency  :', 'r i'], ['U21', 'bar', cur, 'i'],
           ['A22:V22', 'band', ''],
           ['B23:F23', 'nav', 'COST BENCHMARK'], ['G23:H23', 'nav', prev ? 'PREVIOUS PROJECT' : ''], ['I23:U23', 'nav', 'SUPPLIER'],
           ['B24:F24', 'val', V('cost_benchmark', 'select', ['Quotation', 'Previous Project', 'Price Reference'])],
@@ -8997,7 +9027,7 @@ const WF_FORMS = {
           ['O', 'R', 'Unit Price', l => I(x, l, 'unit_price', 'money'), 'n'],
           ['S', 'U', 'Amount', l => xsMoney(l.amount), 'n']], d.lines, { headH: 29.9, add: () => ({ qty: 1 }) }),
         xsBlock(T, { 66: 3.75, 67: 15, 68: 14.25, 69: 15, 70: 15, 71: 15, 72: 15 }, [
-          ['B67:G67', 'nav', 'Note/Ghi chú:'], ['I67:R67', 'wtxt', 'Estimated Total Amount', 'bd'], ['S67:U67', 'val', xsMoney(d.total), 'n bd'],
+          ['B67:G67', 'nav', 'Note/Ghi chú:', 'b'], ['I67:R67', 'wtxt', 'Estimated Total Amount', 'bd b'], ['S67:U67', 'val', xsMoney(d.total), 'n bd b'],
           ['B68:G71', 'val', V('notes', 'area'), 'l top bd']]),
         xsBlock(T, { 73: 15, 74: 15, 75: 15, 76: 15, 77: 9.25 }, [
           ['B73:U73', 'bar', 'CONCLUSION'], ['B74:H74', 'lbl', 'PROCUREMENT TYPE'],
@@ -9027,7 +9057,7 @@ const WF_FORMS = {
           ['B8:E8', 'val', fsR(p.code)], ['G8:K8', 'val', fsR(p.name), 'l'],
           ['M8:Q8', 'val', V('replacement_level', 'select', ['Full replacement', 'Partial replacement'])],
           ['S8:U8', 'val', V('after_replacement', 'select', ['Liquidation', 'Transfer'])],
-          ['B10:P10', 'bar', 'DETAILED INFORMATION'], ['Q10:T10', 'bar', 'Currency  :', 'r'],
+          ['B10:P10', 'bar', 'DETAILED INFORMATION'], ['Q10:T10', 'bar', 'Currency  :', 'r i'],
           ['U10', 'bar', x.edit ? V('currency', 'select', ['VND', 'USD']) : (d.currency || 'VND')]]),
         xsTable(x, T, [['B', 'B', 'No.'],
           ['C', 'F', 'Asset Item', l => wfPickProduct(x, l), 'l'],
@@ -9040,8 +9070,8 @@ const WF_FORMS = {
           ['S', 'U', 'Original value', l => I(x, l, 'original_value', 'money'), 'n']], d.lines,
           { headH: 36, rowH: 15, add: () => ({ qty: 1, after: 'Reuse' }) }),
         xsBlock(T, { 52: 3.75, 53: 15 }, [
-          ['K53:N53', 'wtxt', 'Total', 'bd'], ['O53:P53', 'val', fsR(d.total_qty, 'num'), 'n bd'], ['S53:U53', 'val', xsMoney(d.total), 'n bd']]),
-        xsBlock(T, { 54: 5.15, 55: 200.7, 56: 7.4 }, [['B55:U55', 'note', XS_RR_NOTE]]),
+          ['K53:N53', 'wtxt', 'Total', 'bd b'], ['O53:P53', 'val', fsR(d.total_qty, 'num'), 'n bd b'], ['S53:U53', 'val', xsMoney(d.total), 'n bd b']]),
+        xsBlock(T, { 54: 5.15, 55: 200.7, 56: 7.4 }, [['B55:U55', 'note', XS_RR_NOTE()]]),
         fsConsent(x)]),
         x.mode === 'screen' ? fsLinks(x, 'IMAGES / VIDEOS OF THE CURRENT CONDITION (LINKS)') : ''];
     } },
@@ -9586,12 +9616,35 @@ function wfPageRule(orient) {
   document.head.append(st);
 }
 
+/* A workbook-exact sheet (PR, RR) always goes on ONE page: it is laid out a
+   little wider until it is no taller than the page allows, then scaled back
+   down to the page width. Returns the box to put on the page. */
+function xsFit(sheet, pageW, ratio) {
+  sheet.classList.add('pdf');
+  const probe = el('div', { className: 'fpdfhost' }, sheet);
+  document.body.append(probe);
+  const tall = w => { sheet.style.width = w + 'px'; return sheet.getBoundingClientRect().height; };
+  let w = pageW, h = tall(w);
+  if (h > w * ratio) {
+    let lo = w, hi = Math.ceil(h / ratio);
+    while (tall(hi) > hi * ratio) hi = Math.ceil(hi * 1.2);
+    for (let i = 0; i < 8; i++) { const mid = Math.round((lo + hi) / 2); if (tall(mid) > mid * ratio) lo = mid; else hi = mid; }
+    w = hi; h = tall(w);
+  }
+  const k = pageW / w;
+  Object.assign(sheet.style, { transform: k < 1 ? `scale(${k})` : '', transformOrigin: '0 0' });
+  probe.remove();
+  return el('div', { className: 'xsfit', style: `width:${pageW}px;height:${Math.ceil(h * k)}px` }, sheet);
+}
+
 function wfPrint() {
-  const root = $('#wdPrint');
+  const root = $('#wdPrint'), type = WF.doc.doc_type, form = WF_FORMS[type];
   root.innerHTML = '';
   wfCollect();
-  root.append(fsSheet(WF.doc.doc_type, false, 'print'));
-  wfPageRule(WF_FORMS[WF.doc.doc_type].orient);
+  const sheet = fsSheet(type, false, 'print');
+  // 194 mm across an A4 page with 8 mm margins, at 96 px per inch.
+  root.append(form.xs ? xsFit(sheet, 733, 1.43) : sheet);
+  wfPageRule(form.orient);
   window.print();
 }
 
@@ -9621,14 +9674,15 @@ async function wfPdf() {
     // box as wide as the printable area, and the screen minimum would be cut off.
     const sheet = fsSheet(type, false, 'print');
     sheet.classList.add('pdf');
-    host.append(sheet);
+    // PR / RR: the whole sheet on one page (198 mm = 748 px across, 285 mm down).
+    host.append(form.xs ? xsFit(sheet, 748, 1.42) : sheet);
     document.body.append(host);
     await window.html2pdf().set({
       margin: 6, filename: `${WF.doc.doc_no}.pdf`,
       image: { type: 'jpeg', quality: 0.95 },
       html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
       jsPDF: { unit: 'mm', format: 'a4', orientation: form.orient },
-      pagebreak: { mode: ['css', 'legacy'], before: '.fbreak', avoid: ['tr', '.fsig', '.fcell', '.fbar'] }
+      pagebreak: form.xs ? { mode: 'css' } : { mode: ['css', 'legacy'], before: '.fbreak', avoid: ['tr', '.fsig', '.fcell', '.fbar'] }
     }).from(host.firstChild).save();
     msg('#wdMsg', 'ok', t('wf.pdfDone', { file: `${WF.doc.doc_no}.pdf` }));
   } catch (e) {

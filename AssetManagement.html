@@ -1243,6 +1243,32 @@
   /* Signature boxes: Prepared / Checked / Approved by, the title, the signature, the name. */
   .fconsent .fsigs + .fsigs{margin-top:8px}
   .fsig .sk{font-size:10px;font-weight:700;font-style:italic;text-align:left;color:var(--ink);margin-bottom:2px}
+  /* As on the workbook: bold title, headers and totals; the company in bold italic. */
+  .xs-ttl{font-weight:700}
+  .xs-th{font-weight:700}
+  .xs-co .b{font-style:italic}
+  .xs-co .sm{font-size:.78em}
+  .xsg .b{font-weight:700}
+  .xsg .i{font-style:italic}
+  /* The workbook's own font, so words take the room they take on the sheet. */
+  .fsheet.xs{font-family:Calibri,Carlito,var(--font)}
+  .xs-co{white-space:nowrap}
+  .xs-note .u{text-decoration:underline;font-weight:700}
+  .xs-note .b{font-weight:700}
+  .xs-note .i{font-style:italic}
+  /* One page (xsFit): scaled onto the paper, colours kept, compact signature boxes. */
+  .xsfit{overflow:hidden;background:#fff}
+  .xsfit .fsheet{min-width:0 !important;max-width:none !important}
+  /* 11 pt on a sheet ~970 px wide in Excel = 11.5 px on the 748 px page. */
+  .xsfit .fsheet.xs{font-size:11.5px}
+  .xsfit .fsig{min-height:0}
+  .xsfit .fsig .simg{min-height:40px}
+  .xsfit .fsig .simg img{max-height:40px}
+  .xsfit,.xsfit *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  @media print{ #wdPrint .xsfit{break-inside:avoid} }
+  /* A missing RR of a replacement package: its dot draws it up. */
+  .wfdot.add{border-style:dashed;color:var(--navy);background:#fff;cursor:pointer}
+  .wfdot i.plus{background:var(--navy);color:#fff;font:700 9px/7px var(--font);font-style:normal;text-align:center}
 </style>
 </head>
 <body>
@@ -2099,7 +2125,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260925i"></script>
-<script src="app.js?v=20260925i"></script>
+<script src="i18n.js?v=20260925l"></script>
+<script src="app.js?v=20260925l"></script>
 </body>
 </html>
