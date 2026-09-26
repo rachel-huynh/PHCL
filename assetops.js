@@ -78,7 +78,7 @@ function aoPicker(opt) {
     list.innerHTML = '';
     for (const a of rows) list.append(el('button', { type: 'button', className: 'aopickrow', onclick: () => pick(a) }, [
       el('code', { textContent: a.asset_code }), el('span', { textContent: aoName(a) }),
-      el('small', { textContent: [a.barcode, a.dept_code, a.location_code, a.asset_kind === 'low' ? `SL ${fmtNum(a.qty)} ${a.unit_code || ''}` : '', amStatusLabel(a.status_code)].filter(Boolean).join(' · ') })]));
+      el('small', { textContent: [a.barcode, a.dept_code, a.location_code, a.asset_kind === 'low' ? `${t('col.qty')} ${fmtNum(a.qty)} ${a.unit_code || ''}` : '', amStatusLabel(a.status_code)].filter(Boolean).join(' · ') })]));
     if (!rows.length) list.append(el('div', { className: 'dim', style: 'padding:6px 8px', textContent: t('ao.pickNone') }));
     list.hidden = false;
   };
@@ -999,7 +999,7 @@ function aoEvText(e) {
     case 'photo': return d.photo_kind || '';
     case 'transfer': return `${d.from} → ${d.to}${d.loc ? ' · ' + d.loc : ''} · ${t('ao.tf.st.' + d.status)}${d.new_code && d.new_code !== d.old_code ? ` · ${d.old_code} → ${d.new_code}` : ''}${d.qty != null ? ` · SL ${fmtNum(d.qty)}` : ''}`;
     case 'incident': return `${t('ao.inc.k.' + d.type)} · ${t('ao.inc.st.' + d.status)}${d.outcome ? ' · ' + t('ao.inc.o.' + d.outcome) : ''}${d.cost != null ? ' · ' + lqN(d.cost) : ''}${d.text ? ' — ' + d.text : ''}`;
-    case 'count': return `${d.found ? t('lc.found') : t('lc.missing')}${d.qty != null ? ' · SL ' + fmtNum(d.qty) : ''}${d.loc ? ' · ' + d.loc : ''}${d.cond ? ' · ' + t('ao.kk.cond.' + d.cond) : ''}${d.note ? ' — ' + d.note : ''}`;
+    case 'count': return `${d.found ? t('lc.found') : t('lc.missing')}${d.qty != null ? ' · ' + t('col.qty') + ' ' + fmtNum(d.qty) : ''}${d.loc ? ' · ' + d.loc : ''}${d.cond ? ' · ' + t('ao.kk.cond.' + d.cond) : ''}${d.note ? ' — ' + d.note : ''}`;
     case 'liquidation': return [d.lr && 'LR ' + d.lr, d.batch, d.status, d.outcome, d.buyer, d.price != null ? lqN(d.price) : ''].filter(Boolean).join(' · ');
     case 'accounting': return [d.line, d.cost != null ? lqN(d.cost) : '', d.share != null ? Math.round(d.share * 1000) / 10 + '%' : '', d.status === 'gone' ? t('acc.d.ch.status', { o: 'active', n: 'gone' }) : ''].filter(Boolean).join(' · ');
     default: return '';

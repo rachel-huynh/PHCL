@@ -558,9 +558,9 @@ function render() {
   const map = FLOWS.map(x => `<button type="button" class="flcard${x.id === f.id ? ' on' : ''}" data-flow="${x.id}">`
     + `<span class="ic">${x.icon}</span><span><b>${x.code}</b> ${x.short}<small>${x.shortEn}</small></span></button>`).join('<span class="flarr">→</span>');
   root.innerHTML = `<div class="card flmap">${map}</div>`
-    + `<div class="fltools"><span class="tdnote">${f.scope}. Bấm ↗ trên một bước để mở màn hình tương ứng.</span>`
-    + `<span class="sp"></span><button type="button" class="btn" data-act="print">🖨 In / PDF</button>`
-    + `<button type="button" class="btn" data-act="save">⬇ Tải HTML</button></div>`
+    + `<div class="fltools"><span class="tdnote">${f.scope}. ${t('flows.tip')}</span>`
+    + `<span class="sp"></span><button type="button" class="btn" data-act="print">🖨 ${t('flows.print')}</button>`
+    + `<button type="button" class="btn" data-act="save">⬇ ${t('flows.save')}</button></div>`
     + flowHtml(f, true);
   root.onclick = e => {
     const c = e.target.closest('[data-flow]');

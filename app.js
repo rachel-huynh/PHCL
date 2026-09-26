@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260926n';
+const APP_VERSION = '20260926p';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -40,7 +40,7 @@ function colLabel(c) {
 const LS_KEY = 'asset-intake.sb';
 let CFG = { url: '', key: '' };
 /* Tablet / phone mode (tbDetect): declared up here because showView and firstView read it from the start. */
-const TB_VIEWS = ['pmdash', 'inbox', 'doc', 'lqcount', 'stockcount', 'flows', 'settings', 'setup'];
+const TB_VIEWS = ['pmdash', 'inbox', 'doc', 'lqcount', 'stockcount', 'meetings', 'flows', 'settings', 'setup'];
 const TB = { on: false, pages: [], i: 0, key: null, busy: false };
 
 function loadCfg() {
@@ -1888,6 +1888,7 @@ const NAV = [
     ['inbox', 'nav.inbox'],
     ['budget', 'nav.budget'],
     ['projects', 'nav.projects'],
+    ['meetings', 'nav.meetings'],       // owner / operator project meetings (meetings.js, 33_meetings.sql)
     ['payments', 'nav.payments'],
     ['tbl:pm_vendor', null],
     ['price', 'nav.price'],             // price reference database (pricedb.js, 32_price_db.sql)
@@ -1952,6 +1953,7 @@ function viewModule(v) {
   if (v === 'liq' || v === 'lqcount') return 'liquidation';
   if (v === 'payments') return 'payment';
   if (v === 'price') return 'price';
+  if (v === 'meetings') return 'meeting';
   if (['sources', 'backup', 'tbl:am_setting'].includes(v)) return 'system';
   if (v === 'cat' || v.startsWith('tbl:')) return 'master';
   return null;
@@ -2342,6 +2344,7 @@ function showView(view) {
     if (view === 'flows' && window.flowsRender) flowsRender();
     if (['transfer', 'incident', 'stock', 'stockcount', 'amrep'].includes(view) && SB.ready() && window.aoShow) aoShow(view);
     if (view === 'price' && SB.ready() && window.prLoad) prLoad();
+    if (view === 'meetings' && SB.ready() && window.mtLoad) mtLoad();
     if (view === 'payments' && SB.ready()) payLoad();
     if (view === 'admin' && SB.ready()) adLoad();
   }
@@ -7371,6 +7374,8 @@ async function ppDetail(p) {
   try { await wfProjectPanel(p, card); } catch {}
   // Invoices and payments against it (21_pm_payment.sql), same tolerance.
   if (can('payment', 'view')) { try { await payProjectDetail(p.code, card, true); } catch {} }
+  // What the project meetings said about it lately (33_meetings.sql).
+  if (window.mtProjectPanel) { try { await mtProjectPanel(p, card); } catch {} }
 }
 
 /* The execution facts that change as the project moves. Phase 3 replaces most
@@ -8330,7 +8335,8 @@ function wfCanPrepare(type, dept) {
   return can(type === 'LR' ? 'liquidation' : 'project', 'create') && !!prep && wfHasRoleFor(prep.role_code, dept);
 }
 const wfRoleName = code => { const r = WF.roles.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
-const wfTypeName = code => { if (code === 'TF' || code === 'SC') return t(code === 'TF' ? 'ao.tf.docName' : 'ao.inc.docName');   // transfer slip / incident (assetops.js)
+const wfTypeName = code => { if (/^MT(-|$)/.test(String(code)) || code === 'MA') return t('mt.docName');   // project meeting (meetings.js)
+  if (code === 'TF' || code === 'SC') return t(code === 'TF' ? 'ao.tf.docName' : 'ao.inc.docName');   // transfer slip / incident (assetops.js)
   const r = WF.types.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
 const wfChip = s => el('span', { className: 'st wf-' + s, textContent: t('wf.st.' + s) });
 
@@ -10999,7 +11005,7 @@ async function wfInboxLoad() {
   msg(out, 'info', t('table.loading'));
   try {
     await wfLookups();
-    WF.inbox = [...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => [])), ...(window.aoTodos ? await aoTodos().catch(() => []) : [])];
+    WF.inbox = [...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => [])), ...(window.aoTodos ? await aoTodos().catch(() => []) : []), ...(window.mtTodos ? await mtTodos().catch(() => []) : [])];
     WF.done = await wfDoneLoad().catch(() => []);
     msg(out, TB.flash ? 'ok' : '', TB.flash || ''); TB.flash = null;      // the result of a signature on a tablet
     wfInboxRender();
@@ -11050,8 +11056,8 @@ function wfInboxRender() {
   for (const r of rows) {
     const done = r.kind === 'done';
     const owners = wfPkgTypes(r.grp).filter(ty2 => wfSide(ty2) === 'owner').join('/');
-    const band = done ? 'ok' : ['returned', 'tfret'].includes(r.kind) ? 'bad' : ['prepare', 'photo', 'draft', 'tf'].includes(r.kind) ? 'op' : wfBand(r.role_code);
-    const what = r.kind === 'tf' ? t('ao.tf.i.act') : r.kind === 'tfret' ? t('wf.i.returned') : done ? '✓ ' + (r.action === 'approve' && r.step_kind === 'check' ? t('wf.st.checked') : t('wf.a.' + r.action))
+    const band = done ? 'ok' : ['returned', 'tfret'].includes(r.kind) ? 'bad' : ['prepare', 'photo', 'draft', 'tf', 'mtact'].includes(r.kind) ? 'op' : wfBand(r.role_code);
+    const what = r.kind === 'mtact' ? t('mt.i.act') : r.kind === 'tf' ? t('ao.tf.i.act') : r.kind === 'tfret' ? t('wf.i.returned') : done ? '✓ ' + (r.action === 'approve' && r.step_kind === 'check' ? t('wf.st.checked') : t('wf.a.' + r.action))
       : r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'draft' ? t('lq.i.draft') : r.kind === 'prepare' ? t('wf.i.prepare', { t: r.doc_type }) : r.kind === 'returned' ? t('wf.i.returned')
       : r.owner_prep ? t(r.returned_to === 'am' ? 'wf.i.redoOwner' : 'wf.i.checkPrep', { t: owners })
       : t(r.step_kind === 'check' ? 'wf.i.check' : 'wf.i.approve');
@@ -11070,7 +11076,7 @@ function wfInboxRender() {
       el('td', { className: 'num', textContent: r.total_value != null ? fmtMoney(r.total_value) : '' }),
       el('td', { textContent: when ? fmtDate(String(when).slice(0, 10)) : '' }),
       el('td', { textContent: r.role_code ? `${r.step} · ${wfRoleName(r.role_code)}` : '' })]);
-    tr.onclick = () => { if (r.tf_id) aoOpenTransfer(r.tf_id); else if (r.doc_id) wfOpen(r.doc_id); };
+    tr.onclick = () => { if (r.kind === 'mtact' && window.mtOpenActions) mtOpenActions(); else if (r.tf_id) aoOpenTransfer(r.tf_id); else if (r.doc_id) wfOpen(r.doc_id); };
     body.append(tr);
   }
   if (TB.on) tbInboxCards(rows);
@@ -11083,7 +11089,7 @@ const wfInboxCount = rows => TB.on ? rows.filter(r => r.kind !== 'prepare').leng
 async function wfBadge(n) {
   ntLoad();                            // the bell moves whenever the inbox does
   if (n == null) { try { await wfLookups(); } catch {}   // types name the package's owner documents
-                   try { n = wfInboxCount([...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => [])), ...(window.aoTodos ? await aoTodos().catch(() => []) : [])]); } catch { return; } }
+                   try { n = wfInboxCount([...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => [])), ...(window.aoTodos ? await aoTodos().catch(() => []) : []), ...(window.mtTodos ? await mtTodos().catch(() => []) : [])]); } catch { return; } }
   WF.badgeN = n;                       // buildNav() redraws the menu and re-adds it from here
   if (TB.on) { await lcCheck(); if (window.scCheck) await scCheck(); }          // the tablet bar offers the count while a batch waits for it
   tbBarRender();
@@ -11277,6 +11283,8 @@ async function ntLoad() {
 }
 
 function ntText(r) {
+  if (r.doc_type === 'MT') return t('mt.nt.issued', { no: r.doc_no || '', who: r.actor_email || '' });
+  if (r.doc_type === 'MA') return t('mt.nt.action', { no: r.doc_no || '', who: r.actor_email || '' });
   if (r.doc_type === 'SC' && r.kind === 'todo') return t('ao.nt.inc', { no: r.doc_no || '', who: r.actor_email || '' });
   return t('nt.k.' + r.kind, { no: r.doc_no || '', type: r.doc_type ? wfTypeName(r.doc_type) : '', who: r.actor_email || '' });
 }
@@ -11322,6 +11330,9 @@ async function ntOpen(r) {
   // Transfer slips and incidents (assetops.js) carry their number, not a document id.
   else if (r.doc_type === 'TF' && window.AO) { AO.tf.tab = 'all'; AO.tf.open = null; AO.tf.q = r.doc_no || ''; showView('transfer'); }
   else if (r.doc_type === 'SC' && window.AO) { AO.inc.tab = 'all'; AO.inc.open = null; AO.inc.q = r.doc_no || ''; showView('incident'); }
+  // Project meetings (meetings.js): the minutes, or my actions.
+  else if (r.doc_type === 'MT' && window.mtOpenNo) mtOpenNo(r.doc_no);
+  else if (r.doc_type === 'MA' && window.mtOpenActions) mtOpenActions();
   else if (r.doc_id) wfOpen(r.doc_id);
   ntLoad();
 }
