@@ -26,6 +26,8 @@
 const MT = { tab: 'meetings', meetings: [], topics: [], entries: [], actions: [], people: null, projects: null,
              open: null, topic: null, edit: null, q: '', tq: '', tstat: 'open',
              af: { status: 'open', pic: '', q: '', late: false }, flash: null, parsed: null };
+// Table or cards for a meeting, remembered in this browser (table by default).
+try { MT.view = localStorage.getItem('mt.view') || 'table'; } catch { MT.view = 'table'; }
 const MT_FIELDS = ['stage', 'progress', 'discussion', 'decision', 'note'];
 const MT_SIDES = ['owner', 'operator', 'other'];
 const mtW = () => can('meeting', 'create');
@@ -172,10 +174,270 @@ function mtMeetingView(body, m) {
   if (MT.edit === 'head' && mtW()) card.append(mtHeadForm(m));
   else card.append(mtHeadView(m));
   body.append(card);
+  // Table (every topic on one sheet, typed straight in) or cards (one topic at a time, with per-action details).
+  const seg = el('div', { className: 'seg permtabs mtviewseg' }, [['table', t('mt.v.table')], ['cards', t('mt.v.cards')]].map(([v, label]) =>
+    el('button', { type: 'button', className: MT.view === v ? 'on' : '', textContent: label, onclick: () => { MT.view = v; try { localStorage.setItem('mt.view', v); } catch {} mtRender(); } })));
+  card.querySelector('.chead').append(seg);
   const agenda = mtAgenda(m);
+  if (MT.view === 'table') return body.append(mtGrid(m, agenda));
   if (!agenda.length) body.append(el('div', { className: 'card dim', textContent: t('mt.noTopics') }));
   for (const tp of agenda) body.append(mtTopicCard(m, tp));
   if (mtW()) body.append(mtAddTopic(m));
+}
+
+/* ------------------------------------------------------------ quick-notes table
+   Every topic of the meeting on one sheet, in the columns of the old Excel
+   tracker, typed straight into the cells — no form to open. A row saves by
+   itself when the cursor leaves it. The last row takes a new topic: type its
+   name and the notes. Actions: one per line; "@Name" at the end of a line gives
+   that action another person in charge than the row's PIC. The same sheet goes
+   out as an Excel template and comes back filled in. */
+const MT_GCOLS = ['stage', 'progress', 'discussion', 'decision', 'acts', 'pic', 'due', 'note'];
+// Actions cell ⇄ lines: "text @PIC".
+const mtActLines = s => String(s || '').split('\n').map(l => l.replace(/^\s*[-–•]\s*/, '').trim()).filter(Boolean)
+  .map(l => { const k = l.match(/^(.*?)\s+@([^@]+)$/); return k ? { text: k[1].trim(), pic: k[2].trim() } : { text: l, pic: '' }; });
+function mtParseDue(s) {
+  s = String(s || '').trim();
+  let k = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+  if (k) return { due_date: `${k[3]}-${k[2].padStart(2, '0')}-${k[1].padStart(2, '0')}`, due_text: null };
+  k = s.match(/^\d{4}-\d{2}-\d{2}$/);
+  return k ? { due_date: s, due_text: null } : { due_date: null, due_text: s || null };
+}
+// What a row shows: the entry's texts in the language they were written in, its open actions as lines.
+function mtRowVals(e) {
+  const v = {}, from = {};
+  for (const f of MT_FIELDS) { from[f] = mtSrcLang(e || {}, f); v[f] = (e || {})[`${f}_${from[f]}`] || ''; }
+  const open = e ? MT.actions.filter(a => a.entry_id === e.id && a.status === 'open') : [];
+  const cnt = new Map(); for (const a of open) if (a.pic_name) cnt.set(a.pic_name, (cnt.get(a.pic_name) || 0) + 1);
+  v.pic = [...cnt].sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+  v.acts = open.map(a => mtVal(a, 'text')[0] + (a.pic_name && a.pic_name !== v.pic ? ' @' + a.pic_name : '')).join('\n');
+  v.due = open.length ? mtDue(open[0]) : '';
+  return { v, from };
+}
+// Save one row (the table, or a row of an uploaded sheet). Returns the entry, or null when the row was emptied.
+async function mtSaveRow(m, topicId, e, vals, from, dueChanged) {
+  const empty = MT_FIELDS.every(f => !String(vals[f] || '').trim()) && !mtActLines(vals.acts).length;
+  if (empty) {
+    if (e) { await SB.rpc('mt_delete_entry', { p_id: e.id }); MT.entries = MT.entries.filter(x => x.id !== e.id); MT.actions = MT.actions.filter(a => !(a.entry_id === e.id && a.status === 'open')); }
+    return null;
+  }
+  const p = Object.assign({}, e || {}, { meeting_id: m.id, topic_id: topicId });
+  for (const f of MT_FIELDS) mtPut(p, f, (from || {})[f] || mtSrcLang(e || {}, f), String(vals[f] || '').trim());
+  const id = await SB.rpc('mt_save_entry', { p });
+  const open = e ? MT.actions.filter(a => a.entry_id === e.id && a.status === 'open') : [];
+  const lines = mtActLines(vals.acts), due = mtParseDue(vals.due);
+  for (let i = 0; i < lines.length; i++) {
+    const a = open[i], pic = lines[i].pic || String(vals.pic || '').trim(), u = mtUserByName(pic);
+    const keep = a && !dueChanged;
+    const q = { id: a ? a.id : null, meeting_id: m.id, topic_id: topicId, entry_id: id, text_vi: a ? a.text_vi : null, text_en: a ? a.text_en : null,
+                pic_user: u ? u.id : null, pic_name: pic, due_date: keep ? a.due_date : due.due_date, due_text: keep ? a.due_text : due.due_text };
+    mtPut(q, 'text', a ? mtSrcLang(a, 'text') : 'vi', lines[i].text);
+    await SB.rpc('mt_save_action', { p: q });
+  }
+  for (const a of open.slice(lines.length)) await SB.rpc('mt_delete_action', { p_id: a.id });
+  // Only this entry is read back, so the table under the cursor is not redrawn.
+  const [ne] = await SB.select('pm_mt_entry', `select=*&id=eq.${id}`);
+  const acts = await SB.select('pm_mt_action', `select=*&entry_id=eq.${id}&order=sort,id`);
+  MT.entries = [...MT.entries.filter(x => x.id !== id), ne];
+  MT.actions = [...MT.actions.filter(a => a.entry_id !== id), ...acts];
+  return ne;
+}
+// A topic by its name, or a new one (filed under the language the name is written in).
+async function mtTopicByName(name) {
+  const k = hnorm(name), hit = MT.topics.find(x => hnorm(x.title_vi) === k || hnorm(x.title_en) === k);
+  if (hit) return hit;
+  const id = await SB.rpc('mt_save_topic', { p: mtLangOf(name) === 'vi' ? { title_vi: name } : { title_en: name } });
+  const [tp] = await SB.select('pm_mt_topic', `select=*&id=eq.${id}`);
+  MT.topics.push(tp);
+  return tp;
+}
+
+function mtGrid(m, agenda) {
+  const w = mtW();
+  const card = el('div', { className: 'card mtgridcard' });
+  const out = el('div');
+  const head = el('div', { className: 'chead' }, [el('h2', { textContent: t('mt.g.h', { n: agenda.length }) })]);
+  const tools = el('div', { className: 'row' }, [el('button', { className: 'btn tiny', type: 'button', textContent: '⬇ ' + t('mt.g.xlsOut'), onclick: () => mtXlsOut(m, out) })]);
+  if (w) {
+    const file = el('input', { type: 'file', accept: '.xlsx,.xlsm,.xls', hidden: true });
+    file.onchange = () => { if (file.files[0]) mtXlsIn(m, file.files[0], out); file.value = ''; };
+    tools.append(file, el('button', { className: 'btn tiny', type: 'button', textContent: '⬆ ' + t('mt.g.xlsIn'), onclick: () => file.click() }));
+  }
+  head.append(tools);
+  card.append(head, el('p', { textContent: t(w ? 'mt.g.hint' : 'mt.g.hintRead') }), out);
+  const tb = el('tbody');
+  const table = el('table', { className: 'lqbt mtg' + (w ? ' edit' : '') }, [
+    el('thead', {}, el('tr', {}, [el('th', { className: 'tp', textContent: t('mt.c.topic') }),
+      ...MT_GCOLS.map(c => el('th', { className: 'c-' + c, textContent: t(c === 'acts' ? 'mt.g.acts' : c === 'pic' ? 'mt.c.pic' : c === 'due' ? 'mt.c.due' : 'mt.f.' + c) })),
+      ...(w ? [el('th', { className: 'st' })] : [])])), tb]);
+  for (const tp of agenda) {
+    const ents = MT.entries.filter(e => e.meeting_id === m.id && e.topic_id === tp.id).sort((a, b) => a.sort - b.sort);
+    const rows = ents.length ? ents : (w ? [null] : []);
+    if (!rows.length) { tb.append(mtGridRow(m, tp, null, true, false)); continue; }
+    rows.forEach((e, i) => tb.append(mtGridRow(m, tp, e, i === 0, false)));
+  }
+  if (w) tb.append(mtGridRow(m, null, null, true, true));
+  card.append(el('div', { className: 'wrap mtgwrap' }, table));
+  return card;
+}
+
+// One row. first = the topic's first row (carries its name, last time and the open actions); isNew = the row for a new topic.
+function mtGridRow(m, tp, e, first, isNew) {
+  const w = mtW();
+  const tr = el('tr', { className: (first ? 'mtgstart' : '') + (isNew ? ' mtgnew' : '') });
+  const st = { tp, e, isNew };
+  let { v, from } = mtRowVals(e);
+  const cells = {};
+  // The topic cell.
+  const tcell = el('td', { className: 'tp' });
+  const drawTopic = () => {
+    tcell.innerHTML = '';
+    if (st.isNew) {
+      const i = el('input', { placeholder: t('mt.g.newTopicPh'), className: 'mtgtopic' });
+      let dl = document.getElementById('mtTopicNames');
+      if (!dl) { dl = el('datalist', { id: 'mtTopicNames' }); document.body.append(dl); }
+      dl.innerHTML = ''; for (const x of MT.topics) dl.append(el('option', { value: mtTopicName(x) }));
+      i.setAttribute('list', 'mtTopicNames');
+      cells.topic = i; tcell.append(i);
+      return;
+    }
+    if (!first) return;
+    tcell.append(el('b', { textContent: mtTopicName(st.tp) }), st.tp.project_code ? el('code', { className: 'mtprj', textContent: st.tp.project_code }) : '');
+    const last = mtLastTime(m, st.tp.id);
+    if (last) { const e0 = last.entries.find(x => mtVal(x, 'decision')[0]) || last.entries[0]; const [d] = mtVal(e0, 'decision'), [s] = mtVal(e0, 'discussion');
+      const txt = d || s; if (txt) tcell.append(el('div', { className: 'mtglast', title: txt, textContent: `${t('mt.g.last', { d: fmtDate(last.date) })} ${txt}` })); }
+    const carried = mtCarried(m, st.tp.id);
+    for (const a of carried) {
+      const line = el('div', { className: 'mtgcar' + (mtLate(a) ? ' late' : ''), title: `${mtMeeting(a.meeting_id).no || ''}${mtDue(a) ? ' · ' + mtDue(a) : ''}` },
+        [el('span', { textContent: `↻ ${mtVal(a, 'text')[0]}${a.pic_name ? ' — ' + a.pic_name : ''}` })]);
+      if (mtCanSet(a)) line.prepend(el('button', { className: 'xbtn', type: 'button', title: t('mt.a.do.done'), textContent: '✓', onclick: async () => {
+        try { await SB.rpc('mt_action_set', { p_id: a.id, p_status: 'done', p_note: null, p_meeting: m.id }); Object.assign(a, { status: 'done', closed_meeting_id: m.id }); line.classList.add('closed'); line.querySelector('button').remove(); }
+        catch (err) { mtErr('#mtMsg', err); } } }));
+      tcell.append(line);
+    }
+    if (w) tcell.append(el('button', { className: 'btn tiny mtgadd', type: 'button', textContent: '+ ' + t('mt.g.addRow'), onclick: () => {
+      let last = tr; while (last.nextElementSibling && !last.nextElementSibling.classList.contains('mtgstart')) last = last.nextElementSibling;
+      const r = mtGridRow(m, st.tp, null, false, false); last.after(r); r.querySelector('textarea,input').focus(); } }));
+  };
+  drawTopic();
+  tr.append(tcell);
+  const grow = x => { x.style.height = 'auto'; x.style.height = Math.min(x.scrollHeight + 2, 260) + 'px'; };
+  for (const c of MT_GCOLS) {
+    const td = el('td', { className: 'c-' + c });
+    if (w) {
+      const x = ['stage', 'pic', 'due'].includes(c) ? el('input', { value: v[c] || '' }) : el('textarea', { rows: 1, value: v[c] || '' });
+      if (c === 'pic') x.setAttribute('list', mtPeopleList());
+      if (c === 'due') x.placeholder = 'dd/mm/yyyy';
+      if (x.tagName === 'TEXTAREA') { x.oninput = () => grow(x); setTimeout(() => grow(x)); }
+      cells[c] = x; td.append(x);
+    } else td.append(el('div', { className: 'mttext', textContent: v[c] || '' }));
+    if (c === 'acts' && e) {                       // closed actions of the row, read-only
+      for (const a of MT.actions.filter(a => a.entry_id === e.id && a.status !== 'open'))
+        td.append(el('div', { className: 'mtgdone', textContent: `✓ ${mtVal(a, 'text')[0]}${a.pic_name ? ' — ' + a.pic_name : ''}` }));
+    }
+    tr.append(td);
+  }
+  if (!w) return tr;
+  const stc = el('td', { className: 'st' }); tr.append(stc);
+  const snap = () => JSON.stringify([cells.topic ? cells.topic.value : '', ...MT_GCOLS.map(c => cells[c].value)]);
+  let saved = snap(), busy = null;
+  const save = async () => {
+    if (busy) await busy;
+    const now = snap(); if (now === saved) return;
+    const vals = Object.fromEntries(MT_GCOLS.map(c => [c, cells[c].value]));
+    busy = (async () => {
+      stc.className = 'st saving'; stc.textContent = '…'; stc.title = t('mt.g.saving');
+      try {
+        if (st.isNew) {
+          const name = cells.topic.value.trim();
+          if (!name) { if (MT_GCOLS.some(c => cells[c].value.trim())) throw new Error(t('mt.g.needTopic')); return; }
+          st.tp = await mtTopicByName(name); mtShow(m, st.tp.id);
+        }
+        const ne = await mtSaveRow(m, st.tp.id, st.e, vals, from, vals.due !== v.due);
+        st.e = ne; ({ v, from } = mtRowVals(ne));
+        if (st.isNew) {                             // the row becomes the topic's, and a fresh new-topic row follows
+          st.isNew = false; first = true; tr.classList.remove('mtgnew'); delete cells.topic; drawTopic();
+          tr.after(mtGridRow(m, null, null, true, true));
+        }
+        saved = snap();
+        stc.className = 'st ok'; stc.textContent = '✓'; stc.title = t('mt.g.saved');
+      } catch (err) { stc.className = 'st err'; stc.textContent = '!'; stc.title = err.message; msg('#mtMsg', 'err', mtMissing(err) ? t('mt.notInstalled') : err.message); }
+    })();
+    await busy; busy = null;
+  };
+  tr.addEventListener('focusout', ev => { if (!tr.contains(ev.relatedTarget)) save(); });
+  // Ctrl+Enter / Cmd+Enter saves at once and goes to the same column of the next row.
+  tr.addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter' || !(ev.ctrlKey || ev.metaKey)) return;
+    ev.preventDefault();
+    const col = [...tr.children].indexOf(ev.target.closest('td'));
+    const nx = tr.nextElementSibling; save();
+    const f = nx && nx.children[col] && nx.children[col].querySelector('textarea,input');
+    if (f) f.focus();
+  });
+  return tr;
+}
+
+/* ------------------------------------------------------------ Excel template */
+const MT_XH = ['Dự án / Project', 'Hạng mục / Stage', 'Tiến độ / Progress', 'Thảo luận / Discussion', 'Kết luận – chỉ đạo / Decision – direction',
+  'Việc cần làm (mỗi dòng một việc, "@Tên" = người khác) / Actions (one per line, "@Name" = another PIC)', 'Phụ trách / PIC', 'Hạn / Due', 'Ghi chú / Notes',
+  'Lần trước / Last time', 'topic_id', 'entry_id'];
+function mtXlsOut(m, out) {
+  const agenda = mtAgenda(m);
+  const rows = [MT_XH];
+  for (const tp of agenda) {
+    const ents = MT.entries.filter(e => e.meeting_id === m.id && e.topic_id === tp.id).sort((a, b) => a.sort - b.sort);
+    const last = mtLastTime(m, tp.id);
+    const lastTxt = last ? `${fmtDate(last.date)}: ` + last.entries.map(e => mtVal(e, 'decision')[0] || mtVal(e, 'discussion')[0]).filter(Boolean).join(' | ') : '';
+    const carried = mtCarried(m, tp.id).map(a => `↻ ${mtVal(a, 'text')[0]}${a.pic_name ? ' — ' + a.pic_name : ''}`).join('\n');
+    const info = [lastTxt, carried].filter(Boolean).join('\n');
+    for (const e of ents.length ? ents : [null]) {
+      const { v } = mtRowVals(e);
+      rows.push([mtTopicName(tp), v.stage, v.progress, v.discussion, v.decision, v.acts, v.pic, v.due, v.note, e === ents[0] || !e ? info : '', tp.id, e ? e.id : '']);
+    }
+  }
+  for (let i = 0; i < 8; i++) rows.push(['', '', '', '', '', '', '', '', '', '', '', '']);     // blank rows for new topics
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [30, 18, 28, 45, 32, 40, 16, 12, 24, 40, 8, 8].map((wch, i) => (i >= 10 ? { wch, hidden: true } : { wch }));
+  ws['!freeze'] = { xSplit: 1, ySplit: 1 };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, m.no.slice(0, 31));
+  XLSX.writeFile(wb, `${m.no} ${t('mt.g.xlsName')}.xlsx`);
+  msg(out, 'ok', t('mt.g.xlsOutDone'));
+}
+async function mtXlsIn(m, f, out) {
+  try {
+    const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+    // Columns found by how their heading STARTS ("Hạng mục" must not pass for "Hạn", nor "… another PIC" for PIC).
+    const H = (aoa[0] || []).map(x => String(x).toLowerCase().trim());
+    const col = (re, dflt) => { const i = H.findIndex(h => re.test(h)); return i >= 0 ? i : dflt; };
+    const C = { topic: col(/^(dự án|project)/, 0), stage: col(/^(hạng mục|stage)/, 1), progress: col(/^(tiến độ|progress)/, 2), discussion: col(/^(thảo luận|discussion)/, 3),
+                decision: col(/^(kết luận|decision)/, 4), acts: col(/^(việc cần làm|action)/, 5), pic: col(/^(phụ trách|pic)(\s|\/|$)/, 6), due: col(/^(hạn|due)(\s|\/|$)/, 7),
+                note: col(/^(ghi chú|note)/, 8), tid: col(/^topic_id$/, 10), eid: col(/^entry_id$/, 11) };
+    const cell = (r, k) => { const x = r[C[k]]; return x == null ? '' : typeof x === 'number' && k === 'due' && x > 20000 && x < 80000
+      ? fmtDate(new Date(Math.round((x - 25569) * 864e5)).toISOString().slice(0, 10)) : String(x).replace(/\r/g, '').trim(); };
+    let n = 0, lastTopic = null;
+    for (const r of aoa.slice(1)) {
+      const vals = Object.fromEntries(MT_GCOLS.map(c => [c, cell(r, c)]));
+      const tid = Number(cell(r, 'tid')) || null, eid = Number(cell(r, 'eid')) || null, name = cell(r, 'topic');
+      const has = MT_GCOLS.some(c => vals[c]);
+      let tp = tid ? MT.topics.find(x => x.id === tid) : null;
+      if (!tp && name) tp = has ? await mtTopicByName(name) : null;
+      if (!tp && has) tp = lastTopic;                // a row under a topic with its name left blank
+      if (tp) lastTopic = tp;
+      const e = eid ? MT.entries.find(x => x.id === eid && x.meeting_id === m.id) : null;
+      if (!tp || (!has && !e)) continue;
+      const before = e ? mtRowVals(e).v : null;
+      if (before && MT_GCOLS.every(c => String(before[c] || '') === vals[c])) continue;   // unchanged
+      mtShow(m, tp.id);
+      await mtSaveRow(m, tp.id, e, vals, null, !before || before.due !== vals.due);
+      n++;
+      msg(out, 'info', t('mt.g.xlsInRun', { n }));
+    }
+    await mtReload(t('mt.g.xlsInDone', { n: fmtInt(n) }));
+  } catch (err) { mtErr(out, err); }
 }
 
 function mtHeadView(m) {

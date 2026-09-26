@@ -1871,6 +1871,34 @@
   .lqsheet .mtlqt tr.mtgrp td{background:#eef1f6;font-size:10.5px}
   .lqsheet .mtlqt td div{white-space:pre-line}
   .lqsheet .mtlqt .mtpa{margin-bottom:4px} .lqsheet .mtlqt .mtpa .who{font-weight:600}
+  /* Quick-notes table: the Excel tracker's columns, typed straight in. */
+  .mtviewseg{flex:none;margin-left:auto}
+  .mtgwrap{max-height:calc(100vh - 250px);min-height:260px}
+  table.mtg{table-layout:fixed;width:100%;min-width:980px}
+  table.mtg th.tp,table.mtg td.tp{width:13%;position:sticky;left:0;z-index:2;background:var(--panel);border-right:1px solid var(--line)}
+  table.mtg th.tp{z-index:3;background:var(--head)}
+  table.mtg th.c-stage{width:8%} table.mtg th.c-progress{width:10%} table.mtg th.c-discussion{width:17%}
+  table.mtg th.c-decision{width:13%} table.mtg th.c-acts{width:14%} table.mtg th.c-pic{width:8%}
+  table.mtg th.c-due{width:6%} table.mtg th.st{width:26px}
+  table.mtg td{vertical-align:top;white-space:normal;padding:4px 5px}
+  table.mtg tr.mtgstart td{border-top:2px solid var(--line)}
+  table.mtg td.c-decision{background:#f6f9fd}
+  table.mtg.edit td textarea,table.mtg.edit td input{width:100%;border:1px solid transparent;background:transparent;border-radius:4px;
+    padding:3px 5px;font:12.5px/1.4 var(--font);color:var(--ink);resize:none;min-height:28px;overflow:hidden}
+  table.mtg.edit td textarea:hover,table.mtg.edit td input:hover{border-color:var(--line)}
+  table.mtg.edit td textarea:focus,table.mtg.edit td input:focus{border-color:var(--blue);background:var(--panel);box-shadow:0 0 0 2px rgba(46,95,158,.12)}
+  table.mtg td.c-decision textarea{font-weight:600;color:var(--navy)}
+  table.mtg td.tp b{color:var(--navy);display:block}
+  .mtglast{margin-top:3px;font-size:11.5px;color:var(--dim);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .mtgcar{display:flex;gap:4px;align-items:flex-start;margin-top:3px;font-size:11.5px;color:var(--warn-ink)}
+  .mtgcar.late{color:var(--red)} .mtgcar.closed{color:var(--dim);text-decoration:line-through}
+  .mtgcar .xbtn{flex:none;padding:0 4px;line-height:16px}
+  .mtgdone{font-size:11.5px;color:var(--dim);margin-top:2px}
+  .mtgadd{margin-top:5px}
+  tr.mtgnew td{background:#fffcf5}
+  input.mtgtopic{font-weight:600}
+  table.mtg td.st{text-align:center;font-weight:700;color:var(--dim);padding-top:8px}
+  table.mtg td.st.ok{color:var(--green)} table.mtg td.st.err{color:var(--red)}
   @media (max-width:760px){ .mtev{grid-template-columns:1fr} .mtattrow,.mtactrow{grid-template-columns:1fr} .mtactrow.mthead{display:none} }
 
   /* ============================================================ CONSISTENCY
@@ -2907,11 +2935,11 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260926p"></script>
-<script src="flows.js?v=20260926p"></script>
-<script src="app.js?v=20260926p"></script>
-<script src="assetops.js?v=20260926p"></script>
-<script src="pricedb.js?v=20260926p"></script>
-<script src="meetings.js?v=20260926p"></script>
+<script src="i18n.js?v=20260926q"></script>
+<script src="flows.js?v=20260926q"></script>
+<script src="app.js?v=20260926q"></script>
+<script src="assetops.js?v=20260926q"></script>
+<script src="pricedb.js?v=20260926q"></script>
+<script src="meetings.js?v=20260926q"></script>
 </body>
 </html>
