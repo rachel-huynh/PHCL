@@ -603,6 +603,8 @@ function kkDetail(body, c) {
       mv: fmtInt(s.moved || 0), x: fmtInt(s.extra || 0), d: fmtInt(s.damaged || 0), am: fmtInt((s.applied || {}).moved || 0), al: fmtInt((s.applied || {}).lost || 0), ad: fmtInt((s.applied || {}).damaged || 0) }) }) : '',
     out, el('div', { className: 'row', style: 'gap:8px;flex-wrap:wrap' }, btns)]));
   if (c.status === 'draft') return;
+  body.append(kkStatsCard(c, L));
+  if (c.status === 'open') kkLiveStart(c);
   const chips = el('div', { className: 'seg permtabs' });
   aoTabs(chips, AO_KK_FILTERS.map(f => [f, t('ao.kk.f.' + f), L.filter(l => kkMatch(l, f)).length]), S.filter, v => { S.filter = v; kkRender(); });
   const q = el('input', { placeholder: t('pm.f.search'), value: S.q, spellcheck: false });
@@ -612,7 +614,7 @@ function kkDetail(body, c) {
   const qq = hnorm(S.q);
   if (qq) rows = rows.filter(l => hnorm(`${l.asset_code} ${l.barcode} ${l.name} ${l.loc_book} ${l.loc_found} ${l.note}`).includes(qq));
   const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['ao.c.code', 'ao.c.name', 'pm.col.dept', 'ao.kk.c.locBook', 'ao.kk.c.locFound', 'ao.c.qtyBook', 'ao.kk.c.qtyFound',
-    'ao.kk.c.cond', 'ao.kk.c.note', 'ao.kk.c.state', ''].map(k => el('th', { textContent: k ? t(k) : '' })))]);
+    'ao.kk.c.cond', 'ao.kk.c.note', 'ao.kk.c.state', 'ao.kk.c.photo', ''].map(k => el('th', { textContent: k ? t(k) : '' })))]);
   const may = c.status === 'open';
   for (const l of rows.slice(0, 1500)) {
     const st = kkState(l);
@@ -624,12 +626,102 @@ function kkDetail(body, c) {
       el('td', { textContent: l.dept_code || '' }), el('td', { textContent: l.loc_book || '' }), el('td', { textContent: l.loc_found || '' }),
       el('td', { className: 'num', textContent: l.qty_book != null ? fmtNum(l.qty_book) : '' }), el('td', { className: 'num', textContent: l.qty_found != null ? fmtNum(l.qty_found) : '' }),
       el('td', { textContent: l.cond ? t('ao.kk.cond.' + l.cond) : '' }), el('td', { className: 'aowrap', textContent: [l.note, l.by_name].filter(Boolean).join(' · ') }),
-      el('td', {}, el('span', { className: 'aost kk-' + st, textContent: t('ao.kk.f.' + st) })), acts]));
+      el('td', {}, el('span', { className: 'aost kk-' + st, textContent: t('ao.kk.f.' + st) })), el('td', {}, l.photo_id ? kkImg(l.photo_id) : ''), acts]));
   }
-  if (rows.length > 1500) tb.append(el('tr', {}, el('td', { colSpan: 11, className: 'dim', textContent: t('acc.more', { n: fmtInt(rows.length - 1500) }) })));
-  if (!rows.length) tb.append(el('tr', {}, el('td', { colSpan: 11, className: 'dim', style: 'padding:14px', textContent: t('lq.none') })));
+  if (rows.length > 1500) tb.append(el('tr', {}, el('td', { colSpan: 12, className: 'dim', textContent: t('acc.more', { n: fmtInt(rows.length - 1500) }) })));
+  if (!rows.length) tb.append(el('tr', {}, el('td', { colSpan: 12, className: 'dim', style: 'padding:14px', textContent: t('lq.none') })));
   body.append(el('div', { className: 'card' }, el('div', { className: 'wrap' }, tb)));
+  kkThumbs(body);
 }
+/* Progress by location, department and asset group (35_vendor_photo_count.sql). Worked out from the
+   lines on screen, so it needs nothing new from the database; while the count is open the lines are
+   re-read every 15 s, so everyone watching sees the counters' work as it happens. */
+const KK_LIVE_MS = 15000;
+function kkStatsCard(c, L) {
+  const S = AO.kk;
+  const groupName = g => { const x = (S.groups || []).find(r => r.code === g); return x ? `${g} — ${LANG === 'vi' ? x.name_vi : x.name_en || x.name_vi}` : g; };
+  const by = (keyOf, label) => {
+    const m = new Map();
+    for (const l of L) {
+      const k = keyOf(l) || '—';
+      const r = m.get(k) || { k, total: 0, done: 0, missing: 0, extra: 0, damaged: 0, photos: 0 };
+      if (l.extra) r.extra++; else { r.total++; if (l.found != null) r.done++; }
+      if (l.found === false) r.missing++;
+      if (l.found && l.cond === 'damaged') r.damaged++;
+      if (l.photo_id) r.photos++;
+      m.set(k, r);
+    }
+    const rows = [...m.values()].sort((a, b) => (a.done / (a.total || 1)) - (b.done / (b.total || 1)) || String(a.k).localeCompare(String(b.k)));
+    const tb = el('table', { className: 'lqbt kkst' });
+    tb.append(el('tr', {}, [label, t('ao.kk.st.progress'), t('ao.kk.f.missing'), t('ao.kk.f.extra'), t('ao.kk.f.damaged'), '📷'].map((x, i) => el('th', { className: i > 1 ? 'num' : '', textContent: x }))));
+    for (const r of rows) {
+      const pct = r.total ? Math.round(r.done / r.total * 100) : 100;
+      tb.append(el('tr', {}, [el('td', { className: 'aowrap', textContent: label === t('ao.kk.st.group') ? groupName(r.k) : label === t('pm.col.dept') && r.k !== '—' ? `${r.k} — ${pmDeptName(r.k)}` : r.k }),
+        el('td', {}, [el('div', { className: 'kkbar' }, [el('i', { style: `width:${pct}%`, className: pct === 100 ? 'full' : '' })]), el('small', { textContent: `${fmtInt(r.done)} / ${fmtInt(r.total)} · ${pct}%` })]),
+        el('td', { className: 'num' + (r.missing ? ' bad' : ''), textContent: r.missing || '' }), el('td', { className: 'num', textContent: r.extra || '' }),
+        el('td', { className: 'num', textContent: r.damaged || '' }), el('td', { className: 'num', textContent: r.photos || '' })]));
+    }
+    return el('div', { className: 'wrap kkstwrap' }, tb);
+  };
+  const tab = S.statBy || 'loc';
+  const seg = el('div', { className: 'seg permtabs' }, [['loc', t('ao.kk.st.loc')], ['dept', t('pm.col.dept')], ['group', t('ao.kk.st.group')]].map(([v, label]) =>
+    el('button', { type: 'button', className: v === tab ? 'on' : '', textContent: label, onclick: () => { S.statBy = v; kkRender(); } })));
+  const own = L.filter(l => !l.extra), done = own.filter(l => l.found != null).length;
+  const last = L.map(l => l.at).filter(Boolean).sort().pop();
+  const tiles = el('div', { className: 'aokpis' }, [
+    [t('ao.kk.st.done'), `${fmtInt(done)} / ${fmtInt(own.length)}`, `${own.length ? Math.round(done / own.length * 100) : 0}%`],
+    [t('ao.kk.f.missing'), fmtInt(L.filter(l => l.found === false).length), ''], [t('ao.kk.f.extra'), fmtInt(L.filter(l => l.extra).length), ''],
+    [t('ao.kk.st.photos'), fmtInt(L.filter(l => l.photo_id).length), t('ao.kk.st.photosSub')],
+    [t('ao.kk.st.last'), last ? fmtDateTime(last).slice(11) : '—', last ? fmtDate(String(last).slice(0, 10)) : '']].map(([k, v, s]) =>
+      el('div', { className: 'aokpi' }, [el('small', { textContent: k }), el('b', { textContent: v }), s ? el('span', { textContent: s }) : ''])));
+  const live = c.status === 'open' ? el('span', { className: 'kklive', textContent: '● ' + t('ao.kk.st.live', { s: KK_LIVE_MS / 1000, at: fmtDateTime(new Date()).slice(11) }) }) : '';
+  return el('div', { className: 'card' }, [el('div', { className: 'chead' }, [el('h2', { textContent: t('ao.kk.st.h') }), live, seg]), tiles,
+    by(tab === 'dept' ? l => l.dept_code : tab === 'group' ? l => l.group_code : l => l.loc_found || l.loc_book,
+       tab === 'dept' ? t('pm.col.dept') : tab === 'group' ? t('ao.kk.st.group') : t('ao.kk.st.loc'))]);
+}
+// While an open count is on screen: re-read its lines every 15 s, redraw only if something changed.
+function kkLiveStart(c) {
+  const S = AO.kk;
+  if (!S.groups) SB.select('am_category_group', 'select=code,name_vi,name_en').then(g => { S.groups = g; }).catch(() => { S.groups = []; });
+  if (S.live && S.live.id === c.id) return;
+  clearInterval(S.live && S.live.timer);
+  const sig = L => L.length + '|' + L.map(l => l.at || '').sort().pop() + '|' + L.filter(l => l.found != null).length + '|' + L.filter(l => l.photo_id).length;
+  S.live = { id: c.id, timer: setInterval(async () => {
+    if (VIEW !== 'stock' || AO.kk.open !== c.id || AO.kk.edit) { clearInterval(S.live.timer); S.live = null; return; }
+    if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;     // not while someone types
+    try {
+      const L = await pmSelectAll('am_count_line', `select=*&count_id=eq.${c.id}&order=id`);
+      if (sig(L) !== sig(AO.kk.lines.filter(l => l.count_id === c.id))) { AO.kk.lines = L; kkRender(); }
+      else { const x = document.querySelector('.kklive'); if (x) x.textContent = '● ' + t('ao.kk.st.live', { s: KK_LIVE_MS / 1000, at: fmtDateTime(new Date()).slice(11) }); }
+    } catch {}
+  }, KK_LIVE_MS) };
+}
+// A photo of the asset of a count line: stored with a thumbnail, tied to the line; the first photo of an asset
+// without an avatar becomes its avatar (database trigger); "photo = avatar" makes every photo the avatar.
+async function kkPhoto(l, file, out) {
+  if (!l.asset_id) return msg(out, 'warn', t('ao.kk.noPhotoUnknown'));
+  msg(out, 'info', t('ph.uploading'));
+  try {
+    const p = await phUpload({ id: l.asset_id }, 'count', file, null, { count_line_id: l.id });
+    await SB.rpc('am_count_photo', { p_line: l.id, p_photo: p.id, p_avatar: !!AO.sc.avatar });
+    Object.assign(l, { photo_id: p.id, found: l.found == null ? true : l.found, at: l.at || new Date().toISOString(), by_name: l.by_name || (ME && (ME.full_name || ME.email)) });
+    msg(out, 'ok', t('ao.kk.photoSaved', { c: l.asset_code || l.barcode || '' }));
+    if (VIEW === 'stock') kkRender(); else scRender();
+  } catch (e) { aoErr(out, e); }
+}
+// Fill the <img data-photo> of a list with the photos' thumbnails.
+async function kkThumbs(root) {
+  const imgs = [...root.querySelectorAll('img[data-photo]')];
+  const ids = [...new Set(imgs.map(i => i.dataset.photo))];
+  if (!ids.length) return;
+  try {
+    for (const p of await SB.select('am_asset_photo', `select=id,storage_path,thumb_path&id=in.(${ids.join(',')})`)) {
+      const u = await phUrl(p.thumb_path || p.storage_path).catch(() => null);
+      if (u) for (const i of imgs.filter(x => x.dataset.photo === String(p.id))) { i.src = u; i.onclick = () => phUrl(p.storage_path).then(f => window.open(f, '_blank')).catch(() => {}); }
+    }
+  } catch {}
+}
+const kkImg = id => { const i = el('img', { className: 'kkthumb', alt: '📷' }); i.dataset.photo = id; return i; };
 async function kkMark(l, found, qty, loc, cond, note, out) {
   try {
     await SB.rpc('am_count_mark', { p_line: l.id, p_found: found, p_qty: qty, p_loc: loc || null, p_cond: cond || null, p_note: note || null });
@@ -738,9 +830,12 @@ function scRender() {
   };
   const only = el('select'); selFill(only, [['here', t('ao.sc.onlyHere')], ['pending', t('ao.sc.onlyPending')], ['all', t('ao.sc.onlyAll')]]); only.value = S.only;
   only.onchange = () => { S.only = only.value; scRender(); };
+  // Every photo taken here becomes the asset's avatar (otherwise only when it has none yet).
+  const avBox = el('input', { type: 'checkbox', checked: !!S.avatar }); avBox.onchange = () => { S.avatar = avBox.checked; };
   top.append(el('div', { className: 'lchead' }, [el('b', { textContent: t('lc.progress', { n: fmtInt(done), of: fmtInt(own.length) }) }),
     el('div', { className: 'lcprog' }, [el('i', { style: `width:${own.length ? Math.round(done / own.length * 100) : 0}%` })])]),
-    aoFld(t('ao.sc.loc'), ls, 'min-width:200px'), aoFld(t('ao.sc.show'), only, 'min-width:160px'), scan);
+    aoFld(t('ao.sc.loc'), ls, 'min-width:200px'), aoFld(t('ao.sc.show'), only, 'min-width:160px'), scan,
+    el('label', { className: 'chk scav', title: t('ao.kk.avatarHint') }, [avBox, el('span', { textContent: t('ao.kk.avatarAll') })]));
   body.append(top);
   if (S.flash) { msg('#scMsg', S.flash[0], S.flash[1]); S.flash = null; }
   let rows = S.only === 'all' ? S.lines : S.only === 'pending' ? own.filter(l => l.found == null)
@@ -750,6 +845,7 @@ function scRender() {
   for (const l of rows) list.append(scCard(l));
   if (!rows.length) list.append(el('div', { className: 'tbempty', textContent: t('ao.sc.empty') }));
   body.append(list);
+  kkThumbs(list);
   setTimeout(() => { const s = $('.lcscan'); if (s && !TB.on) s.focus(); }, 30);
 }
 function scCard(l) {
@@ -760,7 +856,13 @@ function scCard(l) {
   const note = el('input', { className: 'lcnote', placeholder: t('lc.note'), value: l.note || '' });
   const save = f => kkMark(l, f, f ? numIn(qty.value) : 0, f ? (AO.sc.loc || l.loc_found || l.loc_book) : null, f ? cond.value : null, note.value, '#scMsg');
   cond.onchange = note.onchange = qty.onchange = () => { if (l.found) save(true); };
-  return el('div', { className: 'lccard' + cls, id: 'sc-' + l.id }, [
+  // A photo straight from the camera (the asset must be on the register to take one).
+  const cam = el('input', { type: 'file', accept: 'image/*', hidden: true });
+  cam.setAttribute('capture', 'environment');
+  cam.onchange = () => { if (cam.files[0]) kkPhoto(l, cam.files[0], '#scMsg'); cam.value = ''; };
+  const shot = l.asset_id ? [cam, el('button', { className: 'btn lcphoto' + (l.photo_id ? ' on' : ''), type: 'button', textContent: l.photo_id ? '📷 ✓' : '📷 ' + t('ao.kk.photo'), onclick: () => cam.click() })] : [];
+  return el('div', { className: 'lccard' + cls + (l.photo_id ? ' hasph' : ''), id: 'sc-' + l.id }, [
+    l.photo_id ? kkImg(l.photo_id) : '',
     el('div', { className: 'lcwho' }, [el('code', { textContent: l.asset_code || l.barcode || '' }), el('b', { textContent: l.name || t('ao.kk.unknown') }),
       el('small', { textContent: [l.barcode, l.dept_code, l.loc_book && `${t('ao.kk.c.locBook')}: ${l.loc_book}`, l.loc_found && l.loc_found !== l.loc_book ? `→ ${l.loc_found}` : '',
                                   l.extra ? t('ao.kk.f.extra') : ''].filter(Boolean).join(' · ') })]),
@@ -768,7 +870,7 @@ function scCard(l) {
     el('div', { className: 'lcact' }, [
       el('button', { className: 'btn lcyes' + (l.found === true ? ' on' : ''), type: 'button', textContent: '✓ ' + t('lc.found'), onclick: () => save(true) }),
       el('button', { className: 'btn lcno' + (l.found === false ? ' on' : ''), type: 'button', textContent: '✗ ' + t('lc.missing'), onclick: () => save(false) }),
-      el('label', { className: 'lcql' }, [el('span', { textContent: t('lc.qty') }), qty]), cond, note,
+      el('label', { className: 'lcql' }, [el('span', { textContent: t('lc.qty') }), qty]), cond, note, ...shot,
       l.found != null ? el('button', { className: 'btn tiny', type: 'button', textContent: t('lc.undo'), onclick: () => kkMark(l, null, null, null, null, null, '#scMsg') }) : ''])]);
 }
 // Is a count open (for the tablet bar)?
@@ -958,16 +1060,33 @@ async function aoAsset(id) {
         ...f('ao.a.fin', a.fin_status ? `${t('acc.fs.' + a.fin_status)}${a.fin_cost != null ? ` · ${lqN(a.fin_cost)}` : ''}${a.fin_nbv != null ? ` · GTCL ${lqN(a.fin_nbv)}` : ''}${a.fin_as_of ? ` (${fmtDate(a.fin_as_of)})` : ''}` : t('acc.fs.temp')),
         el('dt', { textContent: t('ao.a.warranty') }), el('dd', {}, wIn),
         ...f('ao.a.label', a.label_printed ? '✓' : a.no_label ? t('col.no_label') : '✗'), ...f('ao.a.note', a.note)]));
-    // Photos
-    const ph = el('div', { className: 'aophotos' });
-    body.append(el('h3', { textContent: t('ao.a.photos') }), ph);
+    // Photos: the avatar first (shown in the register), then every photo; ⭐ makes one the avatar (35_vendor_photo_count.sql).
+    const ph = el('div', { className: 'aophotos' }), av = el('div', { className: 'aoavatar' });
+    const mayAv = !H.old && (can('assets', 'edit') || aoScope(a.dept_code));
+    const avFile = el('input', { type: 'file', accept: 'image/*', hidden: true });
+    avFile.setAttribute('capture', 'environment');
+    avFile.onchange = async () => {
+      if (!avFile.files[0]) return;
+      msg(out, 'info', t('ph.uploading'));
+      try { await phUpload(a, 'avatar', avFile.files[0]); msg(out, 'ok', t('ao.a.avatarSet')); aoAsset(a.id); } catch (e) { msg(out, 'err', e.message); }
+    };
+    const avHead = el('div', { className: 'row', style: 'gap:8px;align-items:center;justify-content:flex-start' }, [el('h3', { style: 'margin:0', textContent: t('ao.a.photos') })]);
+    if (mayAv && 'avatar_photo_id' in a) avHead.append(avFile, el('button', { className: 'btn tiny', type: 'button', textContent: '📷 ' + t('ao.a.avatarTake'), onclick: () => avFile.click() }));
+    body.append(avHead, av, ph);
     phLoad([a.id]).then(async ps => {
+      const cur = ps.find(p => p.id === a.avatar_photo_id);
+      if (cur && cur.source === 'storage') { try { const u = await phUrl(cur.storage_path); av.append(el('a', { href: u, target: '_blank', rel: 'noopener' }, el('img', { src: u, alt: t('reg.avatar') })), el('small', { className: 'dim', textContent: `⭐ ${t('reg.avatar')} · ${t('ph.k.' + cur.kind)} · ${fmtDate(String(cur.taken_at).slice(0, 10))}` })); } catch {} }
       if (!ps.length) { ph.append(el('div', { className: 'dim', textContent: t('ao.a.noPhoto') })); return; }
-      for (const p of ps.slice(0, 12)) {
-        const box = el('a', { className: 'aophoto', target: '_blank', rel: 'noopener', title: `${p.kind} · ${p.taken_name || ''} · ${fmtDateTime(p.taken_at)}` });
-        if (p.source === 'link') { box.href = p.url; box.textContent = '🔗 ' + p.kind; }
-        else { try { const u = await phUrl(p.storage_path); box.href = u; box.append(el('img', { src: u, alt: p.kind })); } catch { box.textContent = p.kind; } }
-        ph.append(box);
+      for (const p of ps.slice(0, 16)) {
+        const box = el('a', { className: 'aophoto' + (p.id === a.avatar_photo_id ? ' isav' : ''), target: '_blank', rel: 'noopener', title: `${t('ph.k.' + p.kind)} · ${p.taken_name || ''} · ${fmtDateTime(p.taken_at)}` });
+        if (p.source === 'link') { box.href = p.url; box.textContent = '🔗 ' + t('ph.k.' + p.kind); }
+        else { try { const u = await phUrl(p.thumb_path || p.storage_path); box.href = u; box.append(el('img', { src: u, alt: p.kind }));
+                     if (p.thumb_path) phUrl(p.storage_path).then(full => { box.href = full; }).catch(() => {}); } catch { box.textContent = p.kind; } }
+        const cell = el('div', { className: 'aophotocell' }, [box]);
+        if (mayAv && p.source === 'storage' && p.id !== a.avatar_photo_id && 'avatar_photo_id' in a)
+          cell.append(el('button', { className: 'btn tiny', type: 'button', title: t('ao.a.avatarMake'), textContent: '⭐', onclick: async () => {
+            try { await SB.rpc('am_asset_set_avatar', { p_asset: a.id, p_photo: p.id }); msg(out, 'ok', t('ao.a.avatarSet')); aoAsset(a.id); } catch (e) { msg(out, 'err', e.message); } } }));
+        ph.append(cell);
       }
     }).catch(() => ph.append(el('div', { className: 'dim', textContent: t('ao.a.noPhoto') })));
     // Open incidents & transfers

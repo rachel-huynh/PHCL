@@ -1901,12 +1901,72 @@
   table.mtg td.st.ok{color:var(--green)} table.mtg td.st.err{color:var(--red)}
   @media (max-width:760px){ .mtev{grid-template-columns:1fr} .mtattrow,.mtactrow{grid-template-columns:1fr} .mtactrow.mthead{display:none} }
 
+  /* Contracts (contracts.js) */
+  .ctst{display:inline-block;background:var(--chip);color:var(--chip-ink)}
+  .ctst.s-review,.ctst.s-approved{background:var(--info-bg);color:var(--blue)}
+  .ctst.s-active,.ctst.s-completed{background:var(--ok-bg);color:var(--green)}
+  .ctst.s-draft,.ctst.s-returned{background:var(--warn-bg);color:var(--warn-ink)}
+  .ctst.s-rejected,.ctst.s-cancelled{background:var(--bad-bg);color:var(--red)}
+  .ctst.s-closed{background:var(--chip);color:var(--dim)}
+  .ctdue{display:inline-block;margin-left:6px;padding:0 7px;border-radius:999px;font:600 10.5px/1.6 var(--font);background:var(--warn-bg);color:var(--warn-ink);white-space:nowrap}
+  .ctdue.late{background:var(--bad-bg);color:var(--red)}
+  .ctfiles{margin-left:6px;font-size:11px;color:var(--dim)}
+  .ctsub{color:var(--dim);font-size:12.5px;margin:-2px 0 6px}
+  .ctgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+  .ctgrid > div > .card{margin-bottom:12px}
+  .ctpg{margin-left:6px;padding:0 6px;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--blue);font:600 10.5px/1.5 var(--font);cursor:pointer;text-transform:none;letter-spacing:0}
+  .ctpg:hover{border-color:var(--blue)}
+  .ctsrc,.ctpaid{margin-top:8px;font-size:12px}
+  .ctpaid{color:var(--ink)}
+  table.ctmini{font-size:12px} table.ctmini td,table.ctmini th{padding:4px 6px}
+  .ctfgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px 12px}
+  .ctfgrid .fld{min-width:0} .ctfgrid .fld.wide{grid-column:1 / -1}
+  .ctfgrid label{display:flex;align-items:center;gap:6px}
+  .ctpgin{width:44px !important;flex:none;margin-left:auto;padding:1px 4px;font-size:11px;text-align:center;text-transform:none}
+  .ctfgrid input[type=checkbox]{width:auto;justify-self:start}
+  .ctfound input,.ctfound select,.ctfound textarea{background:#fffbe6;border-color:#f0d49b}
+  .ctline{display:grid;grid-template-columns:minmax(0,1.2fr) 60px minmax(0,1fr) minmax(0,2fr) minmax(0,1fr) auto;gap:6px;margin:4px 0}
+  .ctdoc{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)} .ctdoc:first-of-type{border-top:0}
+  .ctdoc a{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ctaddfile{margin-top:8px;justify-content:flex-start !important}
+  .ctviewer{margin-top:10px}
+  .ctvbar{display:flex;align-items:center;gap:8px;margin-bottom:6px} .ctvbar b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ctframe{width:100%;height:calc(100vh - 260px);min-height:480px;border:1px solid var(--line);border-radius:8px;background:var(--head)}
+  .ctimg{max-width:100%;border:1px solid var(--line);border-radius:8px}
+  .ctthumbs{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;max-height:360px;overflow:auto}
+  .ctthumb{display:flex;flex-direction:column;align-items:center;gap:3px;text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer}
+  .ctthumb canvas{border:1px solid var(--line);border-radius:4px;display:block}
+  .ctthumb input{width:auto;margin:0}
+  .ctocr pre{white-space:pre-wrap;font:12px/1.4 var(--font);background:var(--head);border:1px solid var(--line);border-radius:6px;padding:6px 8px;max-height:240px;overflow:auto}
+  .ctact{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:8px;padding:8px 10px;margin-top:8px;background:#f6f9fd}
+  .ctpanelrow{padding:4px 0;font-size:12.5px}
+  @media (max-width:1100px){ .ctgrid{grid-template-columns:1fr} }
+
+  /* Asset avatar photos and stock-take photos (35_vendor_photo_count.sql) */
+  th.avcol,td.avcol{width:46px;padding:2px 4px;text-align:center}
+  img.regav{width:36px;height:36px;object-fit:cover;border-radius:6px;border:1px solid var(--line);background:var(--head);cursor:pointer;display:block;margin:0 auto}
+  img.regav:not([src]){visibility:hidden}
+  .aoavatar{display:flex;align-items:flex-end;gap:10px;margin:6px 0 8px}
+  .aoavatar img{max-width:220px;max-height:180px;border-radius:8px;border:2px solid var(--gold);object-fit:cover;display:block}
+  .aophotocell{display:flex;flex-direction:column;align-items:center;gap:3px}
+  .aophoto.isav{outline:2px solid var(--gold);outline-offset:1px}
+  .kkstwrap{max-height:360px;margin-top:8px}
+  table.kkst td{vertical-align:middle}
+  .kkbar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;min-width:120px;margin-bottom:2px}
+  .kkbar i{display:block;height:100%;background:var(--blue);border-radius:4px} .kkbar i.full{background:var(--green)}
+  .kklive{font-size:11px;color:var(--green);white-space:nowrap;margin-right:6px}
+  img.kkthumb{width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid var(--line);cursor:zoom-in;display:block;background:var(--head)}
+  img.kkthumb:not([src]){visibility:hidden}
+  .lccard.hasph > img.kkthumb{float:right;width:64px;height:64px;margin:0 0 6px 10px}
+  .lcphoto.on{border-color:var(--green);color:var(--green)}
+  .scav{align-self:center;white-space:nowrap}
+
   /* ============================================================ CONSISTENCY
      Last word, so the modules added later (liquidation, reconciliation, price
      reference, transfers / incidents / stock-take, workflows) read exactly
      like the first ones: one chip, one table, one KPI tile, one corner radius. */
   /* Status chips: one shape and size everywhere; colour comes from the tint tokens. */
-  .st,.stg,.aost,.prk,.lqbs,.lqis,.tdchip,.phprog,.virt,.accchip,.mtst{padding:1px 8px;border-radius:999px;
+  .st,.stg,.aost,.prk,.lqbs,.lqis,.tdchip,.phprog,.virt,.accchip,.mtst,.ctst{padding:1px 8px;border-radius:999px;
     font:600 11px/1.6 var(--font);letter-spacing:0;text-transform:none;white-space:nowrap}
   .prg,.prsrc{padding:0 7px;border-radius:999px;font:600 10.5px/1.6 var(--font);background:var(--chip);color:var(--chip-ink)}
   .prsrc.s-manual{background:var(--ok-bg);color:var(--green)} .prsrc.s-alias{background:var(--info-bg);color:var(--blue)}
@@ -1936,9 +1996,37 @@
   main h3,.drawer h3{font-size:12px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;margin:14px 0 6px}
   main .card > h3:first-child,.drawer .dbody > h3:first-child{margin-top:0}
   .role{font-size:11px} .kt{font-size:10.5px}
+  /* Demo / training mode (demo.js): a striped amber bar on every screen, the sign-in box included. */
+  .demobar{position:fixed;top:0;left:0;right:0;height:30px;z-index:70;display:flex;align-items:center;gap:12px;padding:0 16px;
+           font-size:12.5px;color:#3d2a00;overflow:hidden;white-space:nowrap;
+           background:repeating-linear-gradient(135deg,#f6c34a 0 14px,#f2b632 14px 28px);border-bottom:1px solid #c8961c}
+  .demobar[hidden],.fbbtn[hidden]{display:none}
+  .demobar b{letter-spacing:.06em} .demobar span{overflow:hidden;text-overflow:ellipsis}
+  .demobar .lnk{margin-left:auto;color:#3d2a00;font-weight:700;text-decoration:underline;flex:none}
+  .demobar.clash{background:var(--red);color:#fff;border-bottom-color:#8e2a20}
+  body.demo .shell,body.democlash .shell{height:calc(100vh - 30px);margin-top:30px}
+  body.demo .login,body.democlash .login{top:30px}
+  body.demo aside{box-shadow:inset -4px 0 0 #f2b632}
+  .fbbtn{position:fixed;right:18px;bottom:18px;z-index:45;border:none;border-radius:999px;padding:10px 16px;cursor:pointer;
+         background:var(--navy);color:#fff;font:600 13px/1 var(--font);box-shadow:0 4px 16px rgba(15,30,58,.28)}
+  .fbbtn:hover{filter:brightness(1.15)}
+  .dmfb textarea{width:100%;margin-top:10px;font:13px/1.45 var(--font);padding:8px 10px;border:1px solid var(--line);border-radius:6px;resize:vertical}
+  .dmkinds{margin-top:8px}
+  .dminv{width:100%;margin-top:8px;font:12px/1.45 Consolas,monospace;padding:8px 10px;border:1px solid var(--line);border-radius:6px}
+  .dmfbt td{vertical-align:top} .dmfbt .dmtxt{min-width:260px;max-width:460px;white-space:pre-wrap}
+  .dmfbt input{width:200px;font-size:12.5px;padding:4px 6px} .dmfbt select{font-size:12.5px;padding:3px 4px}
+  .dmfbt small{display:block;margin-top:3px;font-size:10.5px} .dmfbt .nowrap{white-space:nowrap}
+  .dmfbt tr.st-done td,.dmfbt tr.st-wontfix td{opacity:.6}
+  .dmk{display:inline-block;font:700 11px/1 var(--font);padding:4px 8px;border-radius:999px;background:var(--chip);color:var(--chip-ink)}
+  .dmk.k-bug{background:var(--bad-bg);color:var(--red)} .dmk.k-idea{background:var(--info-bg);color:var(--blue)}
+  .dmk.k-question{background:var(--warn-bg);color:var(--warn-ink)} .dmk.k-praise{background:var(--ok-bg);color:var(--green)}
+  @media print{.demobar,.fbbtn{display:none!important} body.demo .shell{margin-top:0;height:auto}}
 </style>
 </head>
 <body>
+<!-- Demo / training mode bar and the feedback button (demo.js). -->
+<div class="demobar" id="demoBar" hidden></div>
+<button class="fbbtn" id="fbBtn" type="button" hidden></button>
 <!-- Sign-in. Covers the whole app until there is a session. It is a <form> so
      Enter submits and the browser offers to remember the password. The same
      box doubles as "set a new password" — after the reset e-mail, or from the
@@ -2289,6 +2377,13 @@
       </div>
       <div id="snapOut"></div>
     </div>
+    <!-- Demo / training mode and user feedback (demo.js, 36_demo_mode.sql). -->
+    <div class="card" id="adDemoCard" hidden>
+      <h2 data-i18n="dm.h"></h2>
+      <div id="adDemoBox"></div>
+      <div id="adDemoMsg"></div>
+      <div id="adFbBox" style="margin-top:16px"></div>
+    </div>
     <div class="card" id="adResetCard">
       <h2 data-i18n="ad.reset.h"></h2>
       <div class="msg warn" data-i18n-html="ad.reset.warn_html"></div>
@@ -2551,6 +2646,19 @@
           </div>
           <div id="piDosOut"></div>
         </div>
+      </div>
+      <!-- Supplier list exported from the accounting software (contracts.js, 35_vendor_photo_count.sql) -->
+      <div class="card" id="vdCard">
+        <h2 data-i18n="vd.h"></h2>
+        <p data-i18n="vd.p"></p>
+        <div class="row" style="align-items:flex-end;flex-wrap:wrap">
+          <div class="fld grow" style="max-width:520px"><label data-i18n="pm.imp.file"></label>
+            <input type="file" id="vdFile" accept=".xlsx,.xls"></div>
+          <label class="chk" style="align-self:center"><input type="checkbox" id="vdDeact"><span data-i18n="vd.deact"></span></label>
+          <button class="btn" id="btnVdRead" data-i18n="pm.imp.read"></button>
+          <button class="btn pri" id="btnVdGo" disabled data-perm="project:edit" data-i18n="vd.go"></button>
+        </div>
+        <div id="vdOut"></div>
       </div>
       <div class="card" id="piPayCard">
         <h2 data-i18n="pay.imp.h"></h2>
@@ -2816,6 +2924,14 @@
       <div id="prBody"></div>
     </section>
 
+    <!-- Procurement contract register (contracts.js, 34_contracts.sql) -->
+    <section id="v-contracts">
+      <p class="lead" data-i18n="ct.lead"></p>
+      <div class="card"><div class="seg permtabs" id="ctTabs"></div></div>
+      <div id="ctMsg"></div>
+      <div id="ctBody"></div>
+    </section>
+
     <!-- Owner / operator project meetings (meetings.js, 33_meetings.sql) -->
     <section id="v-meetings">
       <p class="lead" data-i18n="mt.lead"></p>
@@ -2935,11 +3051,13 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260926q"></script>
-<script src="flows.js?v=20260926q"></script>
-<script src="app.js?v=20260926q"></script>
-<script src="assetops.js?v=20260926q"></script>
-<script src="pricedb.js?v=20260926q"></script>
-<script src="meetings.js?v=20260926q"></script>
+<script src="i18n.js?v=20260927b"></script>
+<script src="flows.js?v=20260927b"></script>
+<script src="app.js?v=20260927b"></script>
+<script src="assetops.js?v=20260927b"></script>
+<script src="pricedb.js?v=20260927b"></script>
+<script src="meetings.js?v=20260927b"></script>
+<script src="contracts.js?v=20260927b"></script>
+<script src="demo.js?v=20260927b"></script>
 </body>
 </html>

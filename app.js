@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260926q';
+const APP_VERSION = '20260927b';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -40,7 +40,7 @@ function colLabel(c) {
 const LS_KEY = 'asset-intake.sb';
 let CFG = { url: '', key: '' };
 /* Tablet / phone mode (tbDetect): declared up here because showView and firstView read it from the start. */
-const TB_VIEWS = ['pmdash', 'inbox', 'doc', 'lqcount', 'stockcount', 'meetings', 'flows', 'settings', 'setup'];
+const TB_VIEWS = ['pmdash', 'inbox', 'doc', 'lqcount', 'stockcount', 'meetings', 'contracts', 'flows', 'settings', 'setup'];
 const TB = { on: false, pages: [], i: 0, key: null, busy: false };
 
 function loadCfg() {
@@ -49,7 +49,11 @@ function loadCfg() {
     try {
       const o = JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(m[1])))));
       if (o.url && o.key) {
+        let prev = null;
+        try { prev = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch {}
         CFG = { url: String(o.url).replace(/\/+$/, ''), key: String(o.key) };
+        if (o.demo) CFG.demo = true;   // a demo / training link (demo.js)
+        dmOnLink(prev, CFG);
         localStorage.setItem(LS_KEY, JSON.stringify(CFG));
       }
     } catch (e) { console.warn('bad sbcfg', e); }
@@ -346,6 +350,7 @@ async function enterApp(resume = false) {
     return loginShow('in', t('auth.disabled'));
   }
   loginHide();
+  dmCheck();                       // demo project? feedback button? (demo.js)
   helpLoad();                      // this person's own choice
   wfBadgeStart();
   if (resume) { await testConn(true); return; }
@@ -439,6 +444,7 @@ const TABLES = {
   pm_vendor: {
     pk: 'code', order: 'name',
     cols: [T('code', { w: 120 }), T('name', { w: 320 }), T('tax_code', { w: 130 }), T('email', { w: 200 }),
+           T('phone', { w: 130 }), T('address', { w: 320 }),
            T('projects', { calc: r => VENDOR_PROJ.get(r.code) || '', w: 220 }),
            T('aliases', { w: 300 }), T('active', { type: 'bool' }), T('note', { w: 220 })]
   }
@@ -1890,6 +1896,7 @@ const NAV = [
     ['projects', 'nav.projects'],
     ['meetings', 'nav.meetings'],       // owner / operator project meetings (meetings.js, 33_meetings.sql)
     ['payments', 'nav.payments'],
+    ['contracts', 'nav.contracts'],     // procurement contract register (contracts.js, 34_contracts.sql)
     ['tbl:pm_vendor', null],
     ['price', 'nav.price'],             // price reference database (pricedb.js, 32_price_db.sql)
     ['chains', 'nav.chains']
@@ -1954,6 +1961,7 @@ function viewModule(v) {
   if (v === 'payments') return 'payment';
   if (v === 'price') return 'price';
   if (v === 'meetings') return 'meeting';
+  if (v === 'contracts') return 'contract';
   if (['sources', 'backup', 'tbl:am_setting'].includes(v)) return 'system';
   if (v === 'cat' || v.startsWith('tbl:')) return 'master';
   return null;
@@ -2345,6 +2353,7 @@ function showView(view) {
     if (['transfer', 'incident', 'stock', 'stockcount', 'amrep'].includes(view) && SB.ready() && window.aoShow) aoShow(view);
     if (view === 'price' && SB.ready() && window.prLoad) prLoad();
     if (view === 'meetings' && SB.ready() && window.mtLoad) mtLoad();
+    if (view === 'contracts' && SB.ready() && window.ctLoad) ctLoad();
     if (view === 'payments' && SB.ready()) payLoad();
     if (view === 'admin' && SB.ready()) adLoad();
   }
@@ -2378,6 +2387,7 @@ function switchLang(l) {
 
   setConn(CONN.ok, CONN.ok ? CONN.host : CONN.key || 'conn.none');   // sidebar text + Live pill
   applyHelp();
+  dmBar(); dmFbButton();                  // demo bar + feedback button: built text
   ntRender();                             // the bell's tooltip and notice texts are built text too
   renderAlrList();
   if (ALR.mode === 'doc') buildDoc();
@@ -2526,6 +2536,7 @@ function init() {
   initCur();
   const back = authFromHash();   // BEFORE loadCfg: both read the address-bar fragment
   loadCfg();
+  dmBar();
   authLoad();
   renderMe();
   showView('setup');
@@ -3456,8 +3467,29 @@ const REG_NUMERIC = new Set(['seq', 'purchase_year', 'qty', 'unit_price',
                              'depreciate_months']);
 
 /* Only real columns may be asked of PostgREST; a joined one expands to its parts. */
+/* The photo column: each asset's avatar as a thumbnail (35_vendor_photo_count.sql). The image is filled
+   in after the rows are drawn, from the small copy when there is one; a click opens the asset's panel. */
+function regAvImg(r) {
+  const img = el('img', { className: 'regav', alt: '', title: t('reg.avatarOpen'), onclick: () => { if (window.aoAsset) aoAsset(r.id); } });
+  img.dataset.photo = r.avatar_photo_id;
+  return img;
+}
+async function regAvatars() {
+  const imgs = [...document.querySelectorAll('#regGrid img.regav[data-photo]')];
+  const ids = [...new Set(imgs.map(i => i.dataset.photo))];
+  if (!ids.length) return;
+  try {
+    const ps = await SB.select('am_asset_photo', `select=id,storage_path,thumb_path,source,url&id=in.(${ids.join(',')})`);
+    for (const p of ps) {
+      if (p.source !== 'storage') continue;
+      let u; try { u = await phUrl(p.thumb_path || p.storage_path); } catch { continue; }
+      for (const i of imgs.filter(x => x.dataset.photo === String(p.id))) i.src = u;
+    }
+  } catch {}
+}
 function regSelect() {
   const real = new Set(['id']);
+  if (!REG.noAvatar) real.add('avatar_photo_id');            // photo column (35_vendor_photo_count.sql)
   for (const c of REG.cols) (REG_JOINED[c] || [c]).forEach(x => real.add(x));
   return [...real].join(',');
 }
@@ -3479,7 +3511,8 @@ async function regLoad(resetPage) {
     REG.total = Number(String(range || '').split('/')[1]) || REG.rows.length;
     msg(out, '', '');
     regRender();
-  } catch (e) { msg(out, 'err', e.message); }
+  } catch (e) { if (!REG.noAvatar && /avatar_photo_id/.test(String(e.message))) { REG.noAvatar = true; return regLoad(); }
+    msg(out, 'err', e.message); }
 }
 
 function regRender() {
@@ -3497,6 +3530,7 @@ function regRender() {
   };
   hr.append(el('th', { className: 'tickcol' }, all));
   hr.append(el('th', { className: 'num idx', textContent: '#' }));
+  if (!REG.noAvatar) hr.append(el('th', { className: 'avcol', title: t('reg.avatar'), textContent: '📷' }));
   for (const c of REG.cols) {
     // The header carries the same alignment as its cells, so a money column
     // reads as one right-ranged block instead of a left title over right digits.
@@ -3523,6 +3557,7 @@ function regRender() {
   over.onclick = () => { REG.colq = {}; regLoad(true); };
   fr.append(el('th', { className: 'tickcol' }));
   fr.append(el('th', { className: 'overcol' }, over));
+  if (!REG.noAvatar) fr.append(el('th', { className: 'avcol' }));
   for (const c of REG.cols) {
     const box = el('input', { value: REG.colq?.[c] ?? '', placeholder: t('reg.colqPh'),
                               spellcheck: false });
@@ -3557,6 +3592,7 @@ function regRender() {
     tr.append(el('td', { className: 'tickcol' }, cb));
     // Numbered across the whole filtered set, not restarted on every page.
     tr.append(el('td', { className: 'num idx', textContent: fmtInt(from + i + 1) }));
+    if (!REG.noAvatar) tr.append(el('td', { className: 'avcol' }, r.avatar_photo_id ? regAvImg(r) : ''));
     for (const c of REG.cols) {
       // The asset code opens the asset's panel: facts, photos, its whole life (assetops.js).
       if (c === 'asset_code' && window.aoAsset) {
@@ -3571,8 +3607,9 @@ function regRender() {
     body.append(tr);
   });
   if (!REG.rows.length)
-    body.append(el('tr', {}, el('td', { colSpan: (REG.cols.length || 1) + 2,
+    body.append(el('tr', {}, el('td', { colSpan: (REG.cols.length || 1) + (REG.noAvatar ? 2 : 3),
       style: 'color:var(--dim);padding:14px', textContent: t('reg.empty') })));
+  regAvatars();
   regBulkBar();
 
   /* Which rows of which total, and where in the run. With a filter on, the
@@ -7376,6 +7413,8 @@ async function ppDetail(p) {
   if (can('payment', 'view')) { try { await payProjectDetail(p.code, card, true); } catch {} }
   // What the project meetings said about it lately (33_meetings.sql).
   if (window.mtProjectPanel) { try { await mtProjectPanel(p, card); } catch {} }
+  // Its contracts (34_contracts.sql).
+  if (window.ctProjectPanel) { try { await ctProjectPanel(p, card); } catch {} }
 }
 
 /* The execution facts that change as the project moves. Phase 3 replaces most
@@ -8335,7 +8374,8 @@ function wfCanPrepare(type, dept) {
   return can(type === 'LR' ? 'liquidation' : 'project', 'create') && !!prep && wfHasRoleFor(prep.role_code, dept);
 }
 const wfRoleName = code => { const r = WF.roles.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
-const wfTypeName = code => { if (/^MT(-|$)/.test(String(code)) || code === 'MA') return t('mt.docName');   // project meeting (meetings.js)
+const wfTypeName = code => { if (/^HD(-|$)/.test(String(code))) return t('ct.docName');   // contract (contracts.js)
+  if (/^MT(-|$)/.test(String(code)) || code === 'MA') return t('mt.docName');   // project meeting (meetings.js)
   if (code === 'TF' || code === 'SC') return t(code === 'TF' ? 'ao.tf.docName' : 'ao.inc.docName');   // transfer slip / incident (assetops.js)
   const r = WF.types.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
 const wfChip = s => el('span', { className: 'st wf-' + s, textContent: t('wf.st.' + s) });
@@ -11005,7 +11045,7 @@ async function wfInboxLoad() {
   msg(out, 'info', t('table.loading'));
   try {
     await wfLookups();
-    WF.inbox = [...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => [])), ...(window.aoTodos ? await aoTodos().catch(() => []) : []), ...(window.mtTodos ? await mtTodos().catch(() => []) : [])];
+    WF.inbox = [...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => [])), ...(window.aoTodos ? await aoTodos().catch(() => []) : []), ...(window.mtTodos ? await mtTodos().catch(() => []) : []), ...(window.ctTodos ? await ctTodos().catch(() => []) : [])];
     WF.done = await wfDoneLoad().catch(() => []);
     msg(out, TB.flash ? 'ok' : '', TB.flash || ''); TB.flash = null;      // the result of a signature on a tablet
     wfInboxRender();
@@ -11056,8 +11096,8 @@ function wfInboxRender() {
   for (const r of rows) {
     const done = r.kind === 'done';
     const owners = wfPkgTypes(r.grp).filter(ty2 => wfSide(ty2) === 'owner').join('/');
-    const band = done ? 'ok' : ['returned', 'tfret'].includes(r.kind) ? 'bad' : ['prepare', 'photo', 'draft', 'tf', 'mtact'].includes(r.kind) ? 'op' : wfBand(r.role_code);
-    const what = r.kind === 'mtact' ? t('mt.i.act') : r.kind === 'tf' ? t('ao.tf.i.act') : r.kind === 'tfret' ? t('wf.i.returned') : done ? '✓ ' + (r.action === 'approve' && r.step_kind === 'check' ? t('wf.st.checked') : t('wf.a.' + r.action))
+    const band = done ? 'ok' : ['returned', 'tfret', 'ctret'].includes(r.kind) ? 'bad' : ['prepare', 'photo', 'draft', 'tf', 'mtact', 'ct'].includes(r.kind) ? 'op' : wfBand(r.role_code);
+    const what = r.kind === 'ct' ? t('ct.i.act') : r.kind === 'ctret' ? t('wf.i.returned') : r.kind === 'mtact' ? t('mt.i.act') : r.kind === 'tf' ? t('ao.tf.i.act') : r.kind === 'tfret' ? t('wf.i.returned') : done ? '✓ ' + (r.action === 'approve' && r.step_kind === 'check' ? t('wf.st.checked') : t('wf.a.' + r.action))
       : r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'draft' ? t('lq.i.draft') : r.kind === 'prepare' ? t('wf.i.prepare', { t: r.doc_type }) : r.kind === 'returned' ? t('wf.i.returned')
       : r.owner_prep ? t(r.returned_to === 'am' ? 'wf.i.redoOwner' : 'wf.i.checkPrep', { t: owners })
       : t(r.step_kind === 'check' ? 'wf.i.check' : 'wf.i.approve');
@@ -11076,7 +11116,7 @@ function wfInboxRender() {
       el('td', { className: 'num', textContent: r.total_value != null ? fmtMoney(r.total_value) : '' }),
       el('td', { textContent: when ? fmtDate(String(when).slice(0, 10)) : '' }),
       el('td', { textContent: r.role_code ? `${r.step} · ${wfRoleName(r.role_code)}` : '' })]);
-    tr.onclick = () => { if (r.kind === 'mtact' && window.mtOpenActions) mtOpenActions(); else if (r.tf_id) aoOpenTransfer(r.tf_id); else if (r.doc_id) wfOpen(r.doc_id); };
+    tr.onclick = () => { if (r.ct_id && window.ctOpen) ctOpen(r.ct_id); else if (r.kind === 'mtact' && window.mtOpenActions) mtOpenActions(); else if (r.tf_id) aoOpenTransfer(r.tf_id); else if (r.doc_id) wfOpen(r.doc_id); };
     body.append(tr);
   }
   if (TB.on) tbInboxCards(rows);
@@ -11089,7 +11129,7 @@ const wfInboxCount = rows => TB.on ? rows.filter(r => r.kind !== 'prepare').leng
 async function wfBadge(n) {
   ntLoad();                            // the bell moves whenever the inbox does
   if (n == null) { try { await wfLookups(); } catch {}   // types name the package's owner documents
-                   try { n = wfInboxCount([...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => [])), ...(window.aoTodos ? await aoTodos().catch(() => []) : []), ...(window.mtTodos ? await mtTodos().catch(() => []) : [])]); } catch { return; } }
+                   try { n = wfInboxCount([...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => [])), ...(window.aoTodos ? await aoTodos().catch(() => []) : []), ...(window.mtTodos ? await mtTodos().catch(() => []) : []), ...(window.ctTodos ? await ctTodos().catch(() => []) : [])]); } catch { return; } }
   WF.badgeN = n;                       // buildNav() redraws the menu and re-adds it from here
   if (TB.on) { await lcCheck(); if (window.scCheck) await scCheck(); }          // the tablet bar offers the count while a batch waits for it
   tbBarRender();
@@ -11331,6 +11371,7 @@ async function ntOpen(r) {
   else if (r.doc_type === 'TF' && window.AO) { AO.tf.tab = 'all'; AO.tf.open = null; AO.tf.q = r.doc_no || ''; showView('transfer'); }
   else if (r.doc_type === 'SC' && window.AO) { AO.inc.tab = 'all'; AO.inc.open = null; AO.inc.q = r.doc_no || ''; showView('incident'); }
   // Project meetings (meetings.js): the minutes, or my actions.
+  else if (r.doc_type === 'HD' && window.ctOpenNo) ctOpenNo(r.doc_no);     // contracts (contracts.js)
   else if (r.doc_type === 'MT' && window.mtOpenNo) mtOpenNo(r.doc_no);
   else if (r.doc_type === 'MA' && window.mtOpenActions) mtOpenActions();
   else if (r.doc_id) wfOpen(r.doc_id);
@@ -11646,6 +11687,7 @@ function adLoad() {
   box.append(el('div', { className: 'wrap' }, tb));
   adSync();
   adSettings();
+  dmCard();
   wfLookups().catch(() => {}).then(adEditors);   // role names come with the lookups
 }
 
@@ -11712,7 +11754,9 @@ async function adSettings() {
     const tb = el('table', { className: 'adtbl' });
     tb.append(el('tr', {}, [el('th', { textContent: t('ad.set.key') }), el('th', { textContent: t('ad.set.value') }), el('th', { textContent: t('ad.set.note') })]));
     for (const r of rows) {
-      const i = el('input', { value: adValText(r.value), disabled: !edit, style: 'width:180px' });
+      if (r.key === 'demo_cfg') continue;   // set in the Demo / training card (demo.js)
+      // app_mode is written only by sql/demo/DEMO_SETUP.sql.
+      const i = el('input', { value: adValText(r.value), disabled: !edit || r.key === 'app_mode', style: 'width:180px' });
       i.dataset.key = r.key; i.dataset.was = adValText(r.value);
       tb.append(el('tr', {}, [el('td', {}, el('code', { textContent: r.key })), el('td', {}, i), el('td', { className: 'dim', textContent: r.note || '' })]));
     }
@@ -13046,31 +13090,57 @@ async function phUrl(path) {
   PH.urls.set(path, u);
   return u;
 }
-// A camera photo is 3–12 MB: shrink to 1600 px on the long side, JPEG 0.82 (~300–600 KB).
-function phShrink(file) {
+/* Photo size: adjustable in Settings (am_setting photo_max_px / photo_quality / photo_thumb_px,
+   35_vendor_photo_count.sql). A camera photo is 3–12 MB: shrunk to 1600 px JPEG 0.82 (~300–600 KB)
+   by default, plus a ~240 px thumbnail (~10 KB) for the register. */
+async function phCfg() {
+  if (PH.cfg) return PH.cfg;
+  PH.cfg = { max: 1600, q: 0.82, thumb: 240 };
+  try {
+    for (const r of await SB.select('am_setting', 'select=key,value&key=in.(photo_max_px,photo_quality,photo_thumb_px)')) {
+      const v = Number(r.value);
+      if (r.key === 'photo_max_px' && v >= 600 && v <= 4000) PH.cfg.max = v;
+      if (r.key === 'photo_quality' && v >= 0.4 && v <= 0.98) PH.cfg.q = v;
+      if (r.key === 'photo_thumb_px' && v >= 80 && v <= 800) PH.cfg.thumb = v;
+    }
+  } catch {}
+  return PH.cfg;
+}
+function phShrink(file, maxPx, quality) {
   return new Promise((ok, no) => {
     const img = new Image(), u = URL.createObjectURL(file);
-    img.onload = () => {
-      const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+    img.onload = async () => {
+      const cfg = await phCfg();
+      const k = Math.min(1, (maxPx || cfg.max) / Math.max(img.width, img.height));
       const c = document.createElement('canvas');
       c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
       c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
       URL.revokeObjectURL(u);
-      c.toBlob(b => b ? ok(b) : no(new Error('image')), 'image/jpeg', 0.82);
+      c.toBlob(b => b ? ok(b) : no(new Error('image')), 'image/jpeg', quality || cfg.q);
     };
     img.onerror = () => { URL.revokeObjectURL(u); no(new Error(t('ph.badImage'))); };
     img.src = u;
   });
 }
-async function phUpload(asset, kind, file, docId) {
-  const blob = await phShrink(file);
-  const path = `${asset.id}/${kind}-${Date.now()}.jpg`;
+async function phPut(path, blob) {
   const tok = await authToken();
   const r = await fetch(`${CFG.url}/storage/v1/object/am-photo/${path}`, { method: 'POST',
     headers: { apikey: CFG.key, Authorization: 'Bearer ' + tok, 'Content-Type': 'image/jpeg', 'x-upsert': 'false' }, body: blob });
   if (!r.ok) { let m = r.statusText; try { m = (await r.json()).message || m; } catch {} throw new Error(m); }
-  await SB.insert('am_asset_photo', [{ asset_id: asset.id, kind, source: 'storage', storage_path: path, pm_doc_id: docId || null,
-                                       taken_name: (ME && (ME.full_name || ME.email)) || null }]);
+}
+// Store a photo of an asset (photo + thumbnail) and return its row. extra: {count_line_id, ...}.
+async function phUpload(asset, kind, file, docId, extra) {
+  const cfg = await phCfg();
+  const [blob, small] = await Promise.all([phShrink(file), phShrink(file, cfg.thumb, 0.72)]);
+  const stamp = Date.now(), path = `${asset.id}/${kind}-${stamp}.jpg`, thumb = `${asset.id}/t-${kind}-${stamp}.jpg`;
+  await phPut(path, blob);
+  let tp = thumb;
+  try { await phPut(thumb, small); } catch { tp = null; }
+  const row = Object.assign({ asset_id: asset.id, kind, source: 'storage', storage_path: path, pm_doc_id: docId || null,
+                              taken_name: (ME && (ME.full_name || ME.email)) || null }, tp ? { thumb_path: tp } : {}, extra || {});
+  // Before 35_vendor_photo_count.sql the thumbnail column does not exist yet: store without it.
+  try { return (await SB.insert('am_asset_photo', [row]))[0]; }
+  catch (e) { if (!/thumb_path|count_line_id/.test(String(e.message))) throw e; delete row.thumb_path; delete row.count_line_id; return (await SB.insert('am_asset_photo', [row]))[0]; }
 }
 async function phAddLink(asset, kind, url, docId) {
   if (!/^https:\/\//i.test(url || '')) throw new Error(t('ph.badLink'));
