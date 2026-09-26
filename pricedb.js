@@ -20,10 +20,32 @@
    sees reference prices without supplier names — the database leaves them out.
    Loaded after app.js and uses its helpers. */
 
-const PR = { tab: 'search', q: '', f: { kinds: [], year_from: '', goods_only: true, won_only: false, unit: '' }, rows: [], sel: new Set(),
+const PR = { tab: 'search', q: '', f: { kinds: [], year_from: '', goods_only: true, won_only: false, unit: '', grp: '', term_id: null }, rows: [], sel: new Set(), terms: null,
+             std: { tab: 'none', q: '', sel: new Set(), term: '', lines: null },
              chat: [], sources: [], srcQ: '', srcKind: '', open: null, draft: null, drafts: [], ov: null };
 const PR_KINDS = ['legacy', 'quote', 'market', 'qc', 'mc_hist', 'mc_market', 'po', 'tender', 'intake'];
 const PR_RATE = 0.046;
+// Price groups of the standard-name vocabulary (pr_term.grp).
+const PR_GROUPS = ['HVAC', 'PLB', 'ELE', 'ICT', 'KIT', 'DOR', 'FIN', 'SAN', 'FUR', 'FPS', 'SRV', 'OTH'];
+const prGrpChip = g => g ? el('span', { className: 'prg g-' + g, textContent: t('pr.g.' + g) }) : '';
+// The vocabulary, once per page; a datalist of "VI/EN" names for the pickers.
+async function prTerms(force) {
+  if (PR.terms && !force) return PR.terms;
+  PR.terms = await SB.select('pr_term', 'select=*&order=sort').catch(() => []);
+  let dl = document.getElementById('prTermList');
+  if (!dl) { dl = el('datalist', { id: 'prTermList' }); document.body.append(dl); }
+  dl.innerHTML = '';
+  for (const x of PR.terms.filter(x => x.active)) dl.append(el('option', { value: `${x.std_vi}/${x.std_en}`, label: t('pr.g.' + x.grp) }));
+  return PR.terms;
+}
+// A standard-name picker: the vocabulary as suggestions, any new name allowed.
+function prStdPicker(label, onPick, disabled) {
+  const i = el('input', { placeholder: t('pr.stdPh'), spellcheck: false, className: 'prstdin', disabled: !!disabled });
+  i.setAttribute('list', 'prTermList');
+  const b = el('button', { className: 'btn tiny pri', type: 'button', textContent: label, disabled: !!disabled, onclick: () => { const v = i.value.trim(); if (v) onPick(v); } });
+  i.onkeydown = e => { if (e.key === 'Enter' && i.value.trim()) onPick(i.value.trim()); };
+  return el('span', { className: 'prstdpick' }, [i, b]);
+}
 const prFull = () => can('price', 'create');
 const prEdit = () => can('price', 'edit');
 const prMissing = e => /pr_search|pr_source|pr_overview|pr_sync|pr_line|PGRST20[25]|does not exist|404/.test(String(e && e.message));
@@ -59,6 +81,7 @@ async function prLoad() {
   try {
     await pmLookups();
     PR.ov = await SB.rpc('pr_overview');
+    await prTerms();
     msg(out, PR.flash ? 'ok' : '', PR.flash || ''); PR.flash = null;
     if (PR.tab === 'sources' && prFull()) await prLoadSources();
     prRender();
@@ -69,13 +92,13 @@ function prRender() {
   const tabs = $('#prTabs'), body = $('#prBody');
   if (!tabs) return;
   const list = [['search', t('pr.t.search')], ['chat', t('pr.t.chat')]];
-  if (prFull()) list.push(['sources', t('pr.t.sources')], ['import', t('pr.t.import')]);
+  if (prFull()) list.push(['std', t('pr.t.std')], ['sources', t('pr.t.sources')], ['import', t('pr.t.import')]);
   if (!list.some(x => x[0] === PR.tab)) PR.tab = 'search';
   tabs.innerHTML = '';
   for (const [v, label] of list) {
     const b = el('button', { type: 'button', textContent: label });
     b.classList.toggle('on', PR.tab === v);
-    b.onclick = async () => { PR.tab = v; if (v === 'sources') await prLoadSources().catch(e => prErr('#prMsg', e)); prRender(); };
+    b.onclick = async () => { PR.tab = v; if (v === 'std') PR.std.lines = null; if (v === 'sources') await prLoadSources().catch(e => prErr('#prMsg', e)); prRender(); };
     tabs.append(b);
   }
   body.innerHTML = '';
@@ -83,6 +106,7 @@ function prRender() {
   if (PR.tab === 'chat') return prChatTab(body);
   if (PR.tab === 'sources') return prSourcesTab(body);
   if (PR.tab === 'import') return prImportTab(body);
+  if (PR.tab === 'std') return prStdTab(body);
 }
 
 /* ------------------------------------------------------------ search & compare */
@@ -97,11 +121,14 @@ function prSearchTab(body) {
   yr.onchange = () => { PR.f.year_from = yr.value; run(); };
   const goods = el('input', { type: 'checkbox', checked: PR.f.goods_only }); goods.onchange = () => { PR.f.goods_only = goods.checked; run(); };
   const won = el('input', { type: 'checkbox', checked: PR.f.won_only }); won.onchange = () => { PR.f.won_only = won.checked; run(); };
+  const grp = el('select'); selFill(grp, [['', t('pr.allGroups')], ...PR_GROUPS.map(g => [g, t('pr.g.' + g)])]); grp.value = PR.f.grp || '';
+  grp.onchange = () => { PR.f.grp = grp.value; run(); };
   body.append(el('div', { className: 'card' }, [
     el('div', { className: 'row', style: 'gap:10px;align-items:flex-end;flex-wrap:wrap' }, [
       el('div', { className: 'fld', style: 'flex:1;min-width:260px' }, [el('label', { textContent: t('pr.q') }), q]),
       el('button', { className: 'btn pri', type: 'button', textContent: t('pr.find'), onclick: run }),
       el('div', { className: 'fld', style: 'max-width:170px' }, [el('label', { textContent: t('pr.year') }), yr]),
+      el('div', { className: 'fld', style: 'max-width:220px' }, [el('label', { textContent: t('pr.group') }), grp]),
       el('label', { className: 'chk' }, [goods, el('span', { textContent: t('pr.goodsOnly') })]),
       el('label', { className: 'chk' }, [won, el('span', { textContent: t('pr.wonOnly') })])]),
     kinds, el('div', { className: 'tdnote', textContent: t(prFull() ? 'pr.searchHint' : 'pr.searchHintView') })]));
@@ -124,6 +151,13 @@ function prResults(box) {
   box.innerHTML = '';
   const rows = PR.rows;
   if (!rows.length) { box.append(el('div', { className: 'card dim', textContent: t('pr.none', { q: PR.q }) })); return; }
+  // The standard names in the result: click one to compare like with like.
+  const byStd = new Map();
+  for (const r of rows) { const k = r.term_id || r.name_std || ''; if (!k) continue; const o = byStd.get(k) || { n: 0, name: r.name_std, term: r.term_id }; o.n++; byStd.set(k, o); }
+  if (byStd.size > 1 || PR.f.term_id) box.append(el('div', { className: 'card prstdbar' }, [el('b', { textContent: t('pr.byStd') }),
+    ...[...byStd.values()].sort((a, b) => b.n - a.n).slice(0, 12).map(o => el('button', { type: 'button', className: 'btn tiny' + (PR.f.term_id && PR.f.term_id === o.term ? ' on' : ''),
+      textContent: `${o.name} (${o.n})`, disabled: !o.term, onclick: () => { PR.f.term_id = PR.f.term_id === o.term ? null : o.term; prRun(); } })),
+    PR.f.term_id ? el('button', { type: 'button', className: 'btn tiny', textContent: '✕ ' + t('pr.clearStd'), onclick: () => { PR.f.term_id = null; prRun(); } }) : '']));
   const st = prStats(rows);
   box.append(el('div', { className: 'prstats' }, st.slice(0, 4).map(s => el('div', { className: 'aokpi' }, [
     el('small', { textContent: t('pr.statUnit', { u: s.unit, n: fmtInt(s.n) }) }),
@@ -134,7 +168,7 @@ function prResults(box) {
   const full = prFull(), edit = prEdit();
   const tools = [el('span', { className: 'dim', textContent: t('pr.found', { n: fmtInt(rows.length) }) }), el('span', { style: 'flex:1' }),
     el('button', { className: 'btn tiny', type: 'button', textContent: t('lq.xlsx'), onclick: () => prXlsx(rows) })];
-  if (edit) tools.push(el('button', { className: 'btn tiny', type: 'button', textContent: t('pr.setStd', { n: PR.sel.size }), disabled: !PR.sel.size, onclick: prSetStd }));
+  if (edit) tools.push(el('span', { className: 'dim', textContent: t('pr.setStd', { n: PR.sel.size }) }), prStdPicker(t('pr.assign'), v => prSetStd(v), !PR.sel.size));
   const cols = [...(edit ? [''] : []), 'pr.c.date', 'pr.c.kind', 'pr.c.item', 'pr.c.brand', 'pr.c.qty', 'pr.c.price', 'pr.c.labor', 'pr.c.net', 'pr.c.today',
                 ...(full ? ['pr.c.supplier'] : []), 'pr.c.project', ...(full ? ['pr.c.file'] : [])];
   const num = new Set(['pr.c.qty', 'pr.c.price', 'pr.c.labor', 'pr.c.net', 'pr.c.today']);
@@ -146,7 +180,8 @@ function prResults(box) {
     tb.append(el('tr', { className: r.won ? 'prwon' : '' }, [
       ...(edit ? [el('td', {}, cb)] : []),
       el('td', { className: r.date ? '' : 'dim', textContent: prDate(r.date) }), el('td', {}, prKindChip(r.kind)),
-      el('td', { className: 'aowrap' }, [el('b', { textContent: r.name_std || r.name }), r.name_std && r.name_std !== r.name ? el('div', { className: 'dim', textContent: r.name }) : '',
+      el('td', { className: 'aowrap' }, [el('b', { textContent: r.name_std || r.name }), r.variant ? el('span', { className: 'prvar', textContent: r.variant }) : '', prGrpChip(r.grp),
+        r.name_std && r.name_std !== r.name ? el('div', { className: 'dim', textContent: r.name }) : '',
         r.section ? el('div', { className: 'dim', textContent: '↳ ' + r.section }) : '', r.note ? el('div', { className: 'dim', textContent: r.note }) : '']),
       el('td', { textContent: [r.brand, r.model, r.origin].filter(Boolean).join(' · ') }),
       el('td', { className: 'num', textContent: r.qty != null ? `${fmtNum(r.qty)} ${r.unit || r.unit_raw || ''}` : (r.unit || '') }),
@@ -183,11 +218,9 @@ function prChart(rows, unit) {
   }
   return svg;
 }
-async function prSetStd() {
+async function prSetStd(name) {
   const ids = [...PR.sel];
-  const first = PR.rows.find(r => r.id === ids[0]) || {};
-  const name = prompt(t('pr.stdQ', { n: ids.length }), first.name_std || first.name || '');
-  if (name == null) return;
+  if (!ids.length || !name) return;
   try { await SB.rpc('pr_set_std', { p_lines: ids, p_std: name, p_category: null }); PR.flash = t('pr.stdDone'); await prRun(); msg('#prMsg', 'ok', PR.flash); PR.flash = null; }
   catch (e) { prErr('#prMsg', e); }
 }
@@ -668,6 +701,166 @@ async function prMcFill(panel) {
     panel.append(el('div', { className: 'prmcline' }, [el('b', { textContent: `${l.item} · ${fmtNum(l.qty)} ` }),
       rows.some(r => r.price_vnd != null) ? el('div', { className: 'wrap' }, tb) : el('div', { className: 'dim', textContent: t('pr.mc.none') })]));
   }
+}
+
+/* ------------------------------------------------------------ standard names (AM team)
+   Every price line gets a standard name "VI/EN" from the vocabulary (pr_term):
+   the earliest keyword in its name, after the verbs at the start ("cung cấp và
+   lắp đặt", "thay"…); a line that is only specs takes its heading's. Measured on
+   the old workbook: 96.8% of 2,554 lines named. Here the AM team names what is
+   left, checks what the rules did, and keeps the vocabulary. A name given by
+   hand is remembered for every line with the same original name, now and later. */
+const PR_SRC = ['rule', 'alias', 'manual', 'none'];
+async function prStdLoad(force) {
+  if (PR.std.lines && !force) return;
+  await prTerms(true);
+  PR.std.lines = await pmSelectAll('pr_line', 'select=id,source_id,name_raw,name_std,term_id,std_src,grp,line_kind,section,variant&order=id');
+}
+function prStdTab(body) {
+  const S = PR.std, out = el('div');
+  if (!S.lines) { body.append(el('div', { className: 'card dim', textContent: t('table.loading') })); prStdLoad().then(() => prRender()).catch(e => prErr('#prMsg', e)); return; }
+  const L = S.lines, cmp = L.filter(l => l.line_kind !== 'other');
+  const by = k => cmp.filter(l => (l.std_src || 'none') === k).length;
+  const named = cmp.filter(l => l.name_std).length;
+  const edit = prEdit();
+  const rerun = el('button', { className: 'btn', type: 'button', textContent: t('pr.std.rerun'), disabled: !edit, onclick: async () => {
+    if (!confirm(t('pr.std.rerunQ'))) return;
+    rerun.disabled = true;
+    try {
+      let r = await SB.rpc('pr_std_run', { p_reset: true, p_limit: 800 });
+      while (r.left > 0) { msg(out, 'info', t('pr.std.running', { n: fmtInt(r.left) })); r = await SB.rpc('pr_std_run', { p_reset: false, p_limit: 800 }); }
+      await prStdLoad(true); PR.flash = t('pr.std.rerunDone'); msg('#prMsg', 'ok', PR.flash); PR.flash = null; prRender();
+    } catch (e) { prErr(out, e); rerun.disabled = false; } } });
+  body.append(el('div', { className: 'card' }, [
+    el('div', { className: 'prstats' }, [
+      el('div', { className: 'aokpi' }, [el('small', { textContent: t('pr.std.named') }), el('b', { textContent: cmp.length ? Math.round(named / cmp.length * 1000) / 10 + '%' : '—' }),
+        el('span', { textContent: t('pr.std.namedOf', { n: fmtInt(named), of: fmtInt(cmp.length) }) })]),
+      ...PR_SRC.map(k => el('div', { className: 'aokpi' + (k === 'none' && by(k) ? ' warn' : '') }, [el('small', { textContent: t('pr.std.src.' + k) }), el('b', { textContent: fmtInt(by(k)) })]))]),
+    el('div', { className: 'tdnote', textContent: t('pr.std.hint') }), out,
+    el('div', { className: 'row', style: 'gap:8px;flex-wrap:wrap' }, [rerun])]));
+  const tabs = el('div', { className: 'seg permtabs' });
+  aoTabs(tabs, [['none', t('pr.std.t.none'), by('none')], ['review', t('pr.std.t.review'), null], ['vocab', t('pr.std.t.vocab'), (PR.terms || []).length]], S.tab,
+    v => { S.tab = v; S.sel.clear(); prRender(); });
+  body.append(el('div', { className: 'card' }, tabs));
+  if (S.tab === 'none') return prStdNone(body, cmp.filter(l => (l.std_src || 'none') === 'none'), edit);
+  if (S.tab === 'review') return prStdReview(body, cmp, edit);
+  return prStdVocab(body, edit);
+}
+// Lines of the same original name, together: one row per name.
+function prStdGroups(lines) {
+  const m = new Map();
+  for (const l of lines) { const k = prNorm(l.name_raw); const o = m.get(k) || { name: l.name_raw, ids: [], section: l.section, src: new Set(), std: l.name_std }; o.ids.push(l.id); o.src.add(l.std_src || 'none'); m.set(k, o); }
+  return [...m.values()].sort((a, b) => b.ids.length - a.ids.length || a.name.localeCompare(b.name));
+}
+function prStdTable(groups, box, edit) {
+  const S = PR.std, qq = prNorm(S.q);
+  const rows = groups.filter(g => !qq || prNorm(`${g.name} ${g.section || ''} ${g.std || ''}`).includes(qq));
+  const all = el('input', { type: 'checkbox', checked: rows.length > 0 && rows.every(g => g.ids.every(i => S.sel.has(i))) });
+  all.onchange = () => { for (const g of rows.slice(0, 500)) for (const i of g.ids) all.checked ? S.sel.add(i) : S.sel.delete(i); prRender(); };
+  const tb = el('table', { className: 'lqbt' }, [el('tr', {}, [el('th', {}, edit ? all : ''), ...['pr.std.c.name', 'pr.std.c.n', 'pr.std.c.std', 'pr.c.section'].map(k => el('th', { textContent: t(k) }))])]);
+  for (const g of rows.slice(0, 500)) {
+    const cb = el('input', { type: 'checkbox', checked: g.ids.every(i => S.sel.has(i)) });
+    cb.onchange = () => { for (const i of g.ids) cb.checked ? S.sel.add(i) : S.sel.delete(i); prRender(); };
+    tb.append(el('tr', {}, [el('td', {}, edit ? cb : ''), el('td', { className: 'aowrap', textContent: g.name }), el('td', { className: 'num', textContent: fmtInt(g.ids.length) }),
+      el('td', {}, [document.createTextNode(g.std || '—'), ...[...g.src].filter(x => x !== 'none').map(x => el('span', { className: 'prsrc s-' + x, textContent: t('pr.std.src.' + x) }))]),
+      el('td', { className: 'aowrap dim', textContent: g.section || '' })]));
+  }
+  if (rows.length > 500) tb.append(el('tr', {}, el('td', { colSpan: 5, className: 'dim', textContent: t('acc.more', { n: fmtInt(rows.length - 500) }) })));
+  if (!rows.length) tb.append(el('tr', {}, el('td', { colSpan: 5, className: 'dim', style: 'padding:12px', textContent: t('lq.none') })));
+  box.append(el('div', { className: 'wrap' }, tb));
+}
+async function prStdAssign(name, out) {
+  const ids = [...PR.std.sel];
+  if (!ids.length) return;
+  try {
+    await SB.rpc('pr_set_std', { p_lines: ids, p_std: name === '' ? null : name, p_category: null });
+    PR.std.sel.clear(); await prStdLoad(true);
+    PR.flash = name === '' ? t('pr.std.cleared') : t('pr.std.assigned', { n: fmtInt(ids.length), s: name }); msg('#prMsg', 'ok', PR.flash); PR.flash = null; prRender();
+  } catch (e) { prErr(out, e); }
+}
+function prStdTools(box, edit, extra) {
+  const S = PR.std, out = el('div');
+  const q = el('input', { placeholder: t('pm.f.search'), value: S.q, spellcheck: false });
+  q.oninput = () => { S.q = q.value; clearTimeout(S.qt); S.qt = setTimeout(prRender, 250); };
+  box.append(el('div', { className: 'row', style: 'gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px' }, [
+    el('div', { style: 'max-width:280px;flex:1' }, q), ...(extra || []), el('span', { style: 'flex:1' }),
+    edit ? el('span', { className: 'dim', textContent: t('pr.std.ticked', { n: fmtInt(S.sel.size) }) }) : '',
+    edit ? prStdPicker(t('pr.assign'), v => prStdAssign(v, out), !S.sel.size) : '']), out);
+  return out;
+}
+function prStdNone(body, lines, edit) {
+  const card = el('div', { className: 'card' }, [el('h3', { textContent: t('pr.std.noneH') }), el('div', { className: 'tdnote', textContent: t('pr.std.noneHint') })]);
+  const out = prStdTools(card, edit, [el('button', { className: 'btn tiny', type: 'button', textContent: t('pr.std.ai'), onclick: () => prStdAi(card, lines) })]);
+  prStdTable(prStdGroups(lines), card, edit);
+  body.append(card);
+}
+function prStdReview(body, lines, edit) {
+  const S = PR.std;
+  const counts = new Map();
+  for (const l of lines) if (l.term_id) counts.set(l.term_id, (counts.get(l.term_id) || 0) + 1);
+  const sel = el('select');
+  selFill(sel, [['', t('pr.std.pickTerm')], ...(PR.terms || []).filter(x => counts.has(x.id)).sort((a, b) => a.std_vi.localeCompare(b.std_vi))
+    .map(x => [String(x.id), `${x.std_vi}/${x.std_en} (${counts.get(x.id)})`])]);
+  sel.value = S.term || '';
+  sel.onchange = () => { S.term = sel.value; S.sel.clear(); prRender(); };
+  const card = el('div', { className: 'card' }, [el('h3', { textContent: t('pr.std.reviewH') }), el('div', { className: 'tdnote', textContent: t('pr.std.reviewHint') })]);
+  const out = prStdTools(card, edit, [sel, edit && S.sel.size ? el('button', { className: 'btn tiny', type: 'button', textContent: t('pr.std.unset'), onclick: () => prStdAssign('', out) }) : '']);
+  if (S.term) prStdTable(prStdGroups(lines.filter(l => String(l.term_id) === String(S.term))), card, edit);
+  body.append(card);
+}
+function prStdVocab(body, edit) {
+  const S = PR.std, out = el('div');
+  const counts = new Map();
+  for (const l of S.lines || []) if (l.term_id) counts.set(l.term_id, (counts.get(l.term_id) || 0) + 1);
+  const q = el('input', { placeholder: t('pm.f.search'), value: S.q, spellcheck: false });
+  q.oninput = () => { S.q = q.value; clearTimeout(S.qt); S.qt = setTimeout(prRender, 250); };
+  const gsel = el('select'); selFill(gsel, [['', t('pr.allGroups')], ...PR_GROUPS.map(g => [g, t('pr.g.' + g)])]); gsel.value = S.grp || '';
+  gsel.onchange = () => { S.grp = gsel.value; prRender(); };
+  const qq = prNorm(S.q);
+  const rows = (PR.terms || []).filter(x => (!S.grp || x.grp === S.grp) && (!qq || prNorm(`${x.std_vi} ${x.std_en} ${(x.patterns || []).join(' ')}`).includes(qq)));
+  const kinds = ['goods', 'service', 'other', 'heading'];
+  const line = x => {
+    const vi = el('input', { value: x.std_vi || '', disabled: !edit }), en = el('input', { value: x.std_en || '', disabled: !edit });
+    const g = el('select', { disabled: !edit }); selFill(g, PR_GROUPS.map(c => [c, t('pr.g.' + c)])); g.value = x.grp || 'OTH';
+    const k = el('select', { disabled: !edit }); selFill(k, kinds.map(c => [c, t('pr.kind.' + c)])); k.value = x.kind || 'goods';
+    const kw = el('textarea', { rows: 1, value: (x.patterns || []).join('; '), disabled: !edit, className: 'prkw' });
+    const act = el('input', { type: 'checkbox', checked: x.active !== false, disabled: !edit });
+    const save = el('button', { className: 'btn tiny pri', type: 'button', textContent: t('ao.save'), disabled: !edit, onclick: async () => {
+      try { await SB.rpc('pr_term_save', { p: { id: x.id || null, std_vi: vi.value, std_en: en.value, grp: g.value, kind: k.value, patterns: kw.value, active: act.checked } });
+            await prTerms(true); PR.flash = t('pr.std.termSaved'); msg('#prMsg', 'ok', PR.flash); PR.flash = null; S.adding = false; prRender(); }
+      catch (e) { prErr(out, e); } } });
+    return el('tr', {}, [el('td', {}, vi), el('td', {}, en), el('td', {}, g), el('td', {}, k), el('td', {}, kw),
+      el('td', { className: 'num', textContent: x.id ? fmtInt(counts.get(x.id) || 0) : '' }), el('td', { className: 'c' }, act), el('td', {}, save)]);
+  };
+  const tb = el('table', { className: 'lqbt prvocab' }, [el('tr', {}, ['pr.std.c.vi', 'pr.std.c.en', 'pr.group', 'pr.std.c.kind', 'pr.std.c.kw', 'pr.std.c.n', 'pr.std.c.active', '']
+    .map(c => el('th', { textContent: c ? t(c) : '' })))]);
+  if (S.adding) tb.append(line({ std_vi: '', std_en: '', grp: S.grp || 'OTH', kind: 'goods', patterns: [] }));
+  for (const x of rows) tb.append(line(x));
+  body.append(el('div', { className: 'card' }, [el('h3', { textContent: t('pr.std.vocabH') }), el('div', { className: 'tdnote', textContent: t('pr.std.vocabHint') }),
+    el('div', { className: 'row', style: 'gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px' }, [el('div', { style: 'max-width:260px;flex:1' }, q), gsel, el('span', { style: 'flex:1' }),
+      edit ? el('button', { className: 'btn tiny', type: 'button', textContent: '+ ' + t('pr.std.addTerm'), onclick: () => { S.adding = true; prRender(); } }) : '']),
+    out, el('div', { className: 'wrap' }, tb)]));
+}
+// Names the rules did not catch → the Claude chat with the vocabulary, the answer pasted back (no outside AI from the app).
+function prStdAi(card, lines) {
+  const groups = prStdGroups(lines).slice(0, 300);
+  const vocab = (PR.terms || []).filter(x => x.active).map(x => `${x.std_vi}/${x.std_en}`).join('\n');
+  const prompt = `You standardise item names of a hotel's price database (technical materials, FF&E, works). For each ORIGINAL name below, choose the best STANDARD name from the vocabulary; if none fits, propose a new one in the same "Vietnamese/English" form (Vietnamese without "/", short, generic — the item type, not the brand or size). Answer with JSON only, no prose:\n{"names":[{"name": "<original, exactly as given>", "std": "<Vietnamese/English>", "new": true|false}]}\n\nVOCABULARY:\n${vocab}\n\nORIGINAL NAMES (with their heading when there is one):\n` +
+    groups.map(g => `- ${g.name}${g.section ? '  [heading: ' + g.section + ']' : ''}`).join('\n');
+  const ta = el('textarea', { rows: 6, className: 'prjson', placeholder: t('pr.jsonPh') }), out = el('div');
+  const box = el('div', { className: 'card prdraft' }, [el('h3', { textContent: t('pr.std.aiH') }), el('div', { className: 'tdnote', textContent: t('pr.std.aiHint', { n: groups.length }) }),
+    el('div', { className: 'row', style: 'gap:8px;margin:6px 0' }, [el('button', { className: 'btn', type: 'button', textContent: t('pr.copyPrompt'), onclick: async () => {
+      try { await navigator.clipboard.writeText(prompt); msg(out, 'ok', t('pr.copied')); } catch { ta.value = prompt; msg(out, 'warn', t('pr.copyFail')); } } })]),
+    ta, el('div', { className: 'row', style: 'gap:8px;margin-top:6px' }, [el('button', { className: 'btn pri', type: 'button', textContent: t('pr.std.aiApply'), onclick: async () => {
+      try {
+        const j = JSON.parse(String(ta.value).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim());
+        const by = new Map();
+        for (const x of j.names || []) { const g = groups.find(g => prNorm(g.name) === prNorm(x.name)); if (g && x.std) (by.get(x.std) || by.set(x.std, []).get(x.std)).push(...g.ids); }
+        let n = 0;
+        for (const [std, ids] of by) { await SB.rpc('pr_set_std', { p_lines: ids, p_std: std, p_category: null }); n += ids.length; }
+        await prStdLoad(true); PR.flash = t('pr.std.aiDone', { n: fmtInt(n), k: fmtInt(by.size) }); msg('#prMsg', 'ok', PR.flash); PR.flash = null; prRender();
+      } catch (e) { msg(out, 'err', t('pr.jsonBad', { e: e.message })); } } })]), out]);
+  card.after(box);
 }
 
 window.prLoad = prLoad;
