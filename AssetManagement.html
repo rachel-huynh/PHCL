@@ -1619,6 +1619,19 @@
   .phbtns{display:flex;gap:6px;flex-wrap:wrap}
   body.tab .phbtns .btn{min-height:38px;padding:0 12px;font-size:13px}
   @media (max-width:700px){ .phrow{grid-template-columns:1fr 1fr} .phwho{grid-column:1 / -1} }
+
+  /* ============ Liquidation — 26/09/2026 ============ */
+  #v-liq .pmgrid{max-height:calc(100vh - 290px);min-height:260px}
+  #v-liq td.num.bad{color:#b42318;font-weight:700}
+  .lqnew{border-left:4px solid var(--navy)}
+  .lqis{display:inline-block;padding:2px 8px;border-radius:999px;font:600 11.5px/1.4 var(--font);background:#eef2f7;color:#334155}
+  .lqis.pool{background:#fdf0dc;color:#94600f}
+  .lqis.batched{background:#e8eefc;color:#1d4ed8}
+  .lqis.sold,.lqis.destroyed{background:#e3f3ea;color:#15803d}
+  .lqis.kept{background:#f1f5f9;color:#475569}
+  .phrow.one{grid-template-columns:minmax(180px,1.2fr) 2fr}
+  .phshot .phmore{position:absolute;left:4px;bottom:4px;background:rgba(15,23,42,.72);color:#fff;font:600 11px/1 var(--font);padding:3px 6px;border-radius:6px}
+  .fsheet .lqthumb{display:block;max-width:100%;max-height:64px;margin:0 auto;object-fit:contain}
 </style>
 </head>
 <body>
@@ -2453,6 +2466,31 @@
       <div id="payDetail"></div>
     </section>
 
+    <!-- Liquidation, phase 1 (27_liquidation.sql): the requests (LR + Asset
+         Disposal Form in one), the pool waiting for the council, and the assets
+         already marked 8 / 24 that no request holds yet. -->
+    <section id="v-liq">
+      <p class="lead" data-i18n="lq.lead"></p>
+      <div class="card">
+        <div class="row" style="align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div class="seg permtabs" id="lqTabs"></div>
+          <div class="row" style="gap:6px">
+            <button class="btn pri" id="lqNewBtn" type="button" data-i18n="lq.new"></button>
+            <button class="btn" id="lqXlsBtn" type="button" data-i18n="lq.xlsx"></button>
+          </div>
+        </div>
+        <div class="row" style="align-items:flex-end;flex-wrap:wrap;margin-top:10px">
+          <div class="fld" style="max-width:280px"><label data-i18n="pm.col.dept"></label><select id="lqDept"></select></div>
+          <div class="fld" style="max-width:200px" id="lqStWrap"><label data-i18n="lq.f.status"></label><select id="lqSt"></select></div>
+          <div class="fld grow" style="max-width:320px"><label data-i18n="pm.f.search"></label><input id="lqQ" spellcheck="false"></div>
+        </div>
+      </div>
+      <div id="lqMsg"></div>
+      <div id="lqNewBox"></div>
+      <div id="lqSum"></div>
+      <div class="wrap pmgrid"><table id="lqGrid"><thead></thead><tbody></tbody></table></div>
+    </section>
+
     <section id="v-inbox">
       <p class="lead" data-i18n="wf.i.lead"></p>
       <div class="card">
@@ -2522,7 +2560,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260926e"></script>
-<script src="app.js?v=20260926e"></script>
+<script src="i18n.js?v=20260926g"></script>
+<script src="app.js?v=20260926g"></script>
 </body>
 </html>

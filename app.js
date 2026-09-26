@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260926e';
+const APP_VERSION = '20260926g';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -1896,6 +1896,7 @@ const NAV = [
     ['register', 'nav.register'],
     ['intake', 'nav.intake'],
     ['alr', 'nav.alr'],
+    ['liq', 'nav.liq'],
     ['counter', 'nav.counter']
   ]],
   // Every file that is uploaded from time to time, in one place: the budget
@@ -1937,6 +1938,7 @@ function viewModule(v) {
   if (v === 'budget' || v === 'pmimport') return 'budget';
   if (v === 'projects' || v === 'tbl:pm_vendor' || v === 'doc') return 'project';
   if (v === 'inbox' || v === 'chains') return 'approval';
+  if (v === 'liq') return 'liquidation';
   if (v === 'payments') return 'payment';
   if (['sources', 'backup', 'tbl:am_setting'].includes(v)) return 'system';
   if (v === 'cat' || v.startsWith('tbl:')) return 'master';
@@ -1946,6 +1948,8 @@ function viewModule(v) {
 const canView = v => { if (v === 'pmimport') return ['budget', 'project', 'payment'].some(m => can(m, 'view'));
                       if (v === 'sources') return ['budget', 'project', 'payment', 'system'].some(m => can(m, 'view'));
                       if (v === 'settings') return true;      // the help switch is everyone's; the year settings check their own right
+                      // A document screen holds a project's package or a liquidation request (27_liquidation.sql).
+                      if (v === 'doc') return can('project', 'view') || can('liquidation', 'view');
                       // Change log and Connection: System Admin only (feedback 25/09/2026). Connection still
                       // opens before anyone is signed in — a first visit has no project address yet.
                       if (v === 'audit') return can('system', 'admin');
@@ -2320,6 +2324,7 @@ function showView(view) {
     if (view === 'inbox' && SB.ready()) wfInboxLoad();
     if (view === 'chains' && SB.ready()) wfChainsLoad();
     if (view === 'doc' && SB.ready()) wfLoad();
+    if (view === 'liq' && SB.ready()) lqLoad();
     if (view === 'payments' && SB.ready()) payLoad();
     if (view === 'admin' && SB.ready()) adLoad();
   }
@@ -2493,6 +2498,7 @@ function init() {
   initSecurity();
   initPm();
   initWf();
+  initLq();
   initAdmin();
   initSig();
   initNotices();
@@ -8282,7 +8288,7 @@ const wfSeq = ty => ((WF.types.find(x => x.code === ty) || {}).seq) || 0;
 const wfGrp = ty => (WF.types.find(x => x.code === ty) || {}).grp || null;
 function wfCanPrepare(type, dept) {
   const prep = wfChain(pmEntity(dept), type).find(c => c.step === 0);
-  return can('project', 'create') && !!prep && wfHasRoleFor(prep.role_code, dept);
+  return can(type === 'LR' ? 'liquidation' : 'project', 'create') && !!prep && wfHasRoleFor(prep.role_code, dept);
 }
 const wfRoleName = code => { const r = WF.roles.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
 const wfTypeName = code => { const r = WF.types.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
@@ -8546,16 +8552,19 @@ async function wfLoad() {
     await wfCatLoad();
     const [doc] = await SB.select('pm_doc', `select=*&id=eq.${WF.openId}`);
     if (!doc) { msg(out, 'err', t('wf.gone')); return; }
-    const [project] = await SB.select('pm_project', `select=*&code=eq.${encodeURIComponent(doc.project_code)}`);
+    // A liquidation request belongs to a department, not a project (27_liquidation.sql).
+    const lq = !doc.project_code;
+    const [project] = lq ? [lqProject(doc)] : await SB.select('pm_project', `select=*&code=eq.${encodeURIComponent(doc.project_code)}`);
     const [pkgs, pdocs, steps, events, docs, years] = await Promise.all([
       SB.select('pm_pkg', `select=*&id=eq.${doc.pkg_id}`),
       SB.select('pm_doc', `select=*&pkg_id=eq.${doc.pkg_id}&status=neq.cancelled`),
       SB.select('pm_pkg_step', `select=*&pkg_id=eq.${doc.pkg_id}&order=step`),
       SB.select('pm_pkg_event', `select=*&pkg_id=eq.${doc.pkg_id}&order=at`),
-      SB.select('pm_doc', `select=id,doc_type,doc_no,status,pkg_id,total_value,data&project_code=eq.${encodeURIComponent(doc.project_code)}`),
-      SB.select('pm_budget_year', `select=*&year=eq.${project ? project.year : 0}`)
+      lq ? [] : SB.select('pm_doc', `select=id,doc_type,doc_no,status,pkg_id,total_value,data&project_code=eq.${encodeURIComponent(doc.project_code)}`),
+      lq ? [] : SB.select('pm_budget_year', `select=*&year=eq.${project ? project.year : 0}`)
     ]);
-    const line = project ? await wfFinalLine(project) : null;
+    const line = project && !lq ? await wfFinalLine(project) : null;
+    if (lq) { pdocs.length || pdocs.push(doc); await lqPhotosLoad(pdocs); }   // the Disposal Form's Picture column
     // Testing switch (am_setting 'pm_allow_self_approve'): the preparer may check / approve their own package.
     WF.selfOk = await SB.select('am_setting', 'select=value&key=eq.pm_allow_self_approve')
       .then(([r]) => !!r && (r.value === true || r.value === 'true')).catch(() => false);
@@ -8683,8 +8692,8 @@ function wfRender() {
   // Header + actions.
   const head = el('div', { className: 'card' });
   const top = el('div', { className: 'row', style: 'align-items:center;flex-wrap:wrap;gap:10px;justify-content:flex-start' });
-  const back = el('a', { href: '#', textContent: '← ' + p.code + ' — ' + (p.name || '') });
-  back.onclick = ev => { ev.preventDefault(); PM.prj.open = p.code; showView('projects'); };
+  const back = el('a', { href: '#', textContent: p._lq ? '← ' + t('nav.liq') : '← ' + p.code + ' — ' + (p.name || '') });
+  back.onclick = ev => { ev.preventDefault(); if (p._lq) return showView('liq'); PM.prj.open = p.code; showView('projects'); };
   top.append(el('b', { style: 'font-size:15px', textContent: nos }), wfChip(k.status),
              el('span', { style: 'color:var(--dim)', textContent: t('wf.version', { n: k.version }) }), back);
   head.append(top);
@@ -8730,7 +8739,7 @@ function wfRender() {
     if (step.kind !== 'check') btn('wf.reject', 'danger', () => wfAct('reject'));
   }
   if (!['approved', 'cancelled', 'rejected'].includes(k.status)
-      && (can('project', 'admin') || (k.created_by === (ME && ME.id) && ['draft', 'returned'].includes(k.status))))
+      && (can(k.grp === 'LR' ? 'liquidation' : 'project', 'admin') || (k.created_by === (ME && ME.id) && ['draft', 'returned'].includes(k.status))))
     btn(WF.pdocs.length > 1 ? 'wf.cancelPkg' : 'wf.cancel', 'danger', () => wfCancel());
   // An RR that turned out not to belong (the project is not a replacement after all).
   if (wfPkgEditable() && d.doc_type !== wfLead(k.grp) && wfSide(d.doc_type) !== 'owner')
@@ -8777,7 +8786,7 @@ function wfRender() {
   const pbtn = el('button', { className: 'btn', textContent: t('wf.print') }); pbtn.onclick = () => wfPrint();
   const fbtn = el('button', { className: 'btn', textContent: t('wf.pdf') }); fbtn.onclick = () => wfPdf();
   form.append(el('div', { className: 'chead' }, [el('div', { className: 'row', style: 'align-items:center;gap:12px' },
-    [el('h2', { textContent: t('wf.content') }), wfDots()]), el('div', { className: 'row' }, [pbtn, fbtn, ...wfCapButtons(p.code, '#wdMsg')])]));
+    [el('h2', { textContent: t('wf.content') }), wfDots()]), el('div', { className: 'row' }, [pbtn, fbtn, ...(p._lq ? [] : wfCapButtons(p.code, '#wdMsg'))])]));
   form.append(el('div', { id: 'wdWarn' }));
   form.append(el('div', { className: 'flipwrap' }, el('div', { className: 'fscroll', id: 'wdSheet' }, fsSheet(d.doc_type, wfEditable()))));
   form.append(wfArrows());
@@ -9599,7 +9608,7 @@ function wfWarnRender() {
   if (WF.ref) return box.append(el('div', { className: 'msg info', textContent: t('wf.refNote', { no: WF.ref.d.doc_no }) }));
   const d = WF.data, c = wfCtx(), ty = WF.doc.doc_type;
   const put = (kind, text) => box.append(el('div', { className: 'msg ' + kind, textContent: text }));
-  if (wfEditable()) put('info', t('wf.fillHint'));
+  if (wfEditable()) put('info', t(ty === 'LR' ? 'lq.fillHint' : 'wf.fillHint'));
   // Not on the workbook sheet, so said beside it: what the procurement decision matrix suggests.
   if (ty === 'PR' && d.procurement_suggested && wfEditable()) put(d.procurement_type === d.procurement_suggested ? 'ok' : 'warn', t('wf.pr.suggest', { v: d.procurement_suggested }));
   if (ty === 'PA') { const g = paGate(d, c); put(g.ok ? 'ok' : 'warn', g.text);
@@ -9609,6 +9618,8 @@ function wfWarnRender() {
   if (ty === 'QC') { const r = qcScore(d); if (r.problems.length) put('warn', r.problems.join('\n')); else if (r.best) put('ok', t('wf.qc.ok', { v: d.chosen_vendor, s: r.best.total })); }
   if (ty === 'MC' && d.mc_over && d.mc_over.length) put('warn', t('wf.mc.over', { items: d.mc_over.join(', ') }));
   if (ty === 'CT' && off100(n0(d.pct_sum))) put('warn', t('wf.ct.pct', { p: Math.round(n0(d.pct_sum) * 100) / 100 }));
+  if (ty === 'LR' && d.source === 'RR' && wfEditable()) put('info', t('lq.fromRR', { rr: d.rr_doc_no || 'RR', p: d.project_code || '' }));
+  if (ty === 'LR' && n0(d.total_nbv) > 0) put('warn', t('lq.nbvLeft', { v: fmtMoney(d.total_nbv) }));
 }
 
 async function wfAssetLookup(l, rerender) {
@@ -10602,6 +10613,21 @@ function wfProblems(d) {
       if (l.unit && !WF_CAT.units.includes(l.unit)) out.push(t('wf.cat.unit', { v: l.unit }));
     });
   }
+  // LR: the same rules as pm_lq_check, said before the signature is asked for.
+  if (ty === 'LR') {
+    if (!lines.length) out.push(t('wf.chk.noLines'));
+    const seen = new Set();
+    lines.forEach((l, i) => {
+      const n = i + 1;
+      if (!String(l.name || '').trim()) out.push(t('lq.chk.name', { n }));
+      if (!(n0(l.qty) > 0)) out.push(t('wf.chk.qty', { n }));
+      if (!l.condition || !String(l.reason || '').trim() || !l.mode) out.push(t('lq.chk.cond', { n }));
+      if (n0(l.nbv) > 0 && !String(l.nbv_note || '').trim()) out.push(t('lq.chk.nbv', { n }));
+      if (l.mode === 'Other' && !String(l.other_note || '').trim()) out.push(t('lq.chk.other', { n }));
+      if (l.asset_id) { if (seen.has(l.asset_id)) out.push(t('lq.twice', { code: l.asset_code })); seen.add(l.asset_id); }
+      if (l.unit && !WF_CAT.units.includes(l.unit)) out.push(t('wf.cat.unit', { v: l.unit }));
+    });
+  }
   if (ty === 'QC' && qcScore(data).problems.some(p => p === t('wf.qc.w0') || p === t('wf.qc.w100'))) out.push(t('wf.qc.cannotSubmit'));
   // QC / PO / AH items from the Product catalogue too, the handover's locations from the Location list.
   if (ty === 'QC') (data.qlines || []).forEach(l => { if (l.item && !wfCatHasProduct(l.item)) out.push(t('wf.cat.product', { v: l.item })); });
@@ -10628,6 +10654,12 @@ async function wfSubmit() {
       const gaps = await phGaps(assets);
       if (gaps.length) probs.push(t('ph.gaps', { n: gaps.length, list: gaps.slice(0, 12).join(', ') + (gaps.length > 12 ? '…' : '') }));
     } catch (e) { probs.push(e.message); }
+  }
+  // A liquidation request: a condition photo of every line (the Disposal Form's evidence).
+  const lr = mine.find(d => d.doc_type === 'LR');
+  if (lr && !probs.length) {
+    try { const gaps = await lqPhotoGaps(lr); if (gaps.length) probs.push(t('lq.ph.gaps', { list: gaps.join(', ') })); }
+    catch (e) { probs.push(e.message); }
   }
   if (probs.length) return msg('#wdMsg', 'err', probs.join('\n'));
   if (!(await wfSave(true))) return;
@@ -10665,6 +10697,7 @@ async function wfAct(action, target) {
     png = await sigAsk(t(step.owner_prep ? 'sig.titleCheckPrep' : step.kind === 'check' ? 'sig.titleCheck' : 'sig.titleApprove', { no: nos }));
     if (png === null) return;
   } else if (!confirm(t(action === 'return' && target === 'am' ? 'wf.confirm.returnAm' : 'wf.confirm.' + action, { no: nos }))) return;
+  const lrPkg = WF.pkg.grp === 'LR';            // approved: its lines go to the liquidation pool, not to a project
   try {
     const to = await SB.rpc('pm_pkg_act', { p_pkg: WF.pkg.id, p_action: action, p_comment: note.trim() || null,
                                             p_signature: png ? { png } : null, p_target: target || null });
@@ -10672,8 +10705,8 @@ async function wfAct(action, target) {
     const k = action === 'approve' ? (to === 'approved' ? 'final' : step.owner_prep ? 'checkPrep' : step.kind === 'check' ? 'check' : 'approve')
       : to === 'returned_am' ? 'returnAm' : action;
     // On a tablet the next thing to do is the next task: back to the list, the result said there.
-    if (TB.on) { TB.flash = t('wf.acted.' + k, { no: nos }); return showView('inbox'); }
-    msg('#wdMsg', 'ok', t('wf.acted.' + k, { no: nos }));
+    if (TB.on) { TB.flash = t(k === 'final' && lrPkg ? 'lq.final' : 'wf.acted.' + k, { no: nos }); return showView('inbox'); }
+    msg('#wdMsg', 'ok', t(k === 'final' && lrPkg ? 'lq.final' : 'wf.acted.' + k, { no: nos }));
   } catch (e) { msg('#wdMsg', 'err', e.message); }
 }
 
@@ -10796,7 +10829,7 @@ function wfPrint() {
 // Export the form on screen as a PDF: the same pages, through the capture below (saved first, so the file is what is stored).
 async function wfPdf() {
   if (WF.dirty && wfEditable() && !(await wfSave(true))) return;
-  await wfCaptureForms(WF.project.code, 'pdf', '#wdMsg', wfShown().id);
+  await wfCaptureForms(WF.project._lq ? '' : WF.project.code, 'pdf', '#wdMsg', wfShown().id);
 }
 
 /* ----------------------------------------- every form of a project, captured
@@ -10817,10 +10850,14 @@ async function wfCaptureForms(code, fmt, out, onlyId) {
     await Promise.all(['html2canvas', fmt === 'zip' ? 'JSZip' : 'jspdf'].map(snapLib));
     await wfLookups(); await wfCatLoad();
     const enc = encodeURIComponent(code);
-    const [[project], docs, pkgs] = await Promise.all([
+    // No project code: one liquidation request (onlyId), in its own package.
+    const [[project], docs, pkgs] = code ? await Promise.all([
       SB.select('pm_project', `select=*&code=eq.${enc}`),
       SB.select('pm_doc', `select=*&project_code=eq.${enc}`),
-      SB.select('pm_pkg', `select=*&project_code=eq.${enc}`)]);
+      SB.select('pm_pkg', `select=*&project_code=eq.${enc}`)])
+      : await SB.select('pm_doc', `select=*&id=eq.${Number(onlyId) || 0}`).then(async ds => [[ds[0] ? lqProject(ds[0]) : null], ds,
+          ds[0] ? await SB.select('pm_pkg', `select=*&id=eq.${ds[0].pkg_id}`) : []]);
+    if (!code) await lqPhotosLoad(docs);
     const live = docs.filter(d => !['cancelled', 'rejected'].includes(d.status) && WF_FORMS[d.doc_type])
       .sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type) || a.id - b.id);
     const todo = onlyId ? docs.filter(d => d.id === onlyId) : live;
@@ -10828,8 +10865,8 @@ async function wfCaptureForms(code, fmt, out, onlyId) {
     const pids = [...new Set(docs.map(d => d.pkg_id).filter(Boolean))];
     const [steps, years, line] = await Promise.all([
       pids.length ? SB.select('pm_pkg_step', `select=*&pkg_id=in.(${pids.join(',')})&order=step`) : [],
-      SB.select('pm_budget_year', `select=*&year=eq.${Number(project.year) || 0}`),
-      wfFinalLine(project)]);
+      code ? SB.select('pm_budget_year', `select=*&year=eq.${Number(project.year) || 0}`) : [],
+      code ? wfFinalLine(project) : null]);
     Object.assign(WF, { project, docs, line: line || null, year: years[0] || null, drafts: new Map(), dirtyIds: new Set(),
                         adminEdit: false, events: [], refs: [], qcTab: null, inRef: false });
     document.body.append(host);
@@ -10918,7 +10955,7 @@ async function wfInboxLoad() {
   msg(out, 'info', t('table.loading'));
   try {
     await wfLookups();
-    WF.inbox = [...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => []))];
+    WF.inbox = [...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => []))];
     WF.done = await wfDoneLoad().catch(() => []);
     msg(out, TB.flash ? 'ok' : '', TB.flash || ''); TB.flash = null;      // the result of a signature on a tablet
     wfInboxRender();
@@ -10934,10 +10971,10 @@ async function wfDoneLoad() {
   if (!ev.length) return [];
   const ids = [...new Set(ev.map(e => e.pkg_id))];
   const [pkgs, docs, steps] = await Promise.all([
-    SB.select('pm_pkg', `select=id,project_code,grp,status&id=in.(${ids.join(',')})`),
+    SB.select('pm_pkg', `select=*&id=in.(${ids.join(',')})`),            // * : dept_code exists once 27_liquidation.sql ran
     SB.select('pm_doc', `select=id,pkg_id,doc_no,doc_type,total_value,status&pkg_id=in.(${ids.join(',')})&status=neq.cancelled`),
     SB.select('pm_pkg_step', `select=pkg_id,step,role_code,kind&pkg_id=in.(${ids.join(',')})`)]);
-  const codes = [...new Set(pkgs.map(k => k.project_code))];
+  const codes = [...new Set(pkgs.map(k => k.project_code).filter(Boolean))];
   const prj = codes.length ? await SB.select('pm_project', `select=code,name,dept_code&code=in.(${codes.map(encodeURIComponent).join(',')})`) : [];
   return ev.map(e => {
     const k = pkgs.find(x => x.id === e.pkg_id) || {}, p = prj.find(x => x.code === k.project_code) || {};
@@ -10945,7 +10982,8 @@ async function wfDoneLoad() {
     const s = steps.find(x => x.pkg_id === e.pkg_id && x.step === e.step) || {};
     return { kind: 'done', action: e.action, at: e.at, step: e.step, role_code: s.role_code, step_kind: s.kind, grp: k.grp,
              doc_id: (ds[0] || {}).id, doc_no: ds.map(d => d.doc_no).join(' + '), project_code: k.project_code,
-             project_name: p.name, dept_code: p.dept_code, total_value: ds.reduce((a, d) => a + (Number(d.total_value) || 0), 0) || null };
+             project_name: p.name || (k.grp === 'LR' ? t('lq.docName') : ''), dept_code: p.dept_code || k.dept_code,
+             total_value: ds.reduce((a, d) => a + (Number(d.total_value) || 0), 0) || null };
   });
 }
 
@@ -10953,11 +10991,11 @@ function wfInboxRender() {
   const q = hnorm(($('#wiQ') || {}).value || ''), show = ($('#wiShow') || {}).value || '', ty = ($('#wiType') || {}).value || '';
   const all = [...(WF.inbox || []), ...(WF.done || [])];
   // Type choices from the rows themselves.
-  const types = [...new Set(all.flatMap(r => String(r.doc_no || '').split(' + ').map(n => n.split('.')[0])).filter(Boolean))].sort((a, b) => wfSeq(a) - wfSeq(b));
+  const types = [...new Set(all.flatMap(r => String(r.doc_no || '').split(' + ').map(lqNoType)).filter(Boolean))].sort((a, b) => wfSeq(a) - wfSeq(b));
   selFill($('#wiType'), [['', t('pm.f.all')], ...types.map(x => [x, `${x} — ${wfTypeName(x)}`])]);
   selFill($('#wiShow'), [['', t('wf.i.showAll')], ['todo', t('wf.i.showTodo')], ['done', t('wf.i.showDone')]]);
   const rows = all.filter(r => (!show || (show === 'done') === (r.kind === 'done'))
-    && (!ty || String(r.doc_no || '').split(' + ').some(n => n.split('.')[0] === ty))
+    && (!ty || String(r.doc_no || '').split(' + ').some(n => lqNoType(n) === ty))
     && (!q || hnorm(`${r.doc_no} ${r.project_code} ${r.project_name} ${r.dept_code} ${pmDeptName(r.dept_code)}`).includes(q)));
   const head = $('#wiGrid thead'), body = $('#wiGrid tbody');
   head.innerHTML = ''; body.innerHTML = '';
@@ -10968,9 +11006,9 @@ function wfInboxRender() {
   for (const r of rows) {
     const done = r.kind === 'done';
     const owners = wfPkgTypes(r.grp).filter(ty2 => wfSide(ty2) === 'owner').join('/');
-    const band = done ? 'ok' : r.kind === 'returned' ? 'bad' : r.kind === 'prepare' || r.kind === 'photo' ? 'op' : wfBand(r.role_code);
+    const band = done ? 'ok' : r.kind === 'returned' ? 'bad' : ['prepare', 'photo', 'draft'].includes(r.kind) ? 'op' : wfBand(r.role_code);
     const what = done ? '✓ ' + (r.action === 'approve' && r.step_kind === 'check' ? t('wf.st.checked') : t('wf.a.' + r.action))
-      : r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'prepare' ? t('wf.i.prepare', { t: r.doc_type }) : r.kind === 'returned' ? t('wf.i.returned')
+      : r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'draft' ? t('lq.i.draft') : r.kind === 'prepare' ? t('wf.i.prepare', { t: r.doc_type }) : r.kind === 'returned' ? t('wf.i.returned')
       : r.owner_prep ? t(r.returned_to === 'am' ? 'wf.i.redoOwner' : 'wf.i.checkPrep', { t: owners })
       : t(r.step_kind === 'check' ? 'wf.i.check' : 'wf.i.approve');
     const nos = String(r.doc_no || '').split(' + ').filter(Boolean);
@@ -10982,8 +11020,8 @@ function wfInboxRender() {
             el('button', { className: 'btn tiny pri', textContent: t('wf.createType', { t: r.doc_type }),
               onclick: ev => { ev.stopPropagation(); wfCreateFor(r.project_code, r.doc_type, '#wiMsg'); } })])
         : el('td', {}, nos.flatMap((n, i) => [...(i ? [document.createTextNode(' + ')] : []), el('code', { textContent: n })])),
-      el('td', { textContent: r.kind === 'prepare' ? wfTypeName(r.doc_type) : nos.map(n => wfTypeName(n.split('.')[0])).join(' + ') }),
-      el('td', {}, el('code', { textContent: r.project_code || '' })), el('td', { textContent: r.project_name || '' }),
+      el('td', { textContent: r.kind === 'prepare' ? wfTypeName(r.doc_type) : nos.map(n => wfTypeName(lqNoType(n))).join(' + ') }),
+      el('td', {}, el('code', { textContent: r.project_code || '' })), el('td', { textContent: r.project_name || (r.grp === 'LR' ? t('lq.docName') : '') }),
       el('td', { textContent: pmDeptName(r.dept_code), title: r.dept_code || '' }),
       el('td', { className: 'num', textContent: r.total_value != null ? fmtMoney(r.total_value) : '' }),
       el('td', { textContent: when ? fmtDate(String(when).slice(0, 10)) : '' }),
@@ -10994,13 +11032,14 @@ function wfInboxRender() {
   if (TB.on) tbInboxCards(rows);
 }
 // What the menu badge counts: things the person can do now.
-const wfInboxCount = rows => rows.length;
+// On a tablet the list leaves out the documents to draw up (no data entry there), so the count does too.
+const wfInboxCount = rows => TB.on ? rows.filter(r => r.kind !== 'prepare').length : rows.length;
 
 /* The number beside "To-do list" in the menu. */
 async function wfBadge(n) {
   ntLoad();                            // the bell moves whenever the inbox does
   if (n == null) { try { await wfLookups(); } catch {}   // types name the package's owner documents
-                   try { n = wfInboxCount([...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => []))]); } catch { return; } }
+                   try { n = wfInboxCount([...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => []))]); } catch { return; } }
   WF.badgeN = n;                       // buildNav() redraws the menu and re-adds it from here
   tbBarRender();
   const a = $('#nav a[data-view="inbox"]');
@@ -11263,10 +11302,13 @@ function initNotices() {
    the preparer, or (JVC, once the AM team has checked) the PA / MC alone back
    to the AM team; a rejection stops the package. Read-only: anyone who can
    open Approval chains sees it; changing a chain stays in the list view. */
+// Every document type with a chain, in the order of the procedure: the eight, the label receipt (AL), the liquidation request (LR).
+const wfChainTypes = () => [...new Set([...WF_ORDER, ...WF.types.slice().sort((a, b) => a.seq - b.seq).map(x => x.code)])]
+  .filter(ty => WF.types.some(x => x.code === ty)).sort((a, b) => wfSeq(a) - wfSeq(b));
 function wfChainFlow() {
   const box = el('div', { className: 'wflow' });
   const ent = WF.entity;
-  const leads = WF_ORDER.filter(ty => { const g = wfGrp(ty); return !g || ty === wfLead(g); });
+  const leads = wfChainTypes().filter(ty => { const g = wfGrp(ty); return !g || ty === wfLead(g); });
   for (const lead of leads) {
     const grp = wfGrp(lead) || lead;
     const types = wfPkgTypes(grp);
@@ -11343,7 +11385,7 @@ function wfChainsRender() {
   head.append(el('tr', {}, [el('th', { textContent: t('wf.c.doc') }), el('th', { textContent: t('wf.c.prep') }), el('th', { textContent: t('wf.c.steps') }), el('th')]));
   const roleSel = (val) => { const s = el('select'); s.append(el('option', { value: '', textContent: '—' }));
     for (const r of WF.roles) s.append(el('option', { value: r.code, textContent: LANG === 'vi' ? r.name_vi : r.name_en })); s.value = val || ''; return s; };
-  for (const type of WF_ORDER) {
+  for (const type of wfChainTypes()) {
     const rows = wfChain(WF.entity, type);
     const prep = rows.find(c => c.step === 0);
     const grp = wfGrp(type), follows = grp && type !== wfLead(grp);   // RR, PA, MC travel on the PR / QC chain
@@ -12695,7 +12737,7 @@ function tbInit() {
 function tbApply() {
   tbDetect();
   TB.key = null;
-  if (ME) showView(VIEW);
+  if (ME) { showView(VIEW); wfBadge(); }          // the count differs between the two modes (wfInboxCount)
   tbBarRender();
 }
 
@@ -12714,6 +12756,12 @@ function tbBarRender() {
   };
   if (canView('pmdash')) bar.append(item('pmdash', 'tb.dash', '▦'));
   if (canView('inbox')) bar.append(item('inbox', 'tb.todo', '✓', WF.badgeN));
+  // Back to the full screens (a PC with a narrow or zoomed window turns tablet mode on by itself):
+  // remembered in this browser; Settings → tablet / phone view → "Automatic" undoes it.
+  bar.append(el('button', { className: 'tbitem', type: 'button', title: t('tb.fullHint'), onclick: () => {
+    try { localStorage.setItem(TB_KEY, 'off'); } catch {}
+    tbApply();
+  } }, [el('span', { className: 'ic', textContent: '🖥' }), el('span', { textContent: t('tb.full') })]));
   bar.append(el('button', { className: 'tbitem', type: 'button', onclick: () => authSignOut() },
     [el('span', { className: 'ic', textContent: '⏻' }), el('span', { textContent: t('auth.signOut') })]));
 }
@@ -12727,16 +12775,16 @@ function tbInboxCards(rows) {
   if (!todo.length) box.append(el('div', { className: 'tbempty', textContent: t('tb.nothing') }));
   for (const r of todo) {
     const owners = wfPkgTypes(r.grp).filter(ty => wfSide(ty) === 'owner').join('/');
-    const band = r.kind === 'returned' ? 'bad' : r.kind === 'photo' ? 'op' : wfBand(r.role_code);
-    const what = r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'returned' ? t('wf.i.returned')
+    const band = r.kind === 'returned' ? 'bad' : r.kind === 'photo' || r.kind === 'draft' ? 'op' : wfBand(r.role_code);
+    const what = r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'draft' ? t('lq.i.draft') : r.kind === 'returned' ? t('wf.i.returned')
       : r.owner_prep ? t(r.returned_to === 'am' ? 'wf.i.redoOwner' : 'wf.i.checkPrep', { t: owners })
       : t(r.step_kind === 'check' ? 'wf.i.check' : 'wf.i.approve');
     const c = el('button', { className: 'tbcard band-' + band, type: 'button', onclick: () => { if (r.doc_id) wfOpen(r.doc_id); } }, [
       el('div', { className: 'r1' }, [el('span', { className: 'stg band-' + band, textContent: what }),
         el('span', { className: 'when', textContent: r.submitted_at ? fmtDate(String(r.submitted_at).slice(0, 10)) : '' })]),
       el('div', { className: 'nos', textContent: String(r.doc_no || '').replace(/ \+ /g, ' · ') }),
-      el('div', { className: 'pn', textContent: r.project_name || '' }),
-      el('div', { className: 'r3' }, [el('span', { textContent: `${r.project_code || ''} · ${pmDeptName(r.dept_code)}` }),
+      el('div', { className: 'pn', textContent: r.project_name || (r.grp === 'LR' ? t('lq.docName') : '') }),
+      el('div', { className: 'r3' }, [el('span', { textContent: [r.project_code, pmDeptName(r.dept_code)].filter(Boolean).join(' · ') }),
         el('b', { textContent: r.total_value != null ? fmtMoney(r.total_value) : '' })])]);
     box.append(c);
   }
@@ -12751,7 +12799,7 @@ function tbDocRender() {
   $('#pageTitle').textContent = docs.map(d => d.doc_no).join(' · ');
   const back = el('button', { className: 'btn tbback', type: 'button', textContent: '‹ ' + t('tb.todo'), onclick: () => showView('inbox') });
   const head = el('div', { className: 'tbhead' }, [back,
-    el('div', { className: 'tbt' }, [el('b', { textContent: p.name || '' }), el('small', { textContent: `${p.code || ''} · ${pmDeptName(p.dept_code)}` })]),
+    el('div', { className: 'tbt' }, [el('b', { textContent: p.name || '' }), el('small', { textContent: [p.code, pmDeptName(p.dept_code)].filter(Boolean).join(' · ') })]),
     wfChip(k.status)]);
   if (k.status === 'in_review' && step)
     head.append(el('div', { className: 'tbwho' }, [el('span', { className: 'stg band-' + wfBand(step.role_code),
@@ -13026,6 +13074,8 @@ function phPanel(assets, docId, title) {
 /* On the document screen: the label receipt once received (AL approved), and
    the handover of those assets while it is being drawn up (AH with asset_ids). */
 function phForPackage() {
+  const lr = WF.pdocs.find(d => d.doc_type === 'LR');
+  if (lr) return lqPhotoPanel(lr);                  // condition photos of a liquidation request
   const al = WF.pdocs.find(d => d.doc_type === 'AL' && d.status === 'approved');
   if (al) { const data = WF.drafts.get(al.id) || al.data || {}; return phPanel(data.assets || [], al.id, t('ph.h')); }
   const ah = WF.pdocs.find(d => d.doc_type === 'AH' && ['draft', 'returned'].includes(d.status));
@@ -13063,4 +13113,550 @@ async function alPrintLabels(alDoc) {
     msg('#alListMsg', 'ok', t('al.loadedFor', { n: rows.length, no: alDoc.doc_no }));
     renderAlrList();
   } catch (e) { msg('#alListMsg', 'err', e.message); }
+}
+
+/* ============================================================ LIQUIDATION — phase 1
+   The liquidation request (LR) and the pool of what waits for the council
+   (27_liquidation.sql). Decisions of 26/09/2026:
+   - the LR and the Asset Disposal Form are ONE document: typed once, printed
+     as both sheets (the LR landscape, then the Disposal Form);
+   - its chain is the LR's signature line with the AM team checking before the
+     Chief Accountant (Chuỗi phê duyệt → LR);
+   - original value and depreciation are typed by hand for now (the monthly
+     depreciation file from accounting comes later);
+   - fixed assets and tools (same-barcode assets) go the same way.
+   An LR is a package of its own, tied to a DEPARTMENT instead of a project,
+   so it travels through the same chain / signature / to-do / tablet screens
+   as the project documents. Once approved its lines are in the pool (8 / 24);
+   phase 2 takes them from there into a council batch. */
+const LQ = { tab: 'lr', stv: { lr: '', pool: 'pool' }, docs: [], pkgs: new Map(), steps: new Map(), items: null, orphans: [], sel: new Set(), ph: new Map(), phDraw: null };
+const LQ_COND = [['Like new', 'Nguyên phẩm'], ['Poor', 'Kém phẩm'], ['Damaged', 'Mất phẩm']];
+const LQ_MODE = [['Sale', 'Bán thanh lý'], ['Other', 'Khác (huỷ, tiêu huỷ…)']];
+const LQ_REASONS = ['High repair cost / Chi phí sửa chữa cao', 'Obsolete / Lỗi thời', 'Irreparable / Hư hỏng không thể sửa chữa',
+                    'Breakage/loss / Hư hỏng, mất mát', 'No longer suitable / Không còn phù hợp'];
+const lqBi = (list, v) => { const r = list.find(x => x[0] === v); return r ? `${r[0]}/${r[1]}` : (v || ''); };
+const lqKey = () => 'k' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+// The package of an LR has no project: the screens get a stand-in carrying its department.
+const lqProject = d => ({ code: '', name: t('lq.docName'), dept_code: d.dept_code || (d.data || {}).dept_code, _lq: true });
+const lqNoType = no => { const p = String(no || '').split('.')[0]; return (WF.types.find(x => x.prefix === p && x.code !== p) || {}).code || p; };
+
+function lqLists() {
+  if (document.getElementById('lqReasonList')) return;
+  const dl = el('datalist', { id: 'lqReasonList' });
+  for (const r of LQ_REASONS) dl.append(el('option', { value: r }));
+  document.body.append(dl);
+}
+const lqIn = (x, l, k, ty, ro) => wfInput({ k, t: ty, ro: !!ro }, l, x.edit, x.rr, []);
+function lqSel(x, l, k, list) {
+  if (!x.edit) return fsR(lqBi(list, l[k]));
+  const s = el('select');
+  s.append(el('option', { value: '', textContent: '—' }));
+  for (const [v, vi] of list) s.append(el('option', { value: v, textContent: `${v} / ${vi}` }));
+  s.value = l[k] || '';
+  s.onchange = () => { l[k] = s.value || null; x.rr(); };
+  return s;
+}
+function lqReason(x, l) {
+  if (!x.edit) return fsR(l.reason);
+  lqLists();
+  const i = el('input', { value: l.reason || '', spellcheck: false });
+  i.setAttribute('list', 'lqReasonList');
+  i.onchange = () => { l.reason = i.value.trim() || null; x.rr(); };
+  return i;
+}
+
+/* Asset code: the register, searched as you type (the LR's department first).
+   A code or a barcode fills the line from the register; empty = an item not in
+   the register (e.g. an old roof, by the square metre), typed by hand. */
+function lqPickAsset(x, l) {
+  if (!x.edit) return fsR(l.asset_code || (l.name ? 'N/A' : ''));
+  const i = el('input', { value: l.asset_code || '', spellcheck: false, placeholder: t('lq.codePh') });
+  i.setAttribute('list', 'wfAssetList');
+  let tmr = null;
+  i.oninput = () => { clearTimeout(tmr); const q = i.value.trim(); if (q.length >= 3) tmr = setTimeout(() => wfAssetSearch(q).catch(() => {}), 250); };
+  i.onchange = async () => {
+    const code = i.value.trim().toUpperCase();
+    if (!code) { Object.assign(l, { asset_id: null, asset_code: null, barcode: null, kind: null }); return x.rr(); }
+    try { await lqAssetFill(l, code, x.d); } catch (e) { msg('#wdMsg', 'err', e.message); }
+    x.rr();
+  };
+  return i;
+}
+async function lqAssetFill(l, code, d) {
+  const q = encodeURIComponent(`"${code.replace(/"/g, '')}"`);
+  const [a] = await SB.select('am_asset', 'select=id,asset_code,barcode,name_vi,name_en,unit_code,unit_price,qty,dept_code,location_code,in_use_date,purchase_date,asset_kind,status_code'
+    + `&or=(asset_code.eq.${q},barcode.eq.${q})&limit=1`);
+  if (!a) { msg('#wdMsg', 'warn', t('wf.assetNone', { code })); return; }
+  if ((d.lines || []).some(o => o !== l && o.asset_id === a.id)) { msg('#wdMsg', 'warn', t('lq.twice', { code: a.asset_code })); return; }
+  msg('#wdMsg', ['7', '9'].includes(String(a.status_code)) ? 'warn' : '', ['7', '9'].includes(String(a.status_code))
+    ? t('lq.gone', { code: a.asset_code, st: amStatusLabel(a.status_code) }) : '');
+  const qty = a.asset_kind === 'unique' ? 1 : (n0(l.qty) || n0(a.qty) || 1);
+  Object.assign(l, { asset_id: a.id, asset_code: a.asset_code, barcode: a.barcode, name: [a.name_vi, a.name_en].filter(Boolean).join('/'),
+    unit: a.unit_code || l.unit || null, qty, dept_code: a.dept_code, location: a.location_code, kind: a.asset_kind,
+    in_use_date: a.in_use_date || a.purchase_date || l.in_use_date || null,
+    unit_price: a.unit_price != null ? Number(a.unit_price) : null, orig_manual: false });
+}
+// A register row as an LR line (the orphans of status 8 / 24).
+const lqLineOf = a => {
+  const qty = a.asset_kind === 'unique' ? 1 : (n0(a.qty) || 1);
+  return { key: lqKey(), asset_id: a.id, asset_code: a.asset_code, barcode: a.barcode, name: [a.name_vi, a.name_en].filter(Boolean).join('/'),
+           unit: a.unit_code || null, qty, dept_code: a.dept_code, location: a.location_code, kind: a.asset_kind,
+           in_use_date: a.in_use_date || a.purchase_date || null, mode: 'Sale',
+           unit_price: a.unit_price != null ? Number(a.unit_price) : null };
+};
+
+/* The two sheets. Page 1: the LR, where everything is typed. Page 2: the Asset
+   Disposal Form, drawn from the same lines (read-only), with the condition
+   photo of each line in its Picture column. */
+WF_FORMS.LR = { orient: 'landscape', wide: true, title: ['Liquidation Request', 'Đề xuất thanh lý tài sản'],
+  derive(d) {
+    d.lines = d.lines || [];
+    let o = 0, dp = 0, q = 0;
+    d.lines.forEach((l, i) => {
+      if (!l.key) l.key = String(i + 1);             // the pool keys an unkeyed line by its number too
+      // From the register: unit price × quantity, until the preparer types the original value themselves.
+      if (l.unit_price != null && !l.orig_manual) l.original_value = Math.round(Number(l.unit_price) * n0(l.qty));
+      const has = l.original_value != null || l.depreciation != null;
+      l.nbv = has ? n0(l.original_value) - n0(l.depreciation) : null;
+      o += n0(l.original_value); dp += n0(l.depreciation); q += n0(l.qty);
+    });
+    Object.assign(d, { total_qty: q, total_original: o, total_dep: dp, total_nbv: o - dp, total: o || null });
+  },
+  build(x) {
+    if (x.edit && x.mode === 'screen' && LQ.phDraw) LQ.phDraw();     // lines added / taken away: the photo list follows
+    return [lqSheetLR(x), lqSheetDisposal(x)];
+  } };
+
+function lqSheetLR(x) {
+  const d = x.d, k = WF.pkg || {};
+  const cols = [
+    { h: 'Item code / Mã TS', w: '9.5%', left: true, cell: l => lqPickAsset(x, l) },
+    { h: 'Item name / Tên tài sản', w: '13%', left: true, cell: l => l.asset_id || !x.edit ? fsR(l.name) : lqIn(x, l, 'name', 'text') },
+    { h: 'Qty / SL', w: '3.5%', cell: l => lqIn(x, l, 'qty', 'num', l.kind === 'unique') },
+    { h: 'Unit / ĐVT', w: '4%', cell: l => wfPickUnit(x, l) },
+    { h: 'Dept / BP', w: '4.5%', get: l => l.dept_code || d.dept_code, t: 'text' },
+    { h: 'Used from / Bắt đầu SD', w: '6%', cell: l => lqIn(x, l, 'in_use_date', 'date') },
+    { h: 'Warranty / Hạn BH', w: '5.5%', cell: l => lqIn(x, l, 'warranty', 'date') },
+    { h: 'Repairs / Số lần SC', w: '3.5%', cell: l => lqIn(x, l, 'repairs', 'num') },
+    { h: 'Condition / Hiện trạng', w: '6.5%', cell: l => lqSel(x, l, 'condition', LQ_COND) },
+    { h: 'Reason / Lý do', w: '8.5%', left: true, cell: l => lqReason(x, l) },
+    { h: 'Method / Đề xuất', w: '5.5%', cell: l => lqSel(x, l, 'mode', LQ_MODE) },
+    { h: 'Original value / Nguyên giá', w: '7%', cell: l => { const i = lqIn(x, l, 'original_value', 'money'); i.addEventListener('input', () => { l.orig_manual = true; }); return i; } },
+    { h: 'Depreciation / Hao mòn', k: 'depreciation', t: 'money', w: '7%' },
+    { h: 'Residual / Giá trị còn lại', get: l => l.nbv, t: 'money', w: '7%' },
+    { h: 'Notes / Ghi chú', k: 'notes', t: 'text', w: '4.5%', left: true }];
+  const src = d.project_code ? `${d.rr_doc_no || 'RR'} · ${d.project_code}` : 'Department request / Bộ phận đề xuất';
+  return fsPage([
+    fsHead(x, 'DATE', I(x, d, 'date', 'date')),
+    fsBar('GENERAL INFORMATION / THÔNG TIN CHUNG'),
+    fsGrid([fc('DEPARTMENT / BỘ PHẬN', fsR(`${d.dept_code || x.p.dept_code || ''} — ${pmDeptName(d.dept_code || x.p.dept_code)}`), 4, 'fit'),
+            fc('TO / KÍNH GỬI', fsR('Board of General Directors — Owner\'s Representative Office / Ban Tổng Giám đốc — Văn phòng đại diện chủ đầu tư'), 8, 'fit'),
+            fc('INITIATING PERSON / NGƯỜI LẬP', fsR(k.created_name || k.created_email || (ME && (ME.full_name || ME.email)) || ''), 4, 'fit'),
+            fc('POSITION / CHỨC VỤ', I(x, d, 'position', 'text'), 4),
+            fc('SOURCE / NGUỒN', fsR(src), 4, 'fit'),
+            fc('CURRENT CONDITION & REASON FOR LIQUIDATION / HIỆN TRẠNG VÀ LÝ DO ĐỀ NGHỊ THANH LÝ', I(x, d, 'reason', 'area'), 12, 'tall left')]),
+    fsBar('ITEMS TO BE LIQUIDATED / TÀI SẢN ĐỀ NGHỊ THANH LÝ', t('lq.count', { n: fmtInt(d.lines.length) })),
+    fsTable(x, cols, d.lines, { add: () => ({ key: lqKey(), qty: null, mode: 'Sale', dept_code: d.dept_code }),
+      foot: [['Total / Tổng cộng', 2, { 2: [d.total_qty, 'num'], 11: [d.total_original, 'money'], 12: [d.total_dep, 'money'], 13: [d.total_nbv, 'money'] }]] }),
+    ...lqExplain(x),
+    fsNote('Current condition / Hiện trạng: Like new / Nguyên phẩm — shape and function as originally described · Poor / Kém phẩm — one or more defects, still usable · '
+      + 'Damaged / Mất phẩm — no longer usable. A photo of every item is attached (condition photos in the app).'),
+    fsLinks(x, 'ATTACHMENTS / TÀI LIỆU ĐÍNH KÈM'),
+    fsConsent(x, 'Consent by / Ký duyệt:')], 'land');
+}
+
+// What the Disposal Form asks to be explained: (**) a remaining book value, (***) an item that cannot be sold.
+function lqExplain(x) {
+  const d = x.d, rows = [];
+  d.lines.forEach((l, i) => {
+    const tag = `${i + 1}. ${l.asset_code || 'N/A'} — ${l.name || ''}`;
+    if (n0(l.nbv) > 0 && (x.edit || l.nbv_note)) rows.push(fc(`(**) ${tag}: remaining book value / giải trình giá trị còn lại`, lqIn(x, l, 'nbv_note', 'area'), 6, 'left'));
+    if (l.mode === 'Other' && (x.edit || l.other_note)) rows.push(fc(`(***) ${tag}: why it cannot be sold / lý do không bán được`, lqIn(x, l, 'other_note', 'area'), 6, 'left'));
+  });
+  return rows.length ? [fsBar('EXPLANATIONS / GIẢI TRÌNH'), fsGrid(rows)] : [];
+}
+
+function lqThumb(doc, l) {
+  const p = LQ.ph.get(doc.id + ':' + l.key);
+  if (!p) return fsR('—');
+  if (p.img) return el('img', { className: 'lqthumb', src: p.img, alt: '' });
+  return el('span', { className: 'wfro', textContent: '🔗 OneDrive' });
+}
+function lqSheetDisposal(x) {
+  const d = x.d, k = WF.pkg || {}, doc = WF.doc;
+  const y = Object.assign({}, x, { edit: false, form: Object.assign({}, x.form, { title: ['Asset Disposal Form', 'Đề nghị xử lý tài sản'] }) });
+  const sale = d.lines.filter(l => l.mode !== 'Other'), other = d.lines.filter(l => l.mode === 'Other');
+  const cols = [{ h: 'Asset Code', get: l => l.asset_code || 'N/A', w: '13%', left: true }, { h: 'Qty', get: l => l.qty, t: 'num', w: '5%' },
+    { h: 'Description', get: l => l.name, w: '20%', left: true }, { h: 'Condition (*)', get: l => lqBi(LQ_COND, l.condition), w: '9%' },
+    { h: 'Dept', get: l => l.dept_code || d.dept_code, w: '5%' }, { h: 'Location', get: l => l.location, w: '8%' },
+    { h: 'Initial use', get: l => l.in_use_date, t: 'date', w: '7.5%' }, { h: 'Net book value (**)', get: l => l.nbv, t: 'money', w: '9%' },
+    { h: 'Mode of disposal (***)', get: l => l.mode === 'Other' ? '3' : '1', w: '7%' }, { h: 'Picture', cell: l => lqThumb(doc, l), w: '11.5%' }];
+  const saleCols = [{ h: 'Asset Code', get: l => l.asset_code || 'N/A', w: '14%', left: true }, { h: 'Qty', get: l => l.qty, t: 'num', w: '5%' },
+    { h: 'Description', get: l => l.name, w: '22%', left: true }, { h: 'Unit price (VND)', get: l => l.sale_price, t: 'money', w: '10%' },
+    { h: 'Total price (VND)', get: l => l.sale_price != null ? n0(l.sale_price) * n0(l.qty) : null, t: 'money', w: '10%' },
+    { h: 'Net book value', get: l => l.nbv, t: 'money', w: '10%' }, { h: 'Buyer — Name', get: l => l.buyer, w: '14%', left: true },
+    { h: 'Buyer — ID / Tax code', get: l => l.buyer_id, w: '10%' }];
+  const otherCols = [{ h: 'Asset Code', get: l => l.asset_code || 'N/A', w: '16%', left: true }, { h: 'Qty', get: l => l.qty, t: 'num', w: '6%' },
+    { h: 'Description', get: l => l.name, w: '28%', left: true }, { h: 'Submission comments', get: l => l.other_note, w: '45%', left: true }];
+  const nbvRows = d.lines.map((l, i) => [l, i]).filter(([l]) => n0(l.nbv) > 0);
+  return fsPage([
+    fsHead(y, 'DATE', fsR(d.date, 'date')),
+    fsBar('1. INITIATING PERSON'),
+    fsGrid([fc('NAME', fsR(k.created_name || k.created_email || ''), 4, 'fit'),
+            fc('DIVISION / DEPARTMENT / POSITION', fsR([pmDeptName(d.dept_code || x.p.dept_code), d.position].filter(Boolean).join(' · ')), 8, 'fit')]),
+    fsBar('2. PROPERTY TO BE DISPOSED', d.project_code || ''),
+    fsTable(y, cols, d.lines, { noDel: true }),
+    fsNote('(*) Please attach the photos as evidence of asset condition.   (**) Please explain for the asset which still has net book value (uncompleted depreciation / allocation).   '
+      + '(***) 1 = Sale · 2 = Department transfer · 3 = Other situation.'),
+    fsBar('SALES', t('lq.saleLater')),
+    fsTable(y, saleCols, sale, { noDel: true }),
+    fsBar('DEPARTMENT TRANSFER'),
+    fsNote('Not through liquidation: a transfer between departments is done in the asset register (bulk edit → department), which re-codes and re-labels the asset.'),
+    ...(other.length ? [fsBar('OTHER SITUATION'), fsTable(y, otherCols, other, { noDel: true }),
+                        fsNote('Please explain why the asset can not be sold, neither can the asset be transferred.')] : []),
+    ...(nbvRows.length ? [fsBar('(**) NET BOOK VALUE EXPLANATION'),
+                          fsGrid(nbvRows.map(([l, i]) => fc(`${i + 1}. ${l.asset_code || 'N/A'} — ${l.name || ''}`, fsR(l.nbv_note || ''), 6, 'left')))] : []),
+    lqConsent3(y)], 'land');
+}
+// The Disposal Form's three boxes: prepared by, checked by accounting (Chief Accountant), approved by the PHCL GM.
+function lqConsent3(x) {
+  const k = WF.pkg || {}, st = role => (WF.steps || []).find(s => s.role_code === role && s.status === 'approved');
+  const box = (lbl, title, sig, name, at) => el('div', { className: 'fsig' }, [
+    el('div', { className: 'sk', textContent: lbl }), el('div', { className: 'sr', textContent: title[0] }), el('div', { className: 'ss', textContent: title[1] || ' ' }),
+    el('div', { className: 'simg' }, sigPng(sig) ? el('img', { src: sigPng(sig), alt: '' }) : ''),
+    el('div', { className: 'sn', textContent: name || ' ' }), el('div', { className: 'sd', textContent: at ? fmtDate(String(at).slice(0, 10)) : ' ' })]);
+  const ca = st('CHIEF_ACC'), gm = st('JVC_GM');
+  const prep = (wfChain(pmEntity(x.p.dept_code), 'LR').find(c => c.step === 0) || {}).role_code;
+  return el('div', { className: 'fconsent' }, [el('div', { className: 'fct', textContent: 'Consent by:' }),
+    el('div', { className: 'fsigs', style: 'grid-template-columns:repeat(3,calc((100% - 24px) / 4));justify-content:center' }, [
+      box('Prepared by', prep ? wfSigTitle(prep) : ['', ''], k.prep_signature, k.submitted_at ? (k.created_name || k.created_email) : '', k.submitted_at),
+      box('Checked by Accounting Dept', ['Chief Accountant', 'Kế toán trưởng'], ca && ca.signature, ca && (ca.acted_name || ca.acted_email), ca && ca.acted_at),
+      box('Approved by PHCL GM', ['General Manager', 'Tổng Giám đốc'], gm && gm.signature, gm && (gm.acted_name || gm.acted_email), gm && gm.acted_at)])]);
+}
+
+/* ------------------------------------------------ condition photos of an LR
+   One photo at least per line (the Disposal Form's evidence), taken on the
+   phone / tablet or pasted as a OneDrive link — same two ways as the label
+   photos. Kept by document + line, so a line without an asset code has them too. */
+async function lqPhotoRows(docIds) {
+  if (!docIds.length) return [];
+  return SB.select('am_asset_photo', `select=*&pm_doc_id=in.(${docIds.join(',')})&kind=eq.condition&order=taken_at.desc`);
+}
+// The first photo of every line, ready for the Picture column (stored ones fetched with the person's token).
+async function lqPhotosLoad(docs) {
+  const lr = docs.filter(d => d.doc_type === 'LR');
+  if (!lr.length) return;
+  let rows = [];
+  try { rows = await lqPhotoRows(lr.map(d => d.id)); } catch { return; }
+  for (const d of lr) for (const [k] of LQ.ph) if (k.startsWith(d.id + ':')) LQ.ph.delete(k);
+  for (const r of rows.slice().reverse()) {             // oldest first, so the newest wins
+    const key = r.pm_doc_id + ':' + r.line_key;
+    if (r.source === 'link') { LQ.ph.set(key, { link: r.url }); continue; }
+    try { LQ.ph.set(key, { img: await phUrl(r.storage_path) }); } catch {}
+  }
+}
+async function lqPhotoGaps(doc) {
+  const data = WF.drafts.get(doc.id) || doc.data || {};
+  const rows = await lqPhotoRows([doc.id]);
+  return (data.lines || []).map((l, i) => [l, i]).filter(([l]) => !rows.some(r => r.line_key === l.key))
+    .map(([l, i]) => `${i + 1} (${l.asset_code || l.name || '?'})`);
+}
+async function lqPhotoAdd(doc, l, file, url) {
+  const base = { asset_id: l.asset_id || null, kind: 'condition', pm_doc_id: doc.id, line_key: l.key, taken_name: (ME && (ME.full_name || ME.email)) || null };
+  if (url != null) {
+    if (!/^https:\/\//i.test(url.trim())) throw new Error(t('ph.badLink'));
+    return SB.insert('am_asset_photo', [Object.assign(base, { source: 'link', url: url.trim() })]);
+  }
+  const blob = await phShrink(file);
+  const path = `lr/${doc.id}/${String(l.key).replace(/[^\w-]/g, '')}-${Date.now()}.jpg`;
+  const tok = await authToken();
+  const r = await fetch(`${CFG.url}/storage/v1/object/am-photo/${path}`, { method: 'POST',
+    headers: { apikey: CFG.key, Authorization: 'Bearer ' + tok, 'Content-Type': 'image/jpeg', 'x-upsert': 'false' }, body: blob });
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).message || m; } catch {} throw new Error(m); }
+  return SB.insert('am_asset_photo', [Object.assign(base, { source: 'storage', storage_path: path })]);
+}
+function lqPhotoPanel(doc) {
+  const card = el('div', { className: 'card phcard' });
+  const head = el('div', { className: 'chead' }, [el('h2', { textContent: t('lq.ph.h') }), el('span', { className: 'phprog' })]);
+  const body = el('div', { className: 'phlist', textContent: t('table.loading') });
+  const out = el('div');
+  card.append(head, el('div', { className: 'tdnote', textContent: t('lq.ph.hint') }), out, body);
+  const open = !['approved', 'cancelled', 'rejected'].includes(doc.status);
+  let last = '', tmr = null;
+  const draw = async () => {
+    const lines = ((WF.drafts.get(doc.id) || doc.data || {}).lines || []);
+    last = lines.map(l => l.key).join('|');
+    let rows = [];
+    try { rows = await lqPhotoRows([doc.id]); } catch (e) { body.textContent = ''; return msg(out, 'err', /am_asset_photo|line_key|PGRST|404/.test(e.message) ? t('lq.notInstalled') : e.message); }
+    body.innerHTML = '';
+    let done = 0;
+    if (!lines.length) body.append(el('div', { className: 'phnone', textContent: t('lq.ph.noLines') }));
+    lines.forEach((l, i) => {
+      const mine = rows.filter(r => r.line_key === l.key);
+      if (mine.length) done++;
+      const shot = el('div', { className: 'phshot' });
+      if (mine.length) {
+        const p = mine[0];
+        if (p.source === 'storage') {
+          const img = el('img', { alt: '' });
+          phUrl(p.storage_path).then(u => { img.src = u; img.onclick = () => window.open(u, '_blank'); LQ.ph.set(doc.id + ':' + l.key, { img: u }); }).catch(() => { img.alt = '⚠'; });
+          shot.append(img);
+        } else { shot.append(el('a', { href: p.url, target: '_blank', rel: 'noopener noreferrer', className: 'phlink', textContent: '🔗 ' + t('ph.linkOpen') }));
+                 LQ.ph.set(doc.id + ':' + l.key, { link: p.url }); }
+        if (mine.length > 1) shot.append(el('span', { className: 'phmore', textContent: '+' + (mine.length - 1) }));
+        shot.append(el('button', { className: 'xbtn', type: 'button', textContent: '×', title: t('ph.remove'), onclick: async () => {
+          if (!confirm(t('ph.removeQ'))) return;
+          try { await SB.remove('am_asset_photo', `id=eq.${p.id}`); LQ.ph.delete(doc.id + ':' + l.key); draw(); } catch (e) { msg(out, 'err', e.message); } } }));
+      } else shot.append(el('span', { className: 'phnone', textContent: '—' }));
+      const file = el('input', { type: 'file', accept: 'image/*', hidden: true });
+      file.setAttribute('capture', 'environment');
+      file.onchange = async () => {
+        if (!file.files[0]) return;
+        msg(out, 'info', t('ph.uploading'));
+        try { await lqPhotoAdd(doc, l, file.files[0]); msg(out, '', ''); draw(); } catch (e) { msg(out, 'err', e.message); }
+      };
+      const btns = open ? [file,
+        el('button', { className: 'btn tiny', type: 'button', textContent: '📷 ' + t('ph.take'), onclick: () => file.click() }),
+        el('button', { className: 'btn tiny', type: 'button', textContent: '🔗 ' + t('ph.link'), onclick: async () => {
+          const u = prompt(t('ph.linkQ'));
+          if (!u) return;
+          try { await lqPhotoAdd(doc, l, null, u); draw(); } catch (e) { msg(out, 'err', e.message); } } })] : [];
+      body.append(el('div', { className: 'phrow one' + (mine.length ? ' ok' : '') }, [
+        el('div', { className: 'phwho' }, [el('code', { textContent: `${i + 1}. ${l.asset_code || 'N/A'}` }), el('small', { textContent: [l.name, lqBi(LQ_COND, l.condition)].filter(Boolean).join(' · ') })]),
+        el('div', { className: 'phbox' }, [el('span', { className: 'phk', textContent: t('lq.ph.k') }), shot, el('div', { className: 'phbtns' }, btns)])]));
+    });
+    head.querySelector('.phprog').textContent = t('lq.ph.progress', { n: done, of: lines.length });
+    head.querySelector('.phprog').className = 'phprog' + (lines.length && done === lines.length ? ' ok' : '');
+  };
+  // The sheet redraws on every change: follow it only when the lines themselves changed.
+  LQ.phDraw = () => { clearTimeout(tmr); tmr = setTimeout(() => {
+    if (!card.isConnected) return;
+    const now = ((WF.drafts.get(doc.id) || doc.data || {}).lines || []).map(l => l.key).join('|');
+    if (now !== last) draw();
+  }, 400); };
+  draw();
+  return card;
+}
+
+/* ------------------------------------------------------------ the screen
+   Three tabs: the requests (every LR this person may see), the pool (lines of
+   approved LRs waiting for a council batch) and the assets already marked
+   8 / 24 that no request holds yet (from before, or from a replacement
+   project) — from there an LR is started with them in it. */
+async function lqLoad() {
+  const out = $('#lqMsg');
+  msg(out, 'info', t('table.loading'));
+  try {
+    await wfLookups(); await wfCatLoad();
+    if (!WF.types.some(x => x.code === 'LR')) { LQ.docs = []; LQ.items = null; LQ.orphans = []; lqRender(); return msg(out, 'warn', t('lq.notInstalled')); }
+    const [docs, items, marked] = await Promise.all([
+      pmSelectAll('pm_doc', 'select=id,doc_no,status,dept_code,pkg_id,created_by,created_email,created_at,submitted_at,decided_at,total_value,data&doc_type=eq.LR&order=id.desc'),
+      pmSelectAll('pm_lq_item', 'select=*&order=id').catch(() => null),
+      can('assets', 'view') ? pmSelectAll('am_asset', 'select=id,asset_code,barcode,name_vi,name_en,qty,unit_code,unit_price,dept_code,location_code,asset_kind,status_code,in_use_date,purchase_date'
+        + '&status_code=in.(8,24)&order=asset_code').catch(() => []) : []]);
+    const pids = [...new Set(docs.map(d => d.pkg_id))];
+    const pkgs = [], steps = [];
+    for (let i = 0; i < pids.length; i += 150) {
+      const ids = pids.slice(i, i + 150).join(',');
+      pkgs.push(...await SB.select('pm_pkg', `select=id,status,current_step,created_name&id=in.(${ids})`));
+      steps.push(...await SB.select('pm_pkg_step', `select=pkg_id,step,role_code,kind&pkg_id=in.(${ids})`));
+    }
+    LQ.pkgs = new Map(pkgs.map(k => [k.id, k]));
+    LQ.steps = new Map(pkgs.map(k => [k.id, steps.find(s => s.pkg_id === k.id && s.step === k.current_step) || null]));
+    LQ.docs = docs;
+    LQ.items = items;
+    const held = new Set(docs.filter(d => !['cancelled', 'rejected'].includes(d.status))
+      .flatMap(d => ((d.data || {}).lines || []).map(l => l.asset_id).filter(Boolean)));
+    LQ.orphans = marked.filter(a => !held.has(a.id));
+    LQ.sel = new Set([...LQ.sel].filter(id => LQ.orphans.some(a => a.id === id)));
+    msg(out, '', '');
+    lqRender();
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+const lqDays = iso => iso ? Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)) : null;
+function lqRender() {
+  const tabs = $('#lqTabs');
+  tabs.innerHTML = '';
+  const approved = new Map(LQ.docs.filter(d => d.status === 'approved').map(d => [d.id, d]));
+  const pool = (LQ.items || []).filter(i => approved.has(i.lr_doc_id));
+  for (const [v, key, n] of [['lr', 'lq.tab.lr', LQ.docs.length], ['pool', 'lq.tab.pool', pool.filter(i => i.status === 'pool').length],
+                             ['orphan', 'lq.tab.orphan', LQ.orphans.length]]) {
+    const b = el('button', { textContent: `${t(key)} (${fmtInt(n)})` });
+    b.classList.toggle('on', LQ.tab === v);
+    b.onclick = () => { LQ.tab = v; lqRender(); };
+    tabs.append(b);
+  }
+  const depts = [...new Set([...LQ.docs.map(d => d.dept_code), ...pool.map(i => i.dept_code), ...LQ.orphans.map(a => a.dept_code)].filter(Boolean))].sort();
+  selFill($('#lqDept'), [['', t('pm.f.all')], ...depts.map(c => [c, `${c} — ${pmDeptName(c)}`])]);
+  const stOpts = LQ.tab === 'lr' ? [['', t('pm.f.all')], ...WF_STATUS.map(s => [s, t('wf.st.' + s)])]
+    : LQ.tab === 'pool' ? [['', t('pm.f.all')], ...['pool', 'batched', 'sold', 'destroyed', 'kept'].map(s => [s, t('lq.is.' + s)])] : [];
+  $('#lqStWrap').hidden = !stOpts.length;
+  if (stOpts.length) { const s = $('#lqSt'); selFill(s, stOpts); s.value = LQ.stv[LQ.tab] || ''; }
+  $('#lqNewBtn').hidden = !lqPrepDepts().length;
+  const dept = $('#lqDept').value, st = $('#lqSt').value, q = hnorm($('#lqQ').value);
+  const head = $('#lqGrid thead'), body = $('#lqGrid tbody'), sum = $('#lqSum');
+  head.innerHTML = ''; body.innerHTML = ''; sum.innerHTML = '';
+  const th = cols => head.append(el('tr', {}, cols.map(([k, c]) => el('th', { className: c || '', textContent: k ? t(k) : '' }))));
+  const none = (n, cols) => { if (!n) body.append(el('tr', {}, el('td', { colSpan: cols, style: 'color:var(--dim);padding:14px', textContent: t('lq.none') }))); };
+  const money = v => el('td', { className: 'num', textContent: v != null ? fmtMoney(v) : '' });
+  const tot = (label, span, vals, after) => body.append(el('tr', { className: 'tot' }, [el('td', { colSpan: span, textContent: label }), ...vals.map(money), ...after.map(() => el('td'))]));
+  LQ.shown = [];
+  if (LQ.tab === 'lr') {
+    th([['lq.c.no'], ['lq.c.date'], ['pm.col.dept'], ['lq.c.lines', 'num'], ['lq.c.orig', 'num'], ['lq.c.nbv', 'num'], ['lq.c.status'], ['lq.c.waiting'], ['lq.c.source'], ['lq.c.by']]);
+    const rows = LQ.docs.filter(d => (!dept || d.dept_code === dept) && (!st || d.status === st)
+      && (!q || hnorm(`${d.doc_no} ${d.dept_code} ${pmDeptName(d.dept_code)} ${(d.data || {}).project_code || ''} ${((d.data || {}).lines || []).map(l => `${l.asset_code || ''} ${l.name || ''}`).join(' ')}`).includes(q)));
+    for (const d of rows) {
+      const x = d.data || {}, lines = x.lines || [], k = LQ.pkgs.get(d.pkg_id) || {}, s = LQ.steps.get(d.pkg_id);
+      const orig = lines.reduce((a, l) => a + n0(l.original_value), 0), nbv = lines.reduce((a, l) => a + (n0(l.original_value) - n0(l.depreciation)), 0);
+      const tr = el('tr', { style: 'cursor:pointer' }, [el('td', {}, el('code', { textContent: d.doc_no })),
+        el('td', { textContent: fmtDate(x.date || String(d.created_at).slice(0, 10)) }),
+        el('td', { textContent: pmDeptName(d.dept_code), title: d.dept_code || '' }),
+        el('td', { className: 'num', textContent: fmtInt(lines.length) }), money(orig), money(nbv),
+        el('td', {}, wfChip(d.status)),
+        el('td', {}, d.status === 'in_review' && s ? el('span', { className: 'stg band-' + wfBand(s.role_code), textContent: `${s.step} · ${wfRoleName(s.role_code)}` }) : ''),
+        el('td', { textContent: x.project_code ? `${x.rr_doc_no || 'RR'} · ${x.project_code}` : t('lq.srcDept') }),
+        el('td', { textContent: k.created_name || d.created_email || '' })]);
+      tr.onclick = () => wfOpen(d.id);
+      body.append(tr);
+      LQ.shown.push({ [t('lq.c.no')]: d.doc_no, [t('lq.c.date')]: x.date || '', [t('pm.col.dept')]: d.dept_code, [t('lq.c.lines')]: lines.length,
+                      [t('lq.c.orig')]: orig, [t('lq.c.nbv')]: nbv, [t('lq.c.status')]: t('wf.st.' + d.status),
+                      [t('lq.c.waiting')]: d.status === 'in_review' && s ? wfRoleName(s.role_code) : '', [t('lq.c.source')]: x.project_code || '', [t('lq.c.by')]: k.created_name || d.created_email || '' });
+    }
+    none(rows.length, 10);
+  } else if (LQ.tab === 'pool') {
+    if (LQ.items == null) { none(0, 1); return msg('#lqMsg', 'warn', t('lq.notInstalled')); }
+    th([['lq.c.no'], ['lq.c.code'], ['lq.c.name'], ['lq.c.qty', 'num'], ['pm.col.dept'], ['lq.c.cond'], ['lq.c.mode'], ['lq.c.orig', 'num'], ['lq.c.dep', 'num'], ['lq.c.nbv', 'num'],
+        ['lq.c.approved'], ['lq.c.days', 'num'], ['lq.c.pstat']]);
+    const rows = pool.filter(i => (!dept || i.dept_code === dept) && (!st || i.status === st)
+      && (!q || hnorm(`${approved.get(i.lr_doc_id).doc_no} ${i.asset_code || ''} ${i.name} ${i.dept_code || ''}`).includes(q)));
+    for (const i of rows) {
+      const d = approved.get(i.lr_doc_id), days = lqDays(d.decided_at || i.approved_at);
+      const tr = el('tr', { style: 'cursor:pointer' }, [el('td', {}, el('code', { textContent: d.doc_no })), el('td', {}, el('code', { textContent: i.asset_code || 'N/A' })),
+        el('td', { textContent: i.name }), el('td', { className: 'num', textContent: `${fmtNum(i.qty)} ${i.unit || ''}` }),
+        el('td', { textContent: i.dept_code || '' }), el('td', { textContent: lqBi(LQ_COND, i.condition) }), el('td', { textContent: lqBi(LQ_MODE, i.mode) }),
+        money(i.original_value), money(i.depreciation), money(i.nbv),
+        el('td', { textContent: fmtDate(String(d.decided_at || i.approved_at).slice(0, 10)) }),
+        el('td', { className: 'num' + (days > 180 ? ' bad' : ''), textContent: days != null ? fmtInt(days) : '' }),
+        el('td', {}, el('span', { className: 'lqis ' + i.status, textContent: t('lq.is.' + i.status) }))]);
+      tr.onclick = () => wfOpen(d.id);
+      body.append(tr);
+      LQ.shown.push({ [t('lq.c.no')]: d.doc_no, [t('lq.c.code')]: i.asset_code || '', [t('lq.c.name')]: i.name, [t('lq.c.qty')]: Number(i.qty), unit: i.unit || '',
+                      [t('pm.col.dept')]: i.dept_code || '', [t('lq.c.cond')]: i.condition || '', [t('lq.c.mode')]: i.mode || '',
+                      [t('lq.c.orig')]: i.original_value != null ? Number(i.original_value) : null, [t('lq.c.dep')]: i.depreciation != null ? Number(i.depreciation) : null,
+                      [t('lq.c.nbv')]: i.nbv != null ? Number(i.nbv) : null, [t('lq.c.approved')]: String(d.decided_at || i.approved_at).slice(0, 10),
+                      [t('lq.c.days')]: days, [t('lq.c.pstat')]: t('lq.is.' + i.status) });
+    }
+    if (rows.length) tot(t('lq.total', { n: fmtInt(rows.length) }), 7, [pmSum(rows, 'original_value'), pmSum(rows, 'depreciation'), pmSum(rows, 'nbv')], [1, 2, 3]);
+    none(rows.length, 13);
+    const old = rows.filter(i => i.status === 'pool' && lqDays((approved.get(i.lr_doc_id) || {}).decided_at || i.approved_at) > 180).length;
+    if (old) sum.append(el('div', { className: 'msg warn', textContent: t('lq.old', { n: old }) }));
+  } else {
+    const rows = LQ.orphans.filter(a => (!dept || a.dept_code === dept)
+      && (!q || hnorm(`${a.asset_code} ${a.barcode} ${a.name_vi} ${a.name_en || ''}`).includes(q)));
+    const all = el('input', { type: 'checkbox', checked: rows.length > 0 && rows.every(a => LQ.sel.has(a.id)), title: t('lq.selAll') });
+    all.onchange = () => { for (const a of rows) all.checked ? LQ.sel.add(a.id) : LQ.sel.delete(a.id); lqRender(); };
+    head.append(el('tr', {}, [el('th', {}, all), ...[['lq.c.code'], ['col.barcode'], ['lq.c.name'], ['lq.c.qty', 'num'], ['pm.col.dept'], ['lq.c.astat'], ['lq.c.orig', 'num']]
+      .map(([k, c]) => el('th', { className: c || '', textContent: t(k) }))]));
+    for (const a of rows) {
+      const cb = el('input', { type: 'checkbox', checked: LQ.sel.has(a.id) });
+      cb.onchange = () => { cb.checked ? LQ.sel.add(a.id) : LQ.sel.delete(a.id); lqRender(); };
+      const v = a.unit_price != null ? Number(a.unit_price) * (a.asset_kind === 'unique' ? 1 : (n0(a.qty) || 1)) : null;
+      body.append(el('tr', {}, [el('td', {}, cb), el('td', {}, el('code', { textContent: a.asset_code })), el('td', { textContent: a.barcode || '' }),
+        el('td', { textContent: [a.name_vi, a.name_en].filter(Boolean).join(' / ') }), el('td', { className: 'num', textContent: `${fmtNum(a.qty)} ${a.unit_code || ''}` }),
+        el('td', { textContent: a.dept_code }), el('td', { textContent: amStatusLabel(a.status_code) }), money(v)]));
+      LQ.shown.push({ [t('lq.c.code')]: a.asset_code, barcode: a.barcode, [t('lq.c.name')]: [a.name_vi, a.name_en].filter(Boolean).join(' / '), [t('lq.c.qty')]: Number(a.qty),
+                      [t('pm.col.dept')]: a.dept_code, [t('lq.c.astat')]: amStatusLabel(a.status_code), [t('lq.c.orig')]: v });
+    }
+    none(rows.length, 8);
+    sum.append(el('div', { className: 'msg info', textContent: t('lq.orphanHint') }));
+    if (LQ.sel.size) sum.append(el('div', { className: 'row', style: 'gap:8px;align-items:center;margin-top:8px' }, [
+      el('b', { textContent: t('lq.selN', { n: fmtInt(LQ.sel.size) }) }),
+      el('button', { className: 'btn pri', type: 'button', textContent: t('lq.fromSel'), onclick: () => lqNewForm(LQ.orphans.filter(a => LQ.sel.has(a.id))) }),
+      el('button', { className: 'btn', type: 'button', textContent: t('lq.selClear'), onclick: () => { LQ.sel.clear(); lqRender(); } })]));
+  }
+}
+
+// The departments this person may draw up an LR for (chain step 0 of the department's entity, liquidation "create").
+function lqPrepDepts() {
+  if (!ME || !can('liquidation', 'create') || !PM.orgMap) return [];
+  return [...PM.orgMap.values()].filter(o => o.parent_code && wfCanPrepare('LR', o.code))
+    .map(o => o.code).sort();
+}
+
+/* A new LR: the department (the number carries it), the date, and — only if
+   paper LRs of this year already used some numbers — the number to start at. */
+function lqNewForm(assets = []) {
+  const box = $('#lqNewBox');
+  box.innerHTML = '';
+  const depts = lqPrepDepts();
+  if (!depts.length) return msg('#lqMsg', 'err', t('lq.cannot'));
+  const fromDepts = [...new Set(assets.map(a => a.dept_code))];
+  if (fromDepts.length > 1) return msg('#lqMsg', 'err', t('lq.oneDept', { list: fromDepts.join(', ') }));
+  const dsel = el('select');
+  for (const c of depts) dsel.append(el('option', { value: c, textContent: `${c} — ${pmDeptName(c)}` }));
+  if (fromDepts[0]) {
+    if (!depts.includes(fromDepts[0])) return msg('#lqMsg', 'err', t('lq.notYours', { d: fromDepts[0] }));
+    dsel.value = fromDepts[0]; dsel.disabled = true;
+  }
+  const date = el('input', { type: 'date', value: new Date().toISOString().slice(0, 10) });
+  const no = el('input', { inputMode: 'numeric', placeholder: '…', style: 'max-width:110px' });
+  const next = el('code', { textContent: '…' });
+  const out = el('div');
+  const peek = async () => {
+    try { next.textContent = await SB.rpc('pm_lq_next_no', { p_dept: dsel.value, p_year: Number(date.value.slice(0, 4)) || new Date().getFullYear() }); }
+    catch { next.textContent = '—'; }
+  };
+  dsel.onchange = peek; date.onchange = peek;
+  const go = el('button', { className: 'btn pri', type: 'button', textContent: t('lq.create') });
+  go.onclick = async () => {
+    go.disabled = true;
+    try {
+      const n = no.value.trim() ? parseInt(no.value, 10) : null;
+      if (no.value.trim() && !(n > 0)) throw new Error(t('lq.badNo'));
+      const data = { date: date.value, dept_code: dsel.value, reason: '', position: '', lines: assets.map(lqLineOf), evidence: [] };
+      WF_FORMS.LR.derive(data);
+      const id = await SB.rpc('pm_lq_create', { p_dept: dsel.value, p_data: data, p_no: n });
+      box.innerHTML = ''; LQ.sel.clear();
+      wfOpen(id);
+    } catch (e) { msg(out, 'err', e.message); go.disabled = false; }
+  };
+  box.append(el('div', { className: 'card lqnew' }, [
+    el('h2', { textContent: assets.length ? t('lq.newFrom', { n: fmtInt(assets.length) }) : t('lq.new') }),
+    el('div', { className: 'row', style: 'align-items:flex-end;flex-wrap:wrap;gap:12px' }, [
+      el('div', { className: 'fld', style: 'max-width:280px' }, [el('label', { textContent: t('pm.col.dept') }), dsel]),
+      el('div', { className: 'fld', style: 'max-width:170px' }, [el('label', { textContent: t('lq.c.date') }), date]),
+      el('div', { className: 'fld', style: 'max-width:130px' }, [el('label', { textContent: t('lq.noOpt') }), no]),
+      el('div', { className: 'fld' }, [el('label', { textContent: t('lq.nextNo') }), next]),
+      go, el('button', { className: 'btn', type: 'button', textContent: t('auth.cancel'), onclick: () => { box.innerHTML = ''; } })]),
+    el('div', { className: 'tdnote', textContent: t('lq.noHint') }), out]));
+  peek();
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function lqXlsx() {
+  if (!(LQ.shown || []).length) return msg('#lqMsg', 'warn', t('lq.none'));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(LQ.shown), LQ.tab === 'lr' ? 'LR' : LQ.tab === 'pool' ? 'Pool' : 'Awaiting');
+  const file = `phcl-liquidation-${LQ.tab}-${bkStamp()}.xlsx`;
+  XLSX.writeFile(wb, file);
+  msg('#lqMsg', 'ok', t('lq.exported', { file }));
+}
+
+/* To-do: this person's LRs still in draft — started and not sent, or drawn up
+   automatically from a replacement project's RR when its last handover was approved. */
+async function lqTodos() {
+  if (!ME || !can('liquidation', 'create')) return [];
+  const rows = await SB.select('pm_doc', `select=id,doc_no,dept_code,created_at,total_value,src:data->>project_code,rr:data->>rr_doc_no&doc_type=eq.LR&status=eq.draft&created_by=eq.${ME.id}&order=id`);
+  return rows.map(d => ({ kind: 'draft', doc_type: 'LR', grp: 'LR', doc_id: d.id, doc_no: d.doc_no, project_code: d.src || '', project_name: t('lq.docName'),
+                          dept_code: d.dept_code, total_value: d.total_value, submitted_at: d.created_at, rr: d.rr }));
+}
+
+function initLq() {
+  if (!$('#lqTabs')) return;
+  $('#lqDept').onchange = lqRender;
+  $('#lqSt').onchange = () => { LQ.stv[LQ.tab] = $('#lqSt').value; lqRender(); };
+  $('#lqQ').oninput = lqRender;
+  $('#lqNewBtn').onclick = () => lqNewForm([]);
+  $('#lqXlsBtn').onclick = lqXlsx;
 }
