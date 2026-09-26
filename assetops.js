@@ -117,8 +117,8 @@ async function aoCapture(build, file, fmt, out) {
   finally { host.remove(); }
 }
 const aoPdfBtns = (build, file, out) => [
-  el('button', { className: 'btn tiny', type: 'button', textContent: t('wf.cap.preview'), onclick: () => aoCapture(build, file(), 'preview', out) }),
-  el('button', { className: 'btn tiny', type: 'button', textContent: t('wf.cap.pdf'), onclick: () => aoCapture(build, file(), 'pdf', out) })];
+  el('button', { className: 'btn tiny', type: 'button', textContent: '👁 ' + t('ao.pdfPrev'), onclick: () => aoCapture(build, file(), 'preview', out) }),
+  el('button', { className: 'btn tiny', type: 'button', textContent: '⬇ ' + t('ao.pdfSave'), onclick: () => aoCapture(build, file(), 'pdf', out) })];
 
 /* ============================================================ TRANSFERS */
 const AO_TF_KEYS = { from: 'ao.tf.k.from', to: 'ao.tf.k.to', jvc: 'ao.tf.k.jvc', am: 'ao.tf.k.am', cancel: 'ao.tf.k.cancel' };
@@ -257,9 +257,9 @@ function tfDetail(body, r) {
               el('button', { className: 'btn pri', type: 'button', textContent: t('ao.tf.submit'), onclick: async () => {
                 try { await SB.rpc('am_tf_submit', { p_id: r.id }); S.flash = t('ao.tf.sent'); await tfLoad(); wfBadge(); } catch (e) { aoErr(out, e); } } }));
   }
-  if (s && tfActor(s)) btns.push(el('button', { className: 'btn pri', type: 'button', textContent: t(s.key === 'am' ? 'ao.tf.confirm' : s.key === 'to' ? 'ao.tf.receive' : 'wf.a.approve'), onclick: () => act('approve') }),
-                                 el('button', { className: 'btn', type: 'button', textContent: t('wf.a.return'), onclick: () => act('return') }),
-                                 el('button', { className: 'btn', type: 'button', textContent: t('wf.a.reject'), onclick: () => act('reject') }));
+  if (s && tfActor(s)) btns.push(el('button', { className: 'btn pri', type: 'button', textContent: t(s.key === 'am' ? 'ao.tf.confirm' : s.key === 'to' ? 'ao.tf.receive' : 'ao.tf.approve'), onclick: () => act('approve') }),
+                                 el('button', { className: 'btn', type: 'button', textContent: t('ao.tf.return'), onclick: () => act('return') }),
+                                 el('button', { className: 'btn', type: 'button', textContent: t('ao.tf.reject'), onclick: () => act('reject') }));
   if (['draft', 'returned', 'pending'].includes(r.status) && (isMine || can('assets', 'admin')))
     btns.push(el('button', { className: 'btn', type: 'button', textContent: t('ao.tf.cancel'), onclick: async () => {
       const c = prompt(t('ao.tf.whyCancel')); if (c == null) return;

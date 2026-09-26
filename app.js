@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260926k';
+const APP_VERSION = '20260926l';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -13246,12 +13246,20 @@ async function lqAssetFill(l, code, d) {
     unit_price: a.unit_price != null ? Number(a.unit_price) : null, orig_manual: false });
   delete l.fin_as_of; delete l.fin_u;
   lqFin(l, a);
-  // Repairs so far and the warranty, once 31_asset_ops.sql has run (left as typed otherwise).
+  await lqEnrich([l]);
+}
+// Repairs so far (incidents) and the warranty, once 31_asset_ops.sql has run; left as typed otherwise.
+async function lqEnrich(lines) {
+  const ids = [...new Set(lines.map(l => l.asset_id).filter(Boolean))];
+  if (!ids.length) return;
   try {
-    const [inc, [w]] = await Promise.all([SB.select('am_incident', `select=id&asset_id=eq.${a.id}&kind=in.(repair,breakage)&status=neq.cancelled`),
-                                          SB.select('am_asset', `select=warranty_until&id=eq.${a.id}`)]);
-    if (inc.length) l.repairs = inc.length;
-    if (w && w.warranty_until) l.warranty = w.warranty_until;
+    const [inc, ws] = await Promise.all([SB.select('am_incident', `select=asset_id&asset_id=in.(${ids.join(',')})&kind=in.(repair,breakage)&status=neq.cancelled`),
+                                         SB.select('am_asset', `select=id,warranty_until&id=in.(${ids.join(',')})`)]);
+    for (const l of lines) {
+      const n = inc.filter(i => i.asset_id === l.asset_id).length, w = ws.find(x => x.id === l.asset_id);
+      if (n) l.repairs = n;
+      if (w && w.warranty_until) l.warranty = w.warranty_until;
+    }
   } catch {}
 }
 /* Once accounting has booked the asset (sql/30), the LR takes cost, accumulated
@@ -13700,6 +13708,7 @@ function lqNewForm(assets = []) {
       const n = no.value.trim() ? parseInt(no.value, 10) : null;
       if (no.value.trim() && !(n > 0)) throw new Error(t('lq.badNo'));
       const data = { date: date.value, dept_code: dsel.value, reason: '', position: '', lines: assets.map(lqLineOf), evidence: [] };
+      await lqEnrich(data.lines);
       WF_FORMS.LR.derive(data);
       const id = await SB.rpc('pm_lq_create', { p_dept: dsel.value, p_data: data, p_no: n });
       box.innerHTML = ''; LQ.sel.clear();

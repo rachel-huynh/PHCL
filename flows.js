@@ -257,39 +257,49 @@ const FLOWS = [
           li: ['AM xuất file "Mã TS cho kế toán" → kế toán dán vào "Mã TS mới"',
                'Chênh lệch nguyên giá / kỳ / bộ phận / dòng biến mất: hai bên thống nhất'],
           doc: ['File Mã TS mới'] }] }] },
-    { t: '🔄 GIAI ĐOẠN 3 – Sử dụng & theo dõi dòng đời', en: 'In use — lifecycle tracking', n: 'Bước 9 → 11', rows: [
-      { k: 'B9', s: [
-        { l: 'user', n: 'Bước 9', t: 'Sử dụng & báo sự cố', en: 'Use & report',
-          li: ['Báo hỏng, sửa chữa (work order), bảo hành', 'Mất / vỡ: B&amp;L report'],
-          doc: ['Work order', 'B&L report'] }] },
-      { k: 'B10–B11', s: [
-        { l: 'am', n: 'Bước 10', t: 'Cập nhật sổ tài sản', en: 'Register upkeep',
-          li: ['Trạng thái: 0–10 (TSCĐ), 20–25 (CCDC): đang dùng, dự phòng, hỏng, chờ thanh lý…',
-               'Điều chuyển bộ phận / vị trí: hiện sửa trực tiếp (hàng loạt) trên <b>Sổ tài sản</b>, có nhật ký thay đổi'],
-          go: 'register' },
-        { l: 'jvc', n: 'Bước 11', soon: true, t: 'Phiếu điều chuyển có duyệt', en: 'Transfer with approval',
-          li: ['Bộ phận giao → bộ phận nhận → nhóm QLTS; điều chuyển giữa pháp nhân cần BGĐ duyệt',
-               'Tự cập nhật bộ phận / vị trí khi duyệt xong'],
-          doc: ['Phiếu điều chuyển'] }] }] },
-    { t: '🔍 GIAI ĐOẠN 4 – Kiểm tra, kiểm kê & báo cáo định kỳ', en: 'Checks, stock-take & periodic reports', n: 'Bước 12 → 15', rows: [
-      { k: 'B12–B13', s: [
-        { l: 'am', n: 'Bước 12', t: 'Đối chiếu hàng tháng', en: 'Monthly reconciliation',
+    { t: '🔄 GIAI ĐOẠN 3 – Sử dụng, sự cố & điều chuyển', en: 'In use — incidents & transfers', n: 'Bước 9 → 12', rows: [
+      { k: 'B9–B10', s: [
+        { l: 'user', n: 'Bước 9', t: 'Báo sự cố', en: 'Report an incident',
+          li: ['Hỏng / bảo dưỡng / vỡ (B&amp;L) / mất — ở <b>Sự cố &amp; sửa chữa</b> hoặc từ bảng tài sản',
+               'Báo hỏng → tài sản "chờ sửa" (3 / 25); tự tích "còn bảo hành" theo hạn bảo hành'],
+          doc: ['Phiếu báo sự cố'], go: 'incident' },
+        { l: 'am', n: 'Bước 10', t: 'Xử lý & đóng sự cố', en: 'Repair & close',
+          li: ['Work order, đơn vị sửa, chi phí; "đang xử lý" → đang sửa (5) / bảo dưỡng (6)',
+               'Đóng: sửa xong → tình trạng cũ · không sửa được → 4 / 25 → <b>lập LR</b> (WF-03) · mất → 0 (CCDC trừ số lượng)',
+               'Số lần sửa và hạn bảo hành tự điền vào LR'],
+          go: 'incident' }] },
+      { k: 'B11–B12', s: [
+        { l: 'user', n: 'Bước 11', t: 'Lập phiếu điều chuyển', en: 'Transfer slip',
+          li: ['Bộ phận giao chọn tài sản, bộ phận / vị trí nhận, lý do', 'CCDC chuyển một phần → tách dòng mới (mã + mã vạch mới)'],
+          doc: ['Phiếu điều chuyển'], go: 'transfer' },
+        { l: 'am', n: 'Bước 12', t: 'Duyệt & cập nhật sổ', en: 'Approve & update',
+          li: ['Trưởng BP giao → trưởng BP nhận → TGĐ JVC (khác pháp nhân) → QLTS xác nhận',
+               'Đổi bộ phận: <b>cấp mã mới</b>, giữ mã vạch, đưa tem vào hàng đợi in lại'],
+          go: 'transfer' }] }] },
+    { t: '🔍 GIAI ĐOẠN 4 – Kiểm tra, kiểm kê & báo cáo định kỳ', en: 'Checks, stock-take & periodic reports', n: 'Bước 13 → 17', rows: [
+      { k: 'B13–B14', s: [
+        { l: 'am', n: 'Bước 13', t: 'Đối chiếu hàng tháng', en: 'Monthly reconciliation',
           li: ['Theo dõi: tài sản tạm chờ ≥ 3 tháng, dòng KT chưa có tài sản, dòng gộp chưa phân bổ, chênh lệch',
                'Việc còn lại chuyển sang tháng sau (gối đầu)'], go: 'acc' },
-        { l: 'user', n: 'Bước 13', soon: true, t: 'Kiểm kê định kỳ', en: 'Periodic stock-take',
-          li: ['6 tháng / năm, theo bộ phận – vị trí', 'Quét mã vạch trên máy tính bảng; thừa / thiếu / sai vị trí / hỏng',
-               'Thành viên kiểm kê ký biên bản'],
-          doc: ['Biên bản kiểm kê'] }] },
-      { k: 'B14–B15', s: [
-        { l: 'fin', n: 'Bước 14', t: 'Xử lý chênh lệch kiểm kê', en: 'Resolve differences',
-          li: ['Thiếu → B&amp;L / đề xuất thanh lý (mất = trạng thái 0)', 'Thừa → bổ sung vào sổ; sai vị trí → điều chuyển'] },
-        { l: 'jvc', n: 'Bước 15', soon: true, t: 'Báo cáo định kỳ', en: 'Periodic reports',
-          li: ['Tháng / quý / năm: số lượng, nguyên giá, GTCL theo bộ phận – nhóm – trạng thái',
-               'Tài sản chờ thanh lý, tài sản chưa ghi nhận, kết quả kiểm kê', 'BGĐ xem & phê duyệt biên bản kiểm kê'],
-          doc: ['Báo cáo tài sản định kỳ'] }] }] },
-    { t: '🏁 GIAI ĐOẠN 5 – Kết thúc dòng đời', en: 'End of life', n: 'Bước 16', rows: [
-      { k: 'B16', s: [
-        { l: 'user', n: 'Bước 16', t: 'Đề xuất thanh lý → WF-03', en: 'Disposal',
+        { l: 'am', n: 'Bước 14', t: 'Mở đợt kiểm kê', en: 'Open a stock-take',
+          li: ['Chọn bộ phận / vị trí, ngày, ban kiểm kê', 'Mở đợt → <b>chốt danh sách sổ</b> tại thời điểm mở'],
+          go: 'stock' }] },
+      { k: 'B15–B16', s: [
+        { l: 'user', n: 'Bước 15', t: 'Kiểm trên máy tính bảng', en: 'Count on the tablet',
+          li: ['Chọn vị trí đang đứng, quét mã vạch', 'Thấy / không thấy / sai vị trí / thiếu SL / hỏng; mã lạ → ghi "thừa"'],
+          go: 'stockcount' },
+        { l: 'am', n: 'Bước 16', t: 'Đóng đợt & biên bản', en: 'Close & minutes',
+          li: ['Cập nhật vị trí; không thấy → sự cố "mất"; hỏng → sự cố "sửa chữa"',
+               'Biên bản kiểm kê (chênh lệch / toàn bộ) PDF, Excel; thành viên ký'],
+          doc: ['Biên bản kiểm kê'], go: 'stock' }] },
+      { k: 'B17', s: [
+        { l: 'jvc', n: 'Bước 17', t: 'Báo cáo định kỳ', en: 'Periodic reports',
+          li: ['Tháng / quý / năm: số lượng, giá trị, nguyên giá KT, GTCL theo bộ phận – nhóm – tình trạng',
+               'Biến động trong kỳ, việc tồn, kết quả kiểm kê; <b>chốt kỳ</b> để lưu và so sánh', 'PDF / Excel gửi BGĐ'],
+          doc: ['Báo cáo tài sản định kỳ'], go: 'amrep' }] }] },
+    { t: '🏁 GIAI ĐOẠN 5 – Kết thúc dòng đời', en: 'End of life', n: 'Bước 18', rows: [
+      { k: 'B18', s: [
+        { l: 'user', n: 'Bước 18', t: 'Đề xuất thanh lý → WF-03', en: 'Disposal',
           li: ['RR "Liquidation" khi thay thế, hoặc LR do bộ phận đề xuất → trạng thái 8 / 24 chờ thanh lý',
                'Đóng đợt: 7 đã thanh lý · 23 CCDC đã thanh lý · 9 huỷ · 0 mất'], go: 'liq' },
         { l: 'fin', t: 'Ghi giảm', li: ['Kế toán ghi giảm; tab "Chênh lệch" báo tài sản đã thanh lý mà sổ KT chưa ghi giảm'] }] }] }],
@@ -301,9 +311,8 @@ const FLOWS = [
           'Đối chiếu <b>gối đầu</b>: không khoá tháng, việc tồn chuyển sang tháng sau',
           'Ghép từ 2022 trở đi trước; dữ liệu cũ hơn xử lý sau',
           'Mọi thay đổi trên sổ tài sản được ghi nhật ký'],
-  remind: 'Nhắc phát triển tiếp module Quản lý tài sản: (1) kiểm kê định kỳ bằng máy tính bảng quét mã vạch + biên bản kiểm kê; '
-        + '(2) phiếu điều chuyển có chuỗi duyệt; (3) báo cáo định kỳ tự động (tháng / quý / năm); (4) sửa chữa – bảo hành – B&amp;L; '
-        + '(5) dòng thời gian (lịch sử) của từng tài sản. Các bước đánh dấu <b>🔜</b> là phần chưa có trên app.'
+  remind: 'Đã có trên app (26/09/2026): phiếu điều chuyển có duyệt, sự cố – sửa chữa – bảo hành – B&amp;L, kiểm kê định kỳ bằng máy tính bảng, báo cáo định kỳ có chốt kỳ, dòng đời từng tài sản (bấm mã tài sản ở Sổ tài sản). '
+        + 'Còn chờ quyết định: gửi báo cáo tự động theo lịch, chữ ký tay trên phiếu điều chuyển / biên bản kiểm kê, email thông báo.'
 },
 /* ═══════════════════════════════════════════════════════════════ 3 */
 { id: '3', code: 'WF-03', icon: '♻️',

@@ -709,7 +709,8 @@ begin
   end if;
   for l in select cl.*, a.status_code as cur_status, a.dept_code as cur_dept from am_count_line cl left join am_asset a on a.id = cl.asset_id
            where cl.count_id = c.id and cl.asset_id is not null order by cl.id loop
-    if coalesce((p_apply ->> 'move')::boolean, false) and l.found and l.loc_found is not null
+    -- Thừa (tài sản của bộ phận khác / ngoài danh sách) KHÔNG tự đổi vị trí: đi đúng đường là phiếu điều chuyển.
+    if coalesce((p_apply ->> 'move')::boolean, false) and l.found and not l.extra and l.loc_found is not null
        and l.loc_found is distinct from l.loc_book and exists (select 1 from am_location where code = l.loc_found) then
       update am_asset set location_code = l.loc_found where id = l.asset_id;
       update am_count_line set action = 'moved' where id = l.id;
