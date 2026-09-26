@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260926h';
+const APP_VERSION = '20260926k';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -40,7 +40,7 @@ function colLabel(c) {
 const LS_KEY = 'asset-intake.sb';
 let CFG = { url: '', key: '' };
 /* Tablet / phone mode (tbDetect): declared up here because showView and firstView read it from the start. */
-const TB_VIEWS = ['pmdash', 'inbox', 'doc', 'lqcount', 'settings', 'setup'];
+const TB_VIEWS = ['pmdash', 'inbox', 'doc', 'lqcount', 'stockcount', 'flows', 'settings', 'setup'];
 const TB = { on: false, pages: [], i: 0, key: null, busy: false };
 
 function loadCfg() {
@@ -1896,7 +1896,13 @@ const NAV = [
     ['register', 'nav.register'],
     ['intake', 'nav.intake'],
     ['alr', 'nav.alr'],
+    // The asset-management module in detail (assetops.js, 31_asset_ops.sql).
+    ['transfer', 'nav.transfer'],
+    ['incident', 'nav.incident'],
+    ['stock', 'nav.stock'],
     ['liq', 'nav.liq'],
+    ['acc', 'nav.acc'],
+    ['amrep', 'nav.amrep'],
     ['counter', 'nav.counter']
   ]],
   // Every file that is uploaded from time to time, in one place: the budget
@@ -1916,6 +1922,10 @@ const NAV = [
                               ['tbl:am_origin_alias', null],
                               ['tbl:am_origin_rejected', null]]]
   ]],
+  // The four workflows (flows.js) stand in for a user manual (user 26/09/2026).
+  ['nav.guide', [
+    ['flows', 'nav.flows']
+  ]],
   ['nav.system', [
     ['settings', 'nav.settings'],
     ['backup', 'nav.backup'],
@@ -1931,7 +1941,7 @@ let VIEW = 'setup';
    project URL yet. */
 function viewModule(v) {
   if (!v || v === 'setup') return null;
-  if (['register', 'intake', 'alr', 'counter'].includes(v)) return 'assets';
+  if (['register', 'intake', 'alr', 'counter', 'acc', 'transfer', 'incident', 'stock', 'stockcount', 'amrep'].includes(v)) return 'assets';
   if (['users', 'perms', 'audit'].includes(v)) return 'security';
   if (v === 'admin') return 'override';
   if (v === 'pmdash') return 'report';
@@ -2326,6 +2336,9 @@ function showView(view) {
     if (view === 'doc' && SB.ready()) wfLoad();
     if (view === 'liq' && SB.ready()) lqLoad();
     if (view === 'lqcount' && SB.ready()) lcLoad();
+    if (view === 'acc' && SB.ready()) accLoad();
+    if (view === 'flows' && window.flowsRender) flowsRender();
+    if (['transfer', 'incident', 'stock', 'stockcount', 'amrep'].includes(view) && SB.ready() && window.aoShow) aoShow(view);
     if (view === 'payments' && SB.ready()) payLoad();
     if (view === 'admin' && SB.ready()) adLoad();
   }
@@ -3296,7 +3309,10 @@ const REG_COLS = [
   'spec_length', 'spec_width', 'spec_height', 'spec_weight',
   'spec_material', 'spec_color', 'spec_shape', 'spec_radius', 'spec_fuel',
   'spec_area', 'spec_perimeter', 'spec_mfg_year', 'spec_accessory',
-  'description', 'status_code', 'label_printed', 'note', 'created_at'
+  'description', 'status_code', 'label_printed', 'note', 'created_at',
+  // Official values from accounting's books (30_acc_reconcile.sql) — pick them in Columns once 30 has run.
+  'fin_status', 'fin_cost', 'fin_nbv', 'fin_start', 'fin_term', 'fin_account', 'fin_as_of', 'no_label',
+  'warranty_until'                 // 31_asset_ops.sql
 ];
 const REG_DEFAULT = ['asset_code', 'barcode', 'name', 'category_code',
                      'dept_code', 'location_code', 'qty', 'unit_code',
@@ -3305,11 +3321,11 @@ const REG_DEFAULT = ['asset_code', 'barcode', 'name', 'category_code',
    header included — everything else reads better ranged left.
    Years and sequence numbers are numeric but are NOT quantities: a thousands
    separator turns 2026 into "2,026", so they print as plain digits. */
-const REG_RIGHT = new Set(['qty', 'unit_price', 'depreciate_months']);
+const REG_RIGHT = new Set(['qty', 'unit_price', 'depreciate_months', 'fin_cost', 'fin_nbv', 'fin_term']);
 const REG_PLAIN = new Set(['seq', 'purchase_year', 'spec_mfg_year']);
-const REG_DATE  = new Set(['purchase_date', 'in_use_date', 'created_at']);
+const REG_DATE  = new Set(['purchase_date', 'in_use_date', 'created_at', 'fin_start', 'fin_as_of', 'warranty_until']);
 // Yes / no columns, centred: a label printed shows ✓, not yet ✗ (user 25/09/2026).
-const REG_MID   = new Set(['label_printed', 'depreciate']);
+const REG_MID   = new Set(['label_printed', 'depreciate', 'no_label']);
 
 /* Asset status codes ("Mã Tình Trạng"), as Beetrack defines them (the note on
    the column of its upload template, user 26/09/2026). Two lists: an asset with
@@ -3333,6 +3349,7 @@ const amStatusKind = code => (amStatusRow(code) || [null])[0];
 
 function regCell(col, v, row) {
   if (col === 'status_code' && v != null && v !== '') return amStatusLabel(v);
+  if (col === 'fin_status') return t('acc.fs.' + (v || 'temp'));
   if (REG_JOINED[col])
     return REG_JOINED[col].map(f => (row?.[f] || '').trim())
                           .filter(Boolean).join(' / ');
@@ -3535,6 +3552,11 @@ function regRender() {
     // Numbered across the whole filtered set, not restarted on every page.
     tr.append(el('td', { className: 'num idx', textContent: fmtInt(from + i + 1) }));
     for (const c of REG.cols) {
+      // The asset code opens the asset's panel: facts, photos, its whole life (assetops.js).
+      if (c === 'asset_code' && window.aoAsset) {
+        tr.append(el('td', {}, el('a', { href: '#', className: 'aolink', textContent: regCell(c, r[c], r), onclick: ev => { ev.preventDefault(); aoAsset(r.id); } })));
+        continue;
+      }
       tr.append(el('td', {
         className: REG_RIGHT.has(c) ? 'num' : REG_MID.has(c) ? 'c' + (c === 'label_printed' && !r[c] ? ' dim' : '') : '',
         textContent: regCell(c, r[c], r)
@@ -4445,7 +4467,11 @@ function inExpand(ln) {
     purchase_year: Number(($('#inDate').value || '').slice(0, 4)) || new Date().getFullYear(),
     origin_iso2: ln.origin_iso2 || null,
     // Received, not yet accepted: "Chờ duyệt" until the handover (AH) is approved (user 26/09/2026).
-    status_code: kind === 'low' ? '119' : '120',
+    // Added from accounting's books (already in use and booked): in use straight away.
+    status_code: IN.src && IN.src.acc ? (kind === 'low' ? '20' : '1') : kind === 'low' ? '119' : '120',
+    // Which intake line it came from (links it back to the accounting line after Confirm; not a column).
+    _ln: IN.lines.indexOf(ln),
+    ...(ln._nolabel ? { no_label: true } : {}),
     // Each spec lands in its own column, which is what the label receipt and
     // the Beetrack sheet read. A blank one stays null rather than ''.
     ...Object.fromEntries(SPEC_FIELDS.map(f =>
@@ -4719,15 +4745,24 @@ async function inConfirm() {
         shipId = sh && sh.id;
       } catch (e) { console.warn('shipment not recorded', e); }
     }
+    const lnOf = all.map(r => r._ln);
     const payload = all.map(r => {
       const o = { ...r };
-      delete o._review;
+      delete o._review; delete o._ln;
       o.needs_review = r.needs_review || [];
       if (shipId) o.shipment_id = shipId;
       return o;
     });
     const saved = await SB.insert('am_asset', payload);
     IN.committed = saved || payload;
+    // Assets added from accounting's books: linked back to the lines they came from (30_acc_reconcile.sql).
+    if (IN.src && IN.src.acc && saved) {
+      const pairs = saved.flatMap((a, k) => ((IN.lines[lnOf[k]] || {})._acc || []).map(line_id => ({ line_id, asset_id: a.id,
+        desc_norm: accNorm(((ACC.lineMap || new Map()).get(line_id) || {}).description) })));
+      try { if (pairs.length) await SB.rpc('am_acc_link_set', { p_pairs: pairs, p_method: 'intake' }); }
+      catch (e) { console.warn('accounting links not recorded', e); msg(out, 'warn', t('acc.linkLater', { err: e.message })); }
+      IN.src = null;
+    }
     const codes = IN.committed.map(r => r.asset_code).sort();
     msg(out, 'ok', t('in.written', { n: IN.committed.length,
                                      from: codes[0], to: codes[codes.length - 1] }));
@@ -8292,7 +8327,8 @@ function wfCanPrepare(type, dept) {
   return can(type === 'LR' ? 'liquidation' : 'project', 'create') && !!prep && wfHasRoleFor(prep.role_code, dept);
 }
 const wfRoleName = code => { const r = WF.roles.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
-const wfTypeName = code => { const r = WF.types.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
+const wfTypeName = code => { if (code === 'TF' || code === 'SC') return t(code === 'TF' ? 'ao.tf.docName' : 'ao.inc.docName');   // transfer slip / incident (assetops.js)
+  const r = WF.types.find(x => x.code === code); return r ? (LANG === 'vi' ? r.name_vi : r.name_en) : code; };
 const wfChip = s => el('span', { className: 'st wf-' + s, textContent: t('wf.st.' + s) });
 
 async function wfLookups(force) {
@@ -9620,6 +9656,8 @@ function wfWarnRender() {
   if (ty === 'MC' && d.mc_over && d.mc_over.length) put('warn', t('wf.mc.over', { items: d.mc_over.join(', ') }));
   if (ty === 'CT' && off100(n0(d.pct_sum))) put('warn', t('wf.ct.pct', { p: Math.round(n0(d.pct_sum) * 100) / 100 }));
   if (ty === 'LR' && d.source === 'RR' && wfEditable()) put('info', t('lq.fromRR', { rr: d.rr_doc_no || 'RR', p: d.project_code || '' }));
+  if (ty === 'LR') { const fb = (d.lines || []).filter(l => l.fin_as_of != null).map(l => l.asset_code);
+                     if (fb.length) put('info', t('lq.fromBooks', { n: fb.length, list: fb.slice(0, 8).join(', ') + (fb.length > 8 ? '…' : '') })); }
   if (ty === 'LR' && n0(d.total_nbv) > 0) put('warn', t('lq.nbvLeft', { v: fmtMoney(d.total_nbv) }));
 }
 
@@ -10956,7 +10994,7 @@ async function wfInboxLoad() {
   msg(out, 'info', t('table.loading'));
   try {
     await wfLookups();
-    WF.inbox = [...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => []))];
+    WF.inbox = [...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => [])), ...(window.aoTodos ? await aoTodos().catch(() => []) : [])];
     WF.done = await wfDoneLoad().catch(() => []);
     msg(out, TB.flash ? 'ok' : '', TB.flash || ''); TB.flash = null;      // the result of a signature on a tablet
     wfInboxRender();
@@ -11007,8 +11045,8 @@ function wfInboxRender() {
   for (const r of rows) {
     const done = r.kind === 'done';
     const owners = wfPkgTypes(r.grp).filter(ty2 => wfSide(ty2) === 'owner').join('/');
-    const band = done ? 'ok' : r.kind === 'returned' ? 'bad' : ['prepare', 'photo', 'draft'].includes(r.kind) ? 'op' : wfBand(r.role_code);
-    const what = done ? '✓ ' + (r.action === 'approve' && r.step_kind === 'check' ? t('wf.st.checked') : t('wf.a.' + r.action))
+    const band = done ? 'ok' : ['returned', 'tfret'].includes(r.kind) ? 'bad' : ['prepare', 'photo', 'draft', 'tf'].includes(r.kind) ? 'op' : wfBand(r.role_code);
+    const what = r.kind === 'tf' ? t('ao.tf.i.act') : r.kind === 'tfret' ? t('wf.i.returned') : done ? '✓ ' + (r.action === 'approve' && r.step_kind === 'check' ? t('wf.st.checked') : t('wf.a.' + r.action))
       : r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'draft' ? t('lq.i.draft') : r.kind === 'prepare' ? t('wf.i.prepare', { t: r.doc_type }) : r.kind === 'returned' ? t('wf.i.returned')
       : r.owner_prep ? t(r.returned_to === 'am' ? 'wf.i.redoOwner' : 'wf.i.checkPrep', { t: owners })
       : t(r.step_kind === 'check' ? 'wf.i.check' : 'wf.i.approve');
@@ -11027,7 +11065,7 @@ function wfInboxRender() {
       el('td', { className: 'num', textContent: r.total_value != null ? fmtMoney(r.total_value) : '' }),
       el('td', { textContent: when ? fmtDate(String(when).slice(0, 10)) : '' }),
       el('td', { textContent: r.role_code ? `${r.step} · ${wfRoleName(r.role_code)}` : '' })]);
-    tr.onclick = () => { if (r.doc_id) wfOpen(r.doc_id); };
+    tr.onclick = () => { if (r.tf_id) aoOpenTransfer(r.tf_id); else if (r.doc_id) wfOpen(r.doc_id); };
     body.append(tr);
   }
   if (TB.on) tbInboxCards(rows);
@@ -11040,9 +11078,9 @@ const wfInboxCount = rows => TB.on ? rows.filter(r => r.kind !== 'prepare').leng
 async function wfBadge(n) {
   ntLoad();                            // the bell moves whenever the inbox does
   if (n == null) { try { await wfLookups(); } catch {}   // types name the package's owner documents
-                   try { n = wfInboxCount([...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => []))]); } catch { return; } }
+                   try { n = wfInboxCount([...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => [])), ...(window.aoTodos ? await aoTodos().catch(() => []) : [])]); } catch { return; } }
   WF.badgeN = n;                       // buildNav() redraws the menu and re-adds it from here
-  if (TB.on) await lcCheck();          // the tablet bar offers the count while a batch waits for it
+  if (TB.on) { await lcCheck(); if (window.scCheck) await scCheck(); }          // the tablet bar offers the count while a batch waits for it
   tbBarRender();
   const a = $('#nav a[data-view="inbox"]');
   if (!a) return;
@@ -11234,6 +11272,7 @@ async function ntLoad() {
 }
 
 function ntText(r) {
+  if (r.doc_type === 'SC' && r.kind === 'todo') return t('ao.nt.inc', { no: r.doc_no || '', who: r.actor_email || '' });
   return t('nt.k.' + r.kind, { no: r.doc_no || '', type: r.doc_type ? wfTypeName(r.doc_type) : '', who: r.actor_email || '' });
 }
 
@@ -11275,6 +11314,9 @@ async function ntOpen(r) {
   }
   // "Your turn to draw up the QC": to the project, whose panel has the button.
   if (r.kind === 'next' && r.project_code) { PM.prj.open = r.project_code; showView('projects'); }
+  // Transfer slips and incidents (assetops.js) carry their number, not a document id.
+  else if (r.doc_type === 'TF' && window.AO) { AO.tf.tab = 'all'; AO.tf.open = null; AO.tf.q = r.doc_no || ''; showView('transfer'); }
+  else if (r.doc_type === 'SC' && window.AO) { AO.inc.tab = 'all'; AO.inc.open = null; AO.inc.q = r.doc_no || ''; showView('incident'); }
   else if (r.doc_id) wfOpen(r.doc_id);
   ntLoad();
 }
@@ -12760,6 +12802,9 @@ function tbBarRender() {
   if (canView('inbox')) bar.append(item('inbox', 'tb.todo', '✓', WF.badgeN));
   // A liquidation batch waiting for its physical count: counted walking round with the tablet.
   if (LQ.countN && canView('lqcount')) bar.append(item('lqcount', 'lc.tab', '☑', LQ.countN));
+  // A periodic stock-take open: counted walking round with the tablet (assetops.js).
+  if (window.AO && AO.sc.openN && canView('stockcount')) bar.append(item('stockcount', 'ao.sc.tab', '▣', AO.sc.openN));
+  bar.append(item('flows', 'tb.flows', '⇄'));
   // Back to the full screens (a PC with a narrow or zoomed window turns tablet mode on by itself):
   // remembered in this browser; Settings → tablet / phone view → "Automatic" undoes it.
   bar.append(el('button', { className: 'tbitem', type: 'button', title: t('tb.fullHint'), onclick: () => {
@@ -12779,11 +12824,11 @@ function tbInboxCards(rows) {
   if (!todo.length) box.append(el('div', { className: 'tbempty', textContent: t('tb.nothing') }));
   for (const r of todo) {
     const owners = wfPkgTypes(r.grp).filter(ty => wfSide(ty) === 'owner').join('/');
-    const band = r.kind === 'returned' ? 'bad' : r.kind === 'photo' || r.kind === 'draft' ? 'op' : wfBand(r.role_code);
-    const what = r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'draft' ? t('lq.i.draft') : r.kind === 'returned' ? t('wf.i.returned')
+    const band = ['returned', 'tfret'].includes(r.kind) ? 'bad' : ['photo', 'draft', 'tf'].includes(r.kind) ? 'op' : wfBand(r.role_code);
+    const what = r.kind === 'tf' ? t('ao.tf.i.act') : r.kind === 'tfret' ? t('wf.i.returned') : r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'draft' ? t('lq.i.draft') : r.kind === 'returned' ? t('wf.i.returned')
       : r.owner_prep ? t(r.returned_to === 'am' ? 'wf.i.redoOwner' : 'wf.i.checkPrep', { t: owners })
       : t(r.step_kind === 'check' ? 'wf.i.check' : 'wf.i.approve');
-    const c = el('button', { className: 'tbcard band-' + band, type: 'button', onclick: () => { if (r.doc_id) wfOpen(r.doc_id); } }, [
+    const c = el('button', { className: 'tbcard band-' + band, type: 'button', onclick: () => { if (r.tf_id) { TB.on && alert(t('ao.tf.onPc')); if (!TB.on) aoOpenTransfer(r.tf_id); } else if (r.doc_id) wfOpen(r.doc_id); } }, [
       el('div', { className: 'r1' }, [el('span', { className: 'stg band-' + band, textContent: what }),
         el('span', { className: 'when', textContent: r.submitted_at ? fmtDate(String(r.submitted_at).slice(0, 10)) : '' })]),
       el('div', { className: 'nos', textContent: String(r.doc_no || '').replace(/ \+ /g, ' · ') }),
@@ -13188,8 +13233,8 @@ function lqPickAsset(x, l) {
 }
 async function lqAssetFill(l, code, d) {
   const q = encodeURIComponent(`"${code.replace(/"/g, '')}"`);
-  const [a] = await SB.select('am_asset', 'select=id,asset_code,barcode,name_vi,name_en,unit_code,unit_price,qty,dept_code,location_code,in_use_date,purchase_date,asset_kind,status_code'
-    + `&or=(asset_code.eq.${q},barcode.eq.${q})&limit=1`);
+  const [a] = await lqFinSelect('id,asset_code,barcode,name_vi,name_en,unit_code,unit_price,qty,dept_code,location_code,in_use_date,purchase_date,asset_kind,status_code',
+    `&or=(asset_code.eq.${q},barcode.eq.${q})&limit=1`);
   if (!a) { msg('#wdMsg', 'warn', t('wf.assetNone', { code })); return; }
   if ((d.lines || []).some(o => o !== l && o.asset_id === a.id)) { msg('#wdMsg', 'warn', t('lq.twice', { code: a.asset_code })); return; }
   msg('#wdMsg', ['7', '9'].includes(String(a.status_code)) ? 'warn' : '', ['7', '9'].includes(String(a.status_code))
@@ -13199,14 +13244,38 @@ async function lqAssetFill(l, code, d) {
     unit: a.unit_code || l.unit || null, qty, dept_code: a.dept_code, location: a.location_code, kind: a.asset_kind,
     in_use_date: a.in_use_date || a.purchase_date || l.in_use_date || null,
     unit_price: a.unit_price != null ? Number(a.unit_price) : null, orig_manual: false });
+  delete l.fin_as_of; delete l.fin_u;
+  lqFin(l, a);
+  // Repairs so far and the warranty, once 31_asset_ops.sql has run (left as typed otherwise).
+  try {
+    const [inc, [w]] = await Promise.all([SB.select('am_incident', `select=id&asset_id=eq.${a.id}&kind=in.(repair,breakage)&status=neq.cancelled`),
+                                          SB.select('am_asset', `select=warranty_until&id=eq.${a.id}`)]);
+    if (inc.length) l.repairs = inc.length;
+    if (w && w.warranty_until) l.warranty = w.warranty_until;
+  } catch {}
+}
+/* Once accounting has booked the asset (sql/30), the LR takes cost, accumulated
+   depreciation and NBV from the books — scaled to the quantity liquidated —
+   instead of the provisional unit price. Before sql/30 the columns don't exist,
+   so the select falls back to the plain one. */
+function lqFinSelect(cols, where, sel = (tb, q) => SB.select(tb, q)) {
+  return sel('am_asset', `select=${cols},fin_status,fin_cost,fin_nbv,fin_as_of${where}`)
+    .catch(() => sel('am_asset', `select=${cols}${where}`));
+}
+function lqFin(l, a) {
+  if (a.fin_status !== 'booked' || a.fin_cost == null) return l;
+  const n = a.asset_kind === 'unique' ? 1 : (n0(a.qty) || 1);
+  const cost = Number(a.fin_cost), nbv = a.fin_nbv != null ? Number(a.fin_nbv) : cost;
+  // Per unit, so derive() rescales when the quantity liquidated changes.
+  return Object.assign(l, { fin_u: { c: cost / n, d: (cost - nbv) / n }, fin_as_of: a.fin_as_of || '' });
 }
 // A register row as an LR line (the orphans of status 8 / 24).
 const lqLineOf = a => {
   const qty = a.asset_kind === 'unique' ? 1 : (n0(a.qty) || 1);
-  return { key: lqKey(), asset_id: a.id, asset_code: a.asset_code, barcode: a.barcode, name: [a.name_vi, a.name_en].filter(Boolean).join('/'),
+  return lqFin({ key: lqKey(), asset_id: a.id, asset_code: a.asset_code, barcode: a.barcode, name: [a.name_vi, a.name_en].filter(Boolean).join('/'),
            unit: a.unit_code || null, qty, dept_code: a.dept_code, location: a.location_code, kind: a.asset_kind,
            in_use_date: a.in_use_date || a.purchase_date || null, mode: 'Sale',
-           unit_price: a.unit_price != null ? Number(a.unit_price) : null };
+           unit_price: a.unit_price != null ? Number(a.unit_price) : null }, a);
 };
 
 /* The two sheets. Page 1: the LR, where everything is typed. Page 2: the Asset
@@ -13219,7 +13288,9 @@ WF_FORMS.LR = { orient: 'landscape', wide: true, title: ['Liquidation Request', 
     d.lines.forEach((l, i) => {
       if (!l.key) l.key = String(i + 1);             // the pool keys an unkeyed line by its number too
       // From the register: unit price × quantity, until the preparer types the original value themselves.
-      if (l.unit_price != null && !l.orig_manual) l.original_value = Math.round(Number(l.unit_price) * n0(l.qty));
+      // Booked by accounting: cost and accumulated depreciation from the books instead.
+      if (l.fin_u && !l.orig_manual) { l.original_value = Math.round(l.fin_u.c * n0(l.qty)); l.depreciation = Math.round(l.fin_u.d * n0(l.qty)); }
+      else if (l.unit_price != null && !l.orig_manual) l.original_value = Math.round(Number(l.unit_price) * n0(l.qty));
       const has = l.original_value != null || l.depreciation != null;
       l.nbv = has ? n0(l.original_value) - n0(l.depreciation) : null;
       o += n0(l.original_value); dp += n0(l.depreciation); q += n0(l.qty);
@@ -13246,7 +13317,7 @@ function lqSheetLR(x) {
     { h: 'Reason / Lý do', w: '8.5%', left: true, cell: l => lqReason(x, l) },
     { h: 'Method / Đề xuất', w: '5.5%', cell: l => lqSel(x, l, 'mode', LQ_MODE) },
     { h: 'Original value / Nguyên giá', w: '7%', cell: l => { const i = lqIn(x, l, 'original_value', 'money'); i.addEventListener('input', () => { l.orig_manual = true; }); return i; } },
-    { h: 'Depreciation / Hao mòn', k: 'depreciation', t: 'money', w: '7%' },
+    { h: 'Depreciation / Hao mòn', w: '7%', cell: l => { const i = lqIn(x, l, 'depreciation', 'money'); i.addEventListener('input', () => { if (l.fin_u) l.orig_manual = true; }); return i; } },
     { h: 'Residual / Giá trị còn lại', get: l => l.nbv, t: 'money', w: '7%' },
     { h: 'Notes / Ghi chú', k: 'notes', t: 'text', w: '4.5%', left: true }];
   const src = d.project_code ? `${d.rr_doc_no || 'RR'} · ${d.project_code}` : 'Department request / Bộ phận đề xuất';
@@ -13456,8 +13527,8 @@ async function lqLoad() {
     const [docs, items, marked] = await Promise.all([
       pmSelectAll('pm_doc', 'select=id,doc_no,status,dept_code,pkg_id,created_by,created_email,created_at,submitted_at,decided_at,total_value,data&doc_type=eq.LR&order=id.desc'),
       pmSelectAll('pm_lq_item', 'select=*&order=id').catch(() => null),
-      can('assets', 'view') ? pmSelectAll('am_asset', 'select=id,asset_code,barcode,name_vi,name_en,qty,unit_code,unit_price,dept_code,location_code,asset_kind,status_code,in_use_date,purchase_date'
-        + '&status_code=in.(8,24)&order=asset_code').catch(() => []) : []]);
+      can('assets', 'view') ? lqFinSelect('id,asset_code,barcode,name_vi,name_en,qty,unit_code,unit_price,dept_code,location_code,asset_kind,status_code,in_use_date,purchase_date',
+        '&status_code=in.(8,24)&order=asset_code', pmSelectAll).catch(() => []) : []]);
     const pids = [...new Set(docs.map(d => d.pkg_id))];
     const pkgs = [], steps = [];
     for (let i = 0; i < pids.length; i += 150) {
@@ -13758,7 +13829,7 @@ function lqBatchNew(card) {
 // One batch: its steps, the meeting, the list, the forms.
 function lqBatchDetail(panel, b) {
   const edit = can('liquidation', 'edit') && !['closed', 'cancelled'].includes(b.status);
-  const its = lqBatchItems(b), live = its.filter(i => i.status === 'batched'), kept = its.filter(i => i.status === 'kept');
+  const its = lqBatchItems(b), live = its.filter(i => ['batched', 'sold', 'destroyed', 'lost'].includes(i.status)), kept = its.filter(i => i.status === 'kept');
   const out = el('div');
   const docNo = id => (LQ.docs.find(d => d.id === id) || {}).doc_no || '';
   // Header + steps.
@@ -13766,7 +13837,7 @@ function lqBatchDetail(panel, b) {
   top.append(el('div', { className: 'row', style: 'align-items:center;gap:10px;flex-wrap:wrap' }, [
     el('a', { href: '#', textContent: '← ' + t('lqb.list'), onclick: e => { e.preventDefault(); LQ.batchOpen = null; lqRender(); } }),
     el('b', { style: 'font-size:16px', textContent: b.code }), el('span', { className: 'lqbs ' + b.status, textContent: t('lqb.st.' + b.status) })]));
-  const idx = LQB_STEPS.indexOf(b.status);
+  const idx = b.status === 'closed' ? LQB_STEPS.length : LQB_STEPS.indexOf(b.status);
   top.append(el('div', { className: 'lqsteps' }, LQB_STEPS.map((s, i) => el('div', { className: 'lqstep' + (i < idx ? ' done' : i === idx ? ' cur' : '') + (s === 'bidding' ? ' later' : '') },
     [el('span', { className: 'n', textContent: String(i + 1) }), el('div', {}, [el('b', { textContent: t('lqb.step.' + s) }), el('small', { textContent: t('lqb.stepHint.' + s) })])]))));
   // What can be done now.
@@ -13864,6 +13935,9 @@ function lqBatchDetail(panel, b) {
   }
   panel.append(list);
 
+  // Quotations, opening, result, the buyers' papers, closing (phase 3).
+  if (['valued', 'bidding', 'closed'].includes(b.status)) lqbBidCard(panel, b);
+
   // The forms.
   const forms = el('div', { className: 'card' });
   const fout = el('div');
@@ -13878,8 +13952,8 @@ function lqBatchDetail(panel, b) {
         el('button', { className: 'btn tiny', type: 'button', textContent: 'PDF', onclick: () => lqbCapture(b, [k], 'pdf', fout) })])]));
   }
   forms.append(grid, el('div', { className: 'row', style: 'gap:6px;margin-top:8px' }, [
-    el('button', { className: 'btn', type: 'button', textContent: t('lqb.allPdf'), onclick: () => lqbCapture(b, LQB_FORMS, 'pdf', fout) }),
-    el('button', { className: 'btn', type: 'button', textContent: t('lqb.allPreview'), onclick: () => lqbCapture(b, LQB_FORMS, 'preview', fout) })]), fout);
+    el('button', { className: 'btn', type: 'button', textContent: t('lqb.allPdf'), onclick: () => lqbCapture(b, [...LQB_FORMS, ...(b.opened_at ? ['07', 'GP', '11'] : [])], 'pdf', fout) }),
+    el('button', { className: 'btn', type: 'button', textContent: t('lqb.allPreview'), onclick: () => lqbCapture(b, [...LQB_FORMS, ...(b.opened_at ? ['07', 'GP', '11'] : [])], 'preview', fout) })]), fout);
   panel.append(forms);
 }
 
@@ -13994,13 +14068,14 @@ function lqCouncilNew(card, out) {
    05 revaluation (Mẫu 04-TSCĐ) · 06 liquidation minutes (Mẫu 02-TSCĐ).
    Bilingual as the templates are; long lists run on over as many A4 pages as
    they need, the signatures on the last. */
-const LQB_FORMS = ['02', '03', '04', '05', '06'];
+const LQB_FORMS = ['02', '03', '04', '05', '08', '06'];
 const lqbFormReady = (k, b) => { const i = LQB_STEPS.indexOf(b.status);
-  return k === '02' || k === '03' ? i >= 1 : k === '04' ? i >= 2 : k === '05' ? i >= 3 : i >= 4; };
+  return k === '02' || k === '03' ? i >= 1 : k === '04' ? i >= 2 : k === '05' ? i >= 3 : k === '08' ? !!b.opened_at : b.status === 'closed'; };
 const LQB_TT200 = { '04': 'Mẫu số 05 - TSCĐ', '05': 'Mẫu số 04 - TSCĐ', '06': 'Mẫu số 02 - TSCĐ' };
 
 function lqbCtx(b, assets) {
-  const its = lqBatchItems(b), live = its.filter(i => i.status === 'batched');
+  // The list of the batch: still in it, or already settled when the batch closed (sold / destroyed / lost).
+  const its = lqBatchItems(b), live = its.filter(i => ['batched', 'sold', 'destroyed', 'lost'].includes(i.status));
   const council = LQ.councils.find(c => c.id === b.council_id) || null;
   const mem = council ? lqMembersOf(council.id) : [];
   const lrIds = [...new Set(live.map(i => i.lr_doc_id))];
@@ -14161,20 +14236,113 @@ function lqbForm(k, c) {
           `- Pursuant to Decision No. ${b.code}, dated ${lqD(b.decision_date || b.meeting_date)}, by the Asset Liquidation Council regarding the liquidation of fixed assets.`),
     lqbSec('I. Ban thanh lý TSCĐ gồm', 'Liquidation Committee Comprises:'), lqbMembers(c),
     lqbSec('II. Tiến hành thanh lý TSCĐ', 'Proceed with the Liquidation of Fixed Assets:')];
-  const s = f => lqN(live.reduce((a, r) => a + n0(f(r)), 0));
-  const foot = [lqbSec('III. Kết quả thanh lý TSCĐ', 'Results:'), lqbTable(rcols, live),
-    lqbBi('- Tổng chi phí thanh lý TSCĐ (viết bằng chữ): …………', '- Total cost of fixed asset liquidation: …………'),
-    lqbBi('- Tổng giá trị thu hồi (viết bằng chữ): …………', '- Total residual value: …………'),
-    lqbBi('- Đã ghi giảm sổ TSCĐ ngày …… tháng …… năm ……', '- Liquidation confirmed on'),
+  // Items not found at the count are not liquidated: they stay out of this form (lost, set when the batch closes).
+  const rows6 = live.filter(r => r.count_found !== false);
+  const s = f => lqN(rows6.reduce((a, r) => a + n0(f(r)), 0));
+  const cost = rows6.reduce((a, r) => a + n0(r.sale_cost), 0), got = rows6.reduce((a, r) => a + n0(r.sale_value), 0);
+  const settled = rows6.some(r => r.outcome);
+  const foot = [lqbSec('III. Kết quả thanh lý TSCĐ', 'Results:'),
+    lqbTable(rcols.map(c => c[0].startsWith('Bên thu mua') ? [c[0], r => r.outcome === 'destroy' ? 'Huỷ / Destroyed' : r.buyer || '', c[2], c[3]] : c), rows6, {
+      total: [el('td', { colSpan: 7, textContent: 'Tổng cộng / Total' }), el('td', { className: 'n', textContent: lqN(got) }), el('td', { className: 'n', textContent: lqN(cost) })] }),
+    lqbBi(`- Tổng chi phí thanh lý TSCĐ (viết bằng chữ): ${settled ? (cost ? lqWordsVi(cost) : 'Không có') : '…………'}`,
+          `- Total cost of fixed asset liquidation: ${settled ? (cost ? lqWordsEn(cost) : 'None') : '…………'}`),
+    lqbBi(`- Tổng giá trị thu hồi (viết bằng chữ): ${settled ? lqWordsVi(got) : '…………'}`, `- Total residual value: ${settled ? lqWordsEn(got) : '…………'}`),
+    lqbBi(`- Đã ghi giảm sổ TSCĐ ngày ${b.status === 'closed' ? lqD(b.liquidation_date) : '…… tháng …… năm ……'}`, `- Liquidation confirmed on ${b.status === 'closed' ? lqD(b.liquidation_date) : ''}`),
     lqbSigns([['Chủ tịch Hội đồng thanh lý tài sản', 'Chairman of the Council', chairName], ['Các thành viên hội đồng thanh lý tài sản', 'Consented by', ''], ['Kế toán trưởng', 'Chief Accountant JVC', '']])];
-  return lqbPages(true, head, live, (rows, at, last) => lqbTable(cols, rows, { start: at, groups,
-    total: last ? [el('td', { colSpan: 2, textContent: 'Tổng cộng / Total' }), el('td', { className: 'n', textContent: fmtNum(pmSum(live, 'qty')) }), el('td', { colSpan: 6 }),
+  return lqbPages(true, head, rows6, (rows, at, last) => lqbTable(cols, rows, { start: at, groups,
+    total: last ? [el('td', { colSpan: 2, textContent: 'Tổng cộng / Total' }), el('td', { className: 'n', textContent: fmtNum(pmSum(rows6, 'qty')) }), el('td', { colSpan: 6 }),
       el('td', { className: 'n', textContent: s(r => r.original_value) }), el('td', { className: 'n', textContent: s(r => r.depreciation) }), el('td', { className: 'n', textContent: s(r => r.nbv) })] : null }),
-    foot, 6, 20);
+    foot, 6, 16);
+}
+
+/* Phase 3 forms. 07: the buyer's quotation letter, as typed on the portal.
+   08: minutes of the opening — who of the council was there, every quotation
+   item by item, what was chosen. GP: the gate pass of a winning buyer (buyer,
+   security, head of department sign). 11: the handover minutes of a winning buyer. */
+function lqbForm3(k, c, q) {
+  const { b } = c, d = (q && q.data) || {};
+  const chairName = c.chair ? String(c.chair.full_name).toUpperCase() : '';
+  const qty = r => n0(r.count_qty ?? r.qty);
+  const buyerBlock = () => el('div', { className: 'lqbuyer' }, [
+    lqbBi(`${d.kind === 'company' ? 'Tên doanh nghiệp' : 'Họ tên'}: ${d.name || ''}`, d.kind === 'company' ? 'Company name' : 'Full name'),
+    lqbBi(d.kind === 'company' ? `Mã số thuế: ${d.tax_code || ''}${d.representative ? ' · Người đại diện: ' + d.representative : ''}` : `Số CCCD: ${d.id_no || ''}`,
+          d.kind === 'company' ? 'Tax code · Representative' : 'ID card number'),
+    lqbBi(`Địa chỉ: ${d.address || ''}`, 'Address'), lqbBi(`Điện thoại: ${d.phone || ''}${d.email ? ' · Email: ' + d.email : ''}`, d.kind === 'company' ? 'Phone · Invoice e-mail' : 'Phone · E-mail')]);
+  if (k === '07') {
+    const items = c.live.filter(r => lqPrice(q, r.id) > 0);
+    const tot = items.reduce((a, r) => a + lqPrice(q, r.id) * qty(r), 0);
+    const cols = [['STT / No.', (r, i) => i + 1, 'c', '7%'], ['Tên tài sản / Item', r => r.name, '', '33%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '20%'],
+      ['SL / Qnt.', r => `${fmtNum(qty(r))} ${r.unit || ''}`, 'n', '10%'], ['Đơn giá / Unit price (VND)', r => lqN(lqPrice(q, r.id)), 'n', '15%'],
+      ['Thành tiền / Amount (VND)', r => lqN(lqPrice(q, r.id) * qty(r)), 'n', '15%']];
+    return lqbPages(false, [lqbHead(k, 'THƯ BÁO GIÁ', 'QUOTATION LETTER', b.code, q.submitted_at),
+      lqbBi('Kính gửi: Công ty TNHH Liên Doanh Khách Sạn Plaza — Hội đồng thanh lý tài sản', 'To: Plaza Hotel Company Limited — Asset Liquidation Council'),
+      lqbSec('Thông tin bên chào mua', 'Buyer:'), buyerBlock(),
+      lqbBi('Sau khi xem tài sản thực tế, chúng tôi chào mua các tài sản thanh lý với giá như sau:', 'Having seen the assets, we offer to buy the liquidated assets at the following prices:')],
+      items, (rows, at, last) => lqbTable(cols, rows, { start: at, total: last ? [el('td', { colSpan: 5, textContent: 'Tổng cộng / Total' }), el('td', { className: 'n', textContent: lqN(tot) })] : null }),
+      [lqbBi(`Bằng chữ: ${lqWordsVi(tot)}`, `In words: ${lqWordsEn(tot)}`),
+       lqbBi(`Chi phí thanh lý / thu gom: ${d.cost ? lqN(d.cost) + ' VND' : 'Không có'}`, `Liquidation / collection cost: ${d.cost ? lqN(d.cost) + ' VND' : 'None'}`),
+       ...(d.note ? [lqbBi(`Ghi chú: ${d.note}`, 'Note')] : []),
+       lqbBi('Chúng tôi xác nhận thông tin trên là đúng và cam kết mua theo giá đã chào nếu được chọn.', 'We confirm the information above and commit to buy at the prices offered if selected.'),
+       lqbSigns([['', '', ''], ['Bên chào mua', 'Buyer', String(d.name || '').toUpperCase()]])], 18, 34);
+  }
+  if (k === '08') {
+    const quotes = (c.quotes || []), att = new Map(((c.bids || {}).attend || []).map(a => [a.member_id, a]));
+    const here = c.mem.filter(m => (att.get(m.id) || {}).present), away = c.mem.filter(m => att.has(m.id) && !att.get(m.id).present);
+    const rows = c.live.filter(r => r.count_found !== false);
+    const w = Math.max(6, Math.floor(40 / Math.max(1, quotes.length)));
+    const cols = [['STT', (r, i) => i + 1, 'c', '4%'], ['Tên tài sản / Item', r => r.name, '', '17%'], ['Mã TS / Code', r => r.asset_code || 'N/A', '', '11%'],
+      ['SL / Qnt.', r => fmtNum(qty(r)), 'n', '5%'], ['Giá sàn / Floor', r => lqN(r.reval_value), 'n', '8%'],
+      ...quotes.map(qq => [qq.data.name || qq.buyer.name, r => { const p = lqPrice(qq, r.id); return p > 0 ? lqN(p) : '—'; }, 'n', w + '%']),
+      ['Chọn / Chosen', r => r.outcome === 'destroy' ? 'Huỷ / Destroy' : r.buyer || '', '', '12%'], ['Giá trị / Value', r => lqN(r.sale_value), 'n', '9%']];
+    return lqbPages(true, [lqbHead(k, 'BIÊN BẢN MỞ THẦU THANH LÝ TÀI SẢN', 'MINUTES OF THE LIQUIDATION BID OPENING', b.code, b.opened_at),
+      lqbBi(`Thời điểm mở thầu: ${b.opened_at ? fmtDateTime(b.opened_at) : '…………'} · Hạn nộp báo giá: ${b.call_deadline ? fmtDateTime(b.call_deadline) : '…………'}`, 'Opening time · Quotation deadline'),
+      lqbSec('I. Thành viên hội đồng có mặt', `Council members present (${here.length}/${c.mem.length}):`),
+      el('div', { className: 'lqmem2' }, here.map(m => el('div', { textContent: `${String(m.full_name).toUpperCase()} — ${m.position_vi || ''} / ${m.position_en || ''}` }))),
+      ...(away.length ? [lqbBi(`Vắng mặt: ${away.map(m => m.full_name).join(', ')}`, 'Absent')] : []),
+      lqbSec('II. Các báo giá đã nộp', `Quotations submitted (${quotes.length}):`),
+      el('div', { className: 'lqmem2' }, quotes.map((qq, i) => el('div', { textContent: `${i + 1}. ${qq.data.name || qq.buyer.name} · ${lqBuyerId(qq.data)} · ${fmtDateTime(qq.submitted_at)}` }))),
+      ...(b.open_note ? [lqbBi(`Giải trình (ít hơn 3 báo giá): ${b.open_note}`, 'Explanation (fewer than 3 quotations)')] : []),
+      lqbSec('III. So sánh giá và kết quả', 'Price comparison and result (unit prices, VND):')],
+      rows, (rr, at, last) => lqbTable(cols, rr, { start: at, total: last ? [el('td', { colSpan: 5 + quotes.length + 1, textContent: 'Tổng giá trị thu hồi / Total' }),
+        el('td', { className: 'n', textContent: lqN(rows.reduce((a, r) => a + n0(r.sale_value), 0)) })] : null }),
+      [...rows.filter(r => r.award_note).map(r => lqbBi(`${r.asset_code || r.name}: ${r.award_note}`, '')),
+       lqbBi('Nguyên tắc: chọn giá cao nhất hợp lệ, đã được Hội đồng đánh giá tính hợp lý và so sánh với giá thị trường.',
+             'Rule: the highest valid price, assessed as reasonable by the council against the market price.'),
+       lqbSigns(here.map(m => [m.role === 'chair' ? 'Chủ tịch hội đồng' : 'Thành viên hội đồng', m.role === 'chair' ? 'Chairman' : 'Member', String(m.full_name).toUpperCase()]))], 6, 18);
+  }
+  const mine = c.live.filter(r => r.outcome === 'sale' && r.sale_quote_id === q.id);
+  const tot = mine.reduce((a, r) => a + n0(r.sale_value), 0);
+  if (k === 'GP') {
+    const cols = [['STT / No.', (r, i) => i + 1, 'c', '8%'], ['Tên tài sản / Item', r => r.name, '', '42%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '25%'],
+      ['SL / Qnt.', r => `${fmtNum(qty(r))} ${r.unit || ''}`, 'n', '15%']];
+    return lqbPages(false, [lqbHead(k, 'GIẤY RA CỔNG — HÀNG THANH LÝ', 'GATE PASS — LIQUIDATED ASSETS', b.code, q.gate_date),
+      lqbBi(`Đợt thanh lý: ${b.code} · Hoá đơn GTGT số: ${q.invoice_no || '…………'}${q.invoice_date ? ' ngày ' + lqD(q.invoice_date) : ''}`, 'Liquidation batch · VAT invoice'),
+      lqbSec('Người nhận hàng (bên mua)', 'Receiver (buyer):'), buyerBlock(),
+      lqbBi('Được phép mang ra khỏi khách sạn các tài sản sau:', 'Is allowed to take the following assets out of the hotel:')],
+      mine, (rows, at) => lqbTable(cols, rows, { start: at }),
+      [lqbBi('Phương tiện / biển số xe: ……………………   Giờ ra: ……………', 'Vehicle / plate number · Time out'),
+       lqbSigns([['Người nhận hàng', 'Receiver (buyer)', String(d.name || '').toUpperCase()], ['Bảo vệ', 'Security', ''], ['Trưởng bộ phận', 'Head of Department', '']])], 18, 34);
+  }
+  // 11 — handover minutes.
+  const cols = [['STT / No.', (r, i) => i + 1, 'c', '6%'], ['Tên tài sản / Item', r => r.name, '', '30%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '20%'],
+    ['SL / Qnt.', r => `${fmtNum(qty(r))} ${r.unit || ''}`, 'n', '10%'], ['Đơn giá / Unit price', r => lqN(r.sale_price), 'n', '16%'], ['Thành tiền / Amount', r => lqN(r.sale_value), 'n', '18%']];
+  return lqbPages(false, [lqbHead(k, 'BIÊN BẢN GIAO NHẬN TÀI SẢN THANH LÝ', 'MINUTES OF HANDOVER OF LIQUIDATED ASSETS', b.code, q.handover_date),
+    lqbBi(`Căn cứ Quyết định thanh lý số ${b.code} ngày ${lqD(b.decision_date || b.meeting_date)} và kết quả mở thầu ngày ${lqD(b.opened_at)};`,
+          `Pursuant to Liquidation Decision No. ${b.code} dated ${lqD(b.decision_date || b.meeting_date)} and the bid opening of ${lqD(b.opened_at)};`),
+    lqbSec('Bên giao: Công ty TNHH Liên Doanh Khách Sạn Plaza', 'Deliverer: Plaza Hotel Company Limited'),
+    lqbBi('Địa chỉ: 17 Lê Duẩn, phường Sài Gòn, TP.HCM · Đại diện: ……………………', 'Address · Represented by'),
+    lqbSec('Bên nhận', 'Receiver:'), buyerBlock(),
+    lqbBi('Hai bên thống nhất giao nhận các tài sản thanh lý sau:', 'Both parties agree on the handover of the following liquidated assets:')],
+    mine, (rows, at, last) => lqbTable(cols, rows, { start: at, total: last ? [el('td', { colSpan: 5, textContent: 'Tổng cộng / Total' }), el('td', { className: 'n', textContent: lqN(tot) })] : null }),
+    [lqbBi(`Bằng chữ: ${lqWordsVi(tot)}`, `In words: ${lqWordsEn(tot)}`),
+     lqbBi(`Hoá đơn GTGT số: ${q.invoice_no || '…………'}${q.invoice_date ? ' ngày ' + lqD(q.invoice_date) : ''}`, 'VAT invoice'),
+     lqbBi('Bên nhận đã kiểm tra hiện trạng, số lượng và nhận đủ các tài sản trên; tự chịu trách nhiệm tháo dỡ, vận chuyển.',
+           'The receiver has checked the condition and quantity, received all the assets above, and is responsible for dismantling and transport.'),
+     lqbSigns([['Đại diện bên giao', 'Deliverer', ''], ['Đại diện bên nhận', 'Receiver', String(d.name || '').toUpperCase()]])], 16, 34);
 }
 
 // Every page of the chosen forms, fitted to A4 each, as one PDF / a print preview.
-async function lqbCapture(b, keys, fmt, out) {
+async function lqbCapture(b, keys, fmt, out, quoteId) {
   const host = el('div', { className: 'fpdfhost' });
   try {
     msg(out, 'info', t('wf.pdfMaking'));
@@ -14185,18 +14353,32 @@ async function lqbCapture(b, keys, fmt, out) {
       for (const a of await SB.select('am_asset', `select=id,asset_code,spec_model,origin_iso2,spec_mfg_year,in_use_date,purchase_date,location_code&id=in.(${ids.slice(i, i + 200).join(',')})`)) assets.set(a.id, a);
     const c = lqbCtx(b, assets);
     if (!c.live.length) throw new Error(t('lqb.noItems'));
+    // Quotations for 07 / 08 / gate pass / 11: the opened ones (their prices are sealed before).
+    if (keys.some(k => LQ_DOCS3.includes(k))) {
+      c.bids = await lqbBidLoad(b);
+      c.quotes = (c.bids.buyers || []).filter(v => v.quote && v.quote.opened_at).map(v => Object.assign({ buyer: v }, v.quote));
+    }
     document.body.append(host);
     const shots = [];
     for (const k of keys) {
-      const pages = fsPages(el('div', { className: 'lqsheet print' }, lqbForm(k, c)));
-      for (let i = 0; i < pages.length; i++) {
-        host.innerHTML = ''; host.append(pages[i].box);
-        const canvas = await html2canvas(pages[i].box, { scale: 2, backgroundColor: '#ffffff', logging: false });
-        shots.push({ label: `${b.code} - ${k}`, first: i === 0, doc: `${k} — ${t('lqb.f.' + k)}`, land: pages[i].land, canvas });
+      // Per-buyer forms: every opened quotation (07) / every winning buyer (GP, 11), or just the one asked for.
+      const per = k === '07' ? c.quotes : k === 'GP' || k === '11' ? c.quotes.filter(q => c.live.some(r => r.outcome === 'sale' && r.sale_quote_id === q.id)) : [null];
+      const list = quoteId ? per.filter(q => q && q.id === quoteId) : per;
+      if (k !== '08' && LQ_DOCS3.includes(k) && !list.length) continue;
+      for (const q of list) {
+        const pages = fsPages(el('div', { className: 'lqsheet print' }, LQ_DOCS3.includes(k) ? lqbForm3(k, c, q) : lqbForm(k, c)));
+        for (let i = 0; i < pages.length; i++) {
+          host.innerHTML = ''; host.append(pages[i].box);
+          const canvas = await html2canvas(pages[i].box, { scale: 2, backgroundColor: '#ffffff', logging: false });
+          shots.push({ label: `${b.code} - ${k}`, first: i === 0, doc: `${k} — ${t('lqb.f.' + k)}${q ? ' · ' + (q.data.name || q.buyer.name) : ''}`, land: pages[i].land, canvas });
+        }
       }
     }
-    const name = keys.length > 1 ? `${b.code} - ${t('lqb.allName')}` : `${b.code} - ${keys[0]} ${t('lqb.f.' + keys[0])}`;
-    if (fmt === 'preview') wfCapPreview(wfCapPdf(shots), name); else wfCapPdf(shots).save(name + '.pdf');
+    if (!shots.length) throw new Error(t('lqq.noDoc'));
+    const one = keys.length === 1 && quoteId ? ((c.quotes || []).find(q => q.id === quoteId) || {}).data : null;
+    const name = keys.length > 1 ? `${b.code} - ${t('lqb.allName')}` : `${b.code} - ${keys[0]} ${t('lqb.f.' + keys[0])}${one ? ' - ' + one.name : ''}`;
+    const file = name.replace(/[\/:*?"<>|]+/g, ' ');
+    if (fmt === 'preview') wfCapPreview(wfCapPdf(shots), file); else wfCapPdf(shots).save(file + '.pdf');
     msg(out, 'ok', t('lqb.made', { n: shots.length }));
   } catch (e) { msg(out, 'err', e.message); }
   finally { host.remove(); }
@@ -14309,4 +14491,848 @@ function lcHead() {
 // Is there a batch waiting for its count that this person may count (for the tablet bar)?
 async function lcCheck() {
   try { LQ.countN = can('liquidation', 'view') ? (await SB.select('pm_lq_batch', 'select=id&status=eq.decided')).length : 0; } catch { LQ.countN = 0; }
+}
+
+/* ============================================================ LIQUIDATION — phase 3
+   Quotations, opening, result, close (29_liquidation_bid.sql). Buyers quote on
+   their own private link (Liquidation.html); the quotations stay sealed until
+   the opening, which needs more than half of the council present. Each item
+   then goes to a buyer (the highest price is suggested; any other choice needs
+   a reason) or is destroyed. Every winning buyer needs a VAT invoice number
+   and a gate pass with its three signatures before the batch can close — and
+   closing sets the register: sold 7, destroyed 9, same-barcode 23, not found 0. */
+const LQ_DOCS3 = ['07', '08', 'GP', '11'];
+
+// Amounts in words for the minutes: Vietnamese as the forms are written, English under it.
+function lqWordsVi(n) {
+  n = Math.round(Math.abs(Number(n) || 0));
+  if (!n) return 'Không đồng';
+  const D = ['không', 'một', 'hai', 'ba', 'bốn', 'năm', 'sáu', 'bảy', 'tám', 'chín'];
+  // One group of three digits; full = a higher group comes before it ("không trăm", "lẻ").
+  const three = (x, full) => {
+    const h = Math.floor(x / 100), t2 = Math.floor(x / 10) % 10, u = x % 10, w = [];
+    if (full || h) w.push(D[h], 'trăm');
+    if (t2 > 1) w.push(D[t2], 'mươi'); else if (t2 === 1) w.push('mười'); else if (u && (full || h)) w.push('lẻ');
+    if (u) w.push(t2 > 1 && u === 1 ? 'mốt' : t2 >= 1 && u === 5 ? 'lăm' : D[u]);
+    return w.join(' ');
+  };
+  const U = ['', 'nghìn', 'triệu', 'tỷ'], g = [];
+  while (n > 0) { g.push(n % 1000); n = Math.floor(n / 1000); }
+  const out = [];
+  for (let i = g.length - 1; i >= 0; i--) {
+    if (!g[i]) continue;
+    out.push(three(g[i], i < g.length - 1), i ? U[i % 3 === 0 ? 3 : i % 3] : '');
+  }
+  const s = out.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim() + ' đồng';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function lqWordsEn(n) {
+  n = Math.round(Math.abs(Number(n) || 0));
+  if (!n) return 'Zero dong';
+  const A = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen',
+             'sixteen', 'seventeen', 'eighteen', 'nineteen'], T = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+  const three = x => { const h = Math.floor(x / 100), r = x % 100, w = [];
+    if (h) w.push(A[h], 'hundred'); if (r) w.push(r < 20 ? A[r] : T[Math.floor(r / 10)] + (r % 10 ? '-' + A[r % 10] : '')); return w.join(' '); };
+  const U = ['', 'thousand', 'million', 'billion', 'trillion'], out = [];
+  for (let i = 0; n > 0; i++, n = Math.floor(n / 1000)) { const g = n % 1000; if (g) out.unshift(three(g) + (U[i] ? ' ' + U[i] : '')); }
+  const s = out.join(' ') + ' dong';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+async function lqbBidLoad(b) {
+  try { return await SB.rpc('pm_lq_bid_list', { p_batch: b.id }); } catch (e) { return { error: e.message, buyers: [], attend: [], events: [] }; }
+}
+const lqPrice = (q, itemId) => { const v = q && q.data && q.data.prices ? q.data.prices[String(itemId)] : null; return v == null || v === '' ? null : Number(v); };
+const lqBuyerId = d => d ? (d.kind === 'company' ? d.tax_code : d.id_no) || '' : '';
+
+// The card under the list: quotations, opening, result, buyers' papers, closing.
+function lqbBidCard(panel, b) {
+  const card = el('div', { className: 'card' }, [el('h2', { textContent: t('lqq.h') }), el('div', { className: 'dim', textContent: t('table.loading') })]);
+  panel.append(card);
+  (async () => {
+    const bl = await lqbBidLoad(b);
+    card.innerHTML = '';
+    card.append(el('h2', { textContent: t('lqq.h') }));
+    if (bl.error) return card.append(el('div', { className: 'msg warn', textContent: /pm_lq_bid_list|PGRST|404/.test(bl.error) ? t('lqq.notInstalled') : bl.error }));
+    lqbBidBody(card, b, bl);
+  })();
+}
+
+function lqbBidBody(card, b, bl) {
+  const edit = can('liquidation', 'edit') && ['valued', 'bidding'].includes(b.status);
+  const out = el('div');
+  const live = lqBatchItems(b).filter(i => i.status === 'batched' || ['sold', 'destroyed', 'lost'].includes(i.status));
+  const quotes = bl.buyers.filter(v => v.quote && v.quote.status === 'submitted').map(v => Object.assign({ buyer: v }, v.quote));
+  const opened = !!b.opened_at;
+  card.append(out);
+  const re = async () => { await lqLoad(); };
+
+  // 1. The call: deadline and instructions.
+  if (b.status === 'valued' || (b.status === 'bidding' && !opened)) {
+    const dl = el('input', { type: 'datetime-local', value: b.call_deadline ? new Date(new Date(b.call_deadline).getTime() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 16) : '', disabled: !edit });
+    const terms = el('textarea', { rows: 3, value: b.call_terms || t('lqq.termsDef'), disabled: !edit });
+    card.append(el('h3', { className: 'lqsub', textContent: t('lqq.call') }),
+      el('div', { className: 'lqgrid' }, [el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.deadline') }), dl]),
+        el('div', { className: 'fld lqwide', style: 'grid-column:span 3' }, [el('label', { textContent: t('lqq.terms') }), terms])]));
+    if (edit) card.append(el('div', { className: 'row', style: 'gap:8px;margin-top:6px' }, [
+      el('button', { className: 'btn pri', type: 'button', textContent: t(b.status === 'valued' ? 'lqq.callOpen' : 'lqq.callSave'), onclick: async () => {
+        if (!dl.value) return msg(out, 'err', t('lqq.needDeadline'));
+        try { await SB.rpc('pm_lq_call_open', { p_batch: b.id, p_deadline: new Date(dl.value).toISOString(), p_terms: terms.value }); await re(); }
+        catch (e) { msg(out, 'err', e.message); } } }),
+      ...(b.status === 'bidding' && !bl.buyers.length ? [el('button', { className: 'btn', type: 'button', textContent: t('lqq.callCancel'), onclick: async () => {
+        try { await SB.rpc('pm_lq_call_cancel', { p_batch: b.id }); await re(); } catch (e) { msg(out, 'err', e.message); } } })] : [])]));
+  }
+
+  // 2. The buyers invited and where their quotation stands.
+  if (b.status !== 'valued') {
+    card.append(el('h3', { className: 'lqsub', textContent: t('lqq.buyers', { n: bl.buyers.length, s: quotes.length }) }));
+    const linkBox = el('div');
+    const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['lqq.b.name', 'lqq.b.contact', 'lqq.b.quote', 'lqq.b.link', ''].map(k => el('th', { textContent: k ? t(k) : '' })))]);
+    for (const v of bl.buyers) {
+      const q = v.quote;
+      const st = !q ? t('lqq.q.none') : q.status === 'submitted' ? t('lqq.q.sub', { d: fmtDateTime(q.submitted_at) }) + (q.opened_at ? '' : ' · 🔒') : t('lqq.q.draft');
+      tb.append(el('tr', {}, [el('td', {}, [el('b', { textContent: v.name }), q && q.data && q.data.name && q.data.name !== v.name ? el('small', { className: 'dim', textContent: ' · ' + q.data.name }) : '']),
+        el('td', { textContent: [v.phone, v.email].filter(Boolean).join(' · ') }), el('td', { textContent: st }),
+        el('td', { className: v.revoked ? 'bad' : '', textContent: v.revoked ? t('lqq.revoked') : t('lqq.until', { d: fmtDate(String(v.expires_at).slice(0, 10)) }) + (v.last_seen_at ? ' · ' + t('lqq.seen') : '') }),
+        el('td', { className: 'nowrap' }, edit && !opened ? [
+          el('button', { className: 'btn tiny', type: 'button', textContent: t('lqq.newLink'), onclick: async () => {
+            try { const tok = await SB.rpc('pm_lq_buyer_set', { p_buyer: v.id, p_days: null, p_revoke: false, p_new_token: true }); lqLinkShow(linkBox, v.name, tok); } catch (e) { msg(out, 'err', e.message); } } }),
+          el('button', { className: 'btn tiny', type: 'button', textContent: v.revoked ? t('lqq.unrevoke') : t('lqq.revoke'), onclick: async () => {
+            try { await SB.rpc('pm_lq_buyer_set', { p_buyer: v.id, p_days: null, p_revoke: !v.revoked, p_new_token: false }); await re(); } catch (e) { msg(out, 'err', e.message); } } })] : '')]));
+    }
+    if (!bl.buyers.length) tb.append(el('tr', {}, el('td', { colSpan: 5, className: 'dim', textContent: t('lqq.noBuyers') })));
+    card.append(el('div', { className: 'wrap' }, tb), linkBox);
+    if (edit && !opened) {
+      const nm = el('input', { placeholder: t('lqq.b.name') }), ph = el('input', { placeholder: t('lqq.b.phone') }), em = el('input', { placeholder: 'Email' });
+      card.append(el('div', { className: 'row', style: 'gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:6px' }, [
+        el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.b.name') }), nm]), el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.b.phone') }), ph]),
+        el('div', { className: 'fld' }, [el('label', { textContent: 'Email' }), em]),
+        el('button', { className: 'btn pri', type: 'button', textContent: t('lqq.invite'), onclick: async () => {
+          if (!nm.value.trim()) return msg(out, 'err', t('lqq.needName'));
+          try { const tok = await SB.rpc('pm_lq_buyer_add', { p_batch: b.id, p_name: nm.value.trim(), p_phone: ph.value.trim(), p_email: em.value.trim(), p_days: 7 });
+                const name = nm.value.trim(); await re(); setTimeout(() => { const host = document.querySelector('#lqPanel .lqlinkhost'); if (host) lqLinkShow(host, name, tok); }, 50); }
+          catch (e) { msg(out, 'err', e.message); } } })]), el('div', { className: 'lqlinkhost' }));
+    }
+  }
+
+  // 3. The opening: who of the council is here.
+  if (b.status === 'bidding' && !opened) {
+    const mem = lqMembersOf(b.council_id);
+    const due = !b.call_deadline || new Date(b.call_deadline) <= new Date() || (bl.buyers.filter(v => !v.revoked).length > 0 && bl.buyers.filter(v => !v.revoked).every(v => v.quote && v.quote.status === 'submitted'));
+    const boxes = mem.map(m => [m, el('input', { type: 'checkbox' })]);
+    const note = el('textarea', { rows: 2, placeholder: t('lqq.fewWhy') });
+    const need = Math.floor(mem.length / 2) + 1;
+    card.append(el('h3', { className: 'lqsub', textContent: t('lqq.opening') }),
+      el('div', { className: 'tdnote', textContent: t('lqq.openHint', { need, of: mem.length }) }),
+      el('div', { className: 'lqpresent' }, boxes.map(([m, c]) => el('label', { className: 'chk' }, [c, el('span', { textContent: `${m.full_name} — ${t(m.role === 'chair' ? 'lqc.r.chair' : m.role === 'vice' ? 'lqc.r.vice' : m.permanent ? 'lqc.r.perm' : 'lqc.r.nonperm')}` })]))),
+      ...(quotes.length < 3 ? [el('div', { className: 'msg warn', textContent: t('lqq.few', { n: quotes.length }) }), note] : []));
+    if (edit) card.append(el('div', { className: 'row', style: 'gap:8px;margin-top:6px' }, [
+      el('button', { className: 'btn pri', type: 'button', disabled: !due || !quotes.length, title: due ? '' : t('lqq.notDue'), textContent: t('lqq.open'), onclick: async () => {
+        const present = boxes.filter(([, c]) => c.checked).map(([m]) => m.id);
+        if (present.length < need) return msg(out, 'err', t('lqq.quorum', { n: present.length, need, of: mem.length }));
+        try { await SB.rpc('pm_lq_open', { p_batch: b.id, p_present: present, p_note: note.value.trim() || null }); await re(); msg('#lqMsg', 'ok', t('lqq.opened')); }
+        catch (e) { msg(out, 'err', e.message); } } }),
+      !due ? el('span', { className: 'dim', textContent: t('lqq.notDue') }) : '']));
+  }
+
+  // 4. The result, item by item (destroying needs no quotation; selling needs the opening).
+  if (['valued', 'bidding', 'closed'].includes(b.status)) lqbAward(card, b, bl, quotes, live, edit, out);
+  // 5. The winners' papers, and closing.
+  if (b.status === 'bidding' || b.status === 'closed') lqbWinners(card, b, bl, live, edit, out);
+  if (edit) {
+    const left = live.filter(i => i.status === 'batched' && i.count_found !== false && !i.outcome).length;
+    const date = el('input', { type: 'date', value: b.liquidation_date || new Date().toISOString().slice(0, 10) });
+    card.append(el('h3', { className: 'lqsub', textContent: t('lqq.close') }), el('div', { className: 'tdnote', textContent: t('lqq.closeHint') }),
+      el('div', { className: 'row', style: 'gap:8px;align-items:flex-end' }, [el('div', { className: 'fld' }, [el('label', { textContent: t('lqb.liqDate') }), date]),
+        el('button', { className: 'btn pri', type: 'button', disabled: left > 0, title: left ? t('lqq.left', { n: left }) : '', textContent: t('lqq.closeBtn'), onclick: async () => {
+          if (!confirm(t('lqq.closeAsk', { c: b.code }))) return;
+          try { await SB.rpc('pm_lq_close', { p_batch: b.id, p_date: date.value || null }); LQ.flash = t('lqq.closed', { c: b.code }); await re(); }
+          catch (e) { msg(out, 'err', e.message); } } }),
+        left ? el('span', { className: 'dim', textContent: t('lqq.left', { n: left }) }) : '']));
+  }
+  if ((bl.events || []).length) card.append(el('details', { className: 'lqlog' }, [el('summary', { textContent: t('lqq.log', { n: bl.events.length }) }),
+    el('ul', {}, bl.events.map(e => el('li', { textContent: `${fmtDateTime(e.at)} · ${e.actor || ''} · ${t('lqq.ev.' + e.action) === 'lqq.ev.' + e.action ? e.action : t('lqq.ev.' + e.action)}${e.detail ? ' · ' + e.detail : ''}` })))]));
+}
+
+function lqLinkShow(host, name, token) {
+  const cfg = encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify({ url: CFG.url, key: CFG.key })))));
+  const link = new URL('Liquidation.html', location.href.split('#')[0]).href + '#c=' + cfg + '&t=' + token;
+  const inp = el('input', { value: link, readOnly: true, onclick: () => inp.select() });
+  const copy = el('button', { className: 'btn pri', type: 'button', textContent: t('td.copy'), onclick: () => { inp.select(); navigator.clipboard?.writeText(link).catch(() => {}); copy.textContent = t('td.copied'); } });
+  host.innerHTML = '';
+  host.append(el('div', { className: 'msg ok tdlink' }, [el('b', { textContent: t('lqq.linkFor', { v: name }) }), el('div', { className: 'tdnote', textContent: t('td.linkOnce') }),
+    el('div', { className: 'row', style: 'flex-wrap:nowrap' }, [inp, copy])]));
+  host.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+// Items × quotations: each buyer's unit price, the highest marked; the choice, the price, the cost, why.
+function lqbAward(card, b, bl, quotes, live, edit, out) {
+  const opened = !!b.opened_at, canSet = edit && b.status !== 'closed';
+  card.append(el('h3', { className: 'lqsub', textContent: t('lqq.result') }));
+  if (!opened && b.status === 'bidding') card.append(el('div', { className: 'tdnote', textContent: t('lqq.sealedHint') }));
+  const found = live.filter(i => i.count_found !== false), lost = live.filter(i => i.count_found === false);
+  const draft = new Map(found.map(i => [i.id, { outcome: i.outcome || '', quote_id: i.sale_quote_id || '', price: i.sale_price, cost: i.sale_cost, note: i.award_note || '' }]));
+  const head = [t('lq.c.code'), t('lq.c.name'), t('lq.c.qty'), t('lqb.c.reval'), ...(opened ? quotes.map(q => q.data.name || q.buyer.name) : []), t('lqq.choice'), t('lqq.price'), t('lqq.value'), t('lqq.cost'), t('lqq.why')];
+  const tb = el('table', { className: 'lqbt lqaward' }, [el('tr', {}, head.map((h, i) => el('th', { className: i === 2 || i === 3 || (i >= 4 && i < 4 + (opened ? quotes.length : 0)) || i >= head.length - 3 && i < head.length - 1 ? 'num' : '', textContent: h })))]);
+  for (const i of found) {
+    const dr = draft.get(i.id), qty = n0(i.count_qty ?? i.qty);
+    const prices = opened ? quotes.map(q => lqPrice(q, i.id)) : [];
+    const max = Math.max(0, ...prices.filter(p => p > 0));
+    const sel = el('select', { disabled: !canSet });
+    sel.append(el('option', { value: '', textContent: '—' }), el('option', { value: 'destroy', textContent: t('lqq.destroy') }));
+    quotes.forEach((q, k) => { if (prices[k] > 0) sel.append(el('option', { value: 'q' + q.id, textContent: `${q.data.name || q.buyer.name} · ${lqN(prices[k])}` })); });
+    sel.value = dr.outcome === 'destroy' ? 'destroy' : dr.outcome === 'sale' ? 'q' + dr.quote_id : '';
+    const pr = el('input', { className: 'lqrv', inputMode: 'decimal', value: dr.price != null ? fmtNum(dr.price) : '', disabled: !canSet || dr.outcome !== 'sale' });
+    const cost = el('input', { className: 'lqrv', inputMode: 'decimal', value: dr.cost != null ? fmtNum(dr.cost) : '', disabled: !canSet || !dr.outcome });
+    const why = el('input', { value: dr.note, disabled: !canSet, placeholder: '' });
+    const val = el('td', { className: 'num', textContent: dr.outcome === 'sale' && dr.price ? lqN(dr.price * qty) : '' });
+    sel.onchange = () => {
+      const v = sel.value;
+      dr.outcome = v === 'destroy' ? 'destroy' : v ? 'sale' : '';
+      dr.quote_id = v.startsWith('q') ? Number(v.slice(1)) : '';
+      dr.price = dr.outcome === 'sale' ? lqPrice(quotes.find(q => q.id === dr.quote_id), i.id) : null;
+      pr.value = dr.price != null ? fmtNum(dr.price) : ''; pr.disabled = dr.outcome !== 'sale'; cost.disabled = !dr.outcome;
+      val.textContent = dr.price ? lqN(dr.price * qty) : '';
+      why.placeholder = dr.outcome === 'sale' && dr.price < max ? t('lqq.whyNeed') : '';
+    };
+    pr.onchange = () => { dr.price = numIn(pr.value); val.textContent = dr.price ? lqN(dr.price * qty) : ''; why.placeholder = dr.price < max ? t('lqq.whyNeed') : ''; };
+    cost.onchange = () => { dr.cost = numIn(cost.value); };
+    why.onchange = () => { dr.note = why.value.trim(); };
+    tb.append(el('tr', {}, [el('td', {}, el('code', { textContent: i.asset_code || 'N/A' })), el('td', { textContent: `${i.name}${i.mode === 'Other' ? ' · ' + t('lqq.planDestroy') : ''}` }),
+      el('td', { className: 'num', textContent: `${fmtNum(qty)} ${i.unit || ''}` }), el('td', { className: 'num', textContent: lqN(i.reval_value) }),
+      ...prices.map(p => el('td', { className: 'num' + (p > 0 && p === max ? ' best' : ''), textContent: p > 0 ? lqN(p) : '—' })),
+      el('td', {}, sel), el('td', { className: 'num' }, pr), val, el('td', { className: 'num' }, cost), el('td', {}, why)]));
+  }
+  const saleSum = found.reduce((s, i) => s + (i.outcome === 'sale' ? n0(i.sale_value) : 0), 0);
+  card.append(el('div', { className: 'wrap' }, tb));
+  if (lost.length) card.append(el('div', { className: 'msg warn', textContent: t('lqq.lost', { list: lost.map(i => i.asset_code || i.name).join(', ') }) }));
+  if (b.opened_at && quotes.length) {
+    const below = found.filter(i => i.outcome === 'sale' && i.reval_value != null && n0(i.sale_price) * n0(i.count_qty ?? i.qty) < n0(i.reval_value));
+    if (below.length) card.append(el('div', { className: 'msg warn', textContent: t('lqq.belowFloor', { list: below.map(i => i.asset_code || i.name).join(', ') }) }));
+  }
+  if (saleSum) card.append(el('div', { className: 'lqsum', textContent: t('lqq.saleSum', { v: lqN(saleSum) }) }));
+  if (canSet) card.append(el('div', { className: 'row', style: 'gap:8px;margin-top:6px' }, [
+    ...(opened ? [el('button', { className: 'btn', type: 'button', textContent: t('lqq.suggest'), onclick: () => {
+      for (const i of found) {
+        const dr = draft.get(i.id); if (dr.outcome) continue;
+        let best = null, bp = 0; for (const q of quotes) { const p = lqPrice(q, i.id); if (p > bp) { bp = p; best = q; } }
+        if (best) Object.assign(dr, { outcome: 'sale', quote_id: best.id, price: bp }); else if (i.mode === 'Other') dr.outcome = 'destroy';
+      }
+      lqbSaveAward(b, draft, out);
+    } })] : []),
+    el('button', { className: 'btn pri', type: 'button', textContent: t('lqq.saveResult'), onclick: () => lqbSaveAward(b, draft, out) })]));
+}
+async function lqbSaveAward(b, draft, out) {
+  const items = [...draft].map(([id, d]) => ({ item_id: id, outcome: d.outcome || null, quote_id: d.quote_id || null, price: d.price ?? null, cost: d.cost ?? null, note: d.note || null }));
+  try { await SB.rpc('pm_lq_award', { p_batch: b.id, p_items: items }); LQ.flash = t('lqq.resultSaved'); await lqLoad(); }
+  catch (e) { msg(out, 'err', e.message); }
+}
+
+// Each winning buyer: what they bought, the VAT invoice, the gate pass, the handover; their papers to print.
+function lqbWinners(card, b, bl, live, edit, out) {
+  const wins = bl.buyers.filter(v => v.quote && live.some(i => i.outcome === 'sale' && i.sale_quote_id === v.quote.id));
+  if (!wins.length) return;
+  card.append(el('h3', { className: 'lqsub', textContent: t('lqq.winners', { n: wins.length }) }));
+  for (const v of wins) {
+    const q = v.quote, mine = live.filter(i => i.outcome === 'sale' && i.sale_quote_id === q.id);
+    const total = mine.reduce((s, i) => s + n0(i.sale_value), 0), dis = !edit || b.status === 'closed';
+    const inv = el('input', { value: q.invoice_no || '', disabled: dis }), invD = el('input', { type: 'date', value: q.invoice_date || '', disabled: dis });
+    const gd = el('input', { type: 'date', value: q.gate_date || '', disabled: dis }), gok = el('input', { type: 'checkbox', checked: !!q.gate_ok, disabled: dis });
+    const hd = el('input', { type: 'date', value: q.handover_date || '', disabled: dis });
+    const fOut = el('div');
+    const box = el('div', { className: 'lqwin' + (q.invoice_no && q.gate_ok ? ' ok' : '') }, [
+      el('div', { className: 'row', style: 'align-items:center;gap:10px;flex-wrap:wrap' }, [el('b', { textContent: (q.data && q.data.name) || v.name }),
+        el('span', { className: 'dim', textContent: `${lqBuyerId(q.data)} · ${t('lqq.items', { n: mine.length })} · ${lqN(total)}` })]),
+      el('div', { className: 'lqgrid', style: 'margin-top:6px' }, [
+        el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.invNo') }), inv]), el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.invDate') }), invD]),
+        el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.gateDate') }), gd]),
+        el('label', { className: 'chk', style: 'align-self:end' }, [gok, el('span', { textContent: t('lqq.gateOk') })]),
+        el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.handDate') }), hd])]),
+      el('div', { className: 'row', style: 'gap:6px;margin-top:6px;flex-wrap:wrap' }, [
+        ...(dis ? [] : [el('button', { className: 'btn tiny pri', type: 'button', textContent: t('tool.save'), onclick: async () => {
+          try { await SB.rpc('pm_lq_buyer_doc', { p_quote: q.id, p_patch: { invoice_no: inv.value, invoice_date: invD.value, gate_date: gd.value, gate_ok: gok.checked, handover_date: hd.value } });
+                LQ.flash = t('lqq.docSaved', { v: (q.data && q.data.name) || v.name }); await lqLoad(); } catch (e) { msg(out, 'err', e.message); } } })]),
+        ...[['07', 'lqb.f.07'], ['GP', 'lqb.f.GP'], ['11', 'lqb.f.11']].map(([k, key]) => el('button', { className: 'btn tiny', type: 'button', textContent: t(key),
+          onclick: () => lqbCapture(b, [k], 'preview', fOut, q.id) }))]), fOut]);
+    card.append(box);
+  }
+}
+
+/* ============================================================ ACCOUNTING RECONCILIATION
+   The asset register (the things: code, barcode, standard name, place, status)
+   and accounting's depreciation books (the money: cost, term, accumulated,
+   residual) are two books, joined by links (30_acc_reconcile.sql). Every month
+   accounting sends three files — fixed assets, long-term prepayments (tools,
+   2422) and short-term prepayments (2421, only the tool lines count); each is
+   read here in the browser and loaded as that month's picture: new lines,
+   changed lines, lines gone. Linking is rolling, not closed month by month:
+   every asset still provisional stays in the queue until accounting books it.
+   Decisions of 26/09/2026: accounting pastes the asset codes the app exports
+   into its "Mã TS mới" column (the next import links those by itself); a line
+   that holds several assets is linked first and allocated later; commissions,
+   insurance and the land-use right are left out; relocation counts when it
+   belongs to an asset or a project; from 2022 first, older lines after. */
+const ACC = { tab: 'home', lines: [], links: [], assets: [], imports: [], changes: [], alias: new Map(), proj: null, q: '', year: 2022, sel: new Set(), asel: new Set(), files: [] };
+const ACC_KINDS = { fa: 'acc.k.fa', ccdc: 'acc.k.ccdc', st: 'acc.k.st' };
+const ACC_SKIP = [[/insurance|bảo hiểm|bao hiem/i, 'acc.skip.ins'], [/commission|hoa hồng|hoa hong/i, 'acc.skip.com'],
+                  [/right to use land|quyền sử dụng đất|quyen su dung dat/i, 'acc.skip.land']];
+const accNorm = s => String(s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/[^a-z0-9]+/g, ' ').trim();
+const accTokens = s => new Set(accNorm(s).split(' ').filter(w => w.length > 1 && !/^\d+$/.test(w)));
+const accProject = (...xs) => { for (const x of xs) { const m = /\bFFE(?:\.[A-Z0-9]+)+\.\d{4}\b/i.exec(String(x || '')); if (m) return m[0].toUpperCase(); } return null; };
+const accDate = v => {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number' && v > 20000 && v < 60000) { const d = new Date(Math.round((v - 25569) * 864e5)); return d.toISOString().slice(0, 10); }
+  const m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/.exec(String(v).trim()); if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  const n = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v)); return n ? n[0] : null;
+};
+const accNum = v => { if (v == null || v === '') return null; if (typeof v === 'number') return isFinite(v) ? v : null; const n = numIn(v); return n == null || !isFinite(n) ? null : n; };
+// The period a file is "as of": from its name (2025.11.30 / 25.11.30 / 2025-11), else the month before this one.
+function accPeriodOf(name) {
+  const s = String(name || '');
+  let m = /(20\d{2})[._-](\d{1,2})[._-](\d{1,2})(?!.*20\d{2}[._-]\d{1,2}[._-]\d{1,2})/.exec(s);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;
+  m = /(?:^|\D)(\d{2})[._-](\d{2})[._-](\d{2})(?:\D|$)/.exec(s);
+  if (m) return `20${m[1]}-${m[2]}`;
+  const d = new Date(); d.setDate(0); return d.toISOString().slice(0, 7);
+}
+const accMonthEnd = ym => { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); };
+
+/* ------------------------------------------------------------ reading a file
+   The three files have their own layouts; each is found by its header row
+   (the one with "Description"), the columns by their header words, and the
+   month's residual by the date above its block (FA: Term · Monthly Dep ·
+   Residual; prepayments: Debit · Credit · Term · Allocation · Residuals). */
+function accFindSheet(wb) {
+  const cand = [];
+  for (const name of wb.SheetNames) {
+    if (/commission/i.test(name)) continue;
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null, blankrows: true, sheetRows: 45 });
+    for (let r = 0; r < aoa.length; r++) {
+      const row = (aoa[r] || []).map(v => String(v ?? '').trim().toLowerCase());
+      if (!row.includes('description')) continue;
+      const kind = row.includes('being used at') ? 'fa' : row.includes('beginning') && row.includes('price') ? 'ccdc' : row.includes('beginning') ? 'st' : null;
+      if (kind) cand.push({ name, kind, hr: r });
+      break;
+    }
+  }
+  // Short-term: the last yearly sheet ("2023 + 2024 + 2025") holds the current lines.
+  const fa = cand.find(c => c.kind === 'fa' && /^details$/i.test(c.name)) || cand.find(c => c.kind === 'fa');
+  return fa || cand.find(c => c.kind === 'ccdc') || cand.filter(c => c.kind === 'st').pop() || null;
+}
+function accParse(wb, fileName, periodYm) {
+  const found = accFindSheet(wb);
+  if (!found) throw new Error(t('acc.noSheet', { f: fileName }));
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[found.name], { header: 1, raw: true, defval: null, blankrows: true });
+  const H = (aoa[found.hr] || []).map(v => String(v ?? '').trim().toLowerCase()), U = (aoa[found.hr - 1] || []);
+  const col = (...names) => { for (const n of names) { const i = H.indexOf(n); if (i >= 0) return i; } return -1; };
+  const up = re => U.findIndex(v => re.test(String(v ?? '')));
+  const kind = found.kind;
+  const C = kind === 'fa'
+    ? { entity: 0, dept: 1, grp: 2, loai: 3, debit: 5, credit: 6, costAcct: 7, desc: col('description'), usd: col('usd'), cost: col('vnd'), qty: col('qty'),
+        docs: col('docs'), tax: col('mst'), sup: col('supplier'), contract: col('contract'), loc: col('location'), liq: col('liquidation no.'),
+        start: col('being used at'), term: col('term'), code: up(/mã\s*ts\s*mới/i) }
+    : { dept: col('tổ chức'), grp: col('nhóm'), loai: col('loại'), desc: col('description'), qty: col('qty'), unit: col('unit'), docs: col('doc'), project: col('project'),
+        tax: col('tax code'), sup: col('supplier'), contract: col('contract no.'), loc: col('location'), start: col('beginning'), term: col('month'),
+        price: col('price'), cost: col('asset value'), code: Math.max(up(/mã\s*ts\s*mới/i), H.findIndex(v => /mã\s*ts\s*mới/.test(v))) };
+  if (C.desc < 0 || C.cost < 0) throw new Error(t('acc.noCols', { f: fileName }));
+  // The month's block: its date sits above its first column.
+  const target = periodYm;
+  let blk = -1;
+  for (let j = 0; j < U.length; j++) {
+    const v = U[j]; if (typeof v !== 'number' || v < 30000 || v > 60000) continue;
+    const ym = new Date(Math.round((v - 25569) * 864e5)).toISOString().slice(0, 7);
+    if (ym === target) { blk = j; break; }
+  }
+  const off = kind === 'fa' ? { monthly: 1, res: 2 } : { monthly: 3, res: 4 };
+  // Dept codes for the account sheet's own dept list; the rest of the rows are data from the header down.
+  const rows = [], seen = new Map();
+  for (let r = found.hr + 1; r < aoa.length; r++) {
+    const a = aoa[r] || [];
+    const desc = String(a[C.desc] ?? '').trim(), dept = String(a[C.dept] ?? '').trim();
+    const cost = accNum(a[C.cost]);
+    if (!desc || !dept || dept.length > 6 || cost == null) continue;
+    const grp = String(a[C.grp] ?? '').trim();
+    if (kind === 'st' && grp !== 'E') continue;                     // short-term: only tools
+    const start = accDate(a[C.start]);
+    const docs = [a[C.docs], kind === 'fa' ? null : a[C.project]].filter(v => v != null && String(v).trim() && String(v).trim() !== '0').map(String).join(' · ');
+    const nbv = blk >= 0 ? accNum(a[blk + off.res]) : null, monthly = blk >= 0 ? accNum(a[blk + off.monthly]) : null;
+    let skip = null;
+    for (const [re, k] of ACC_SKIP) if (re.test(desc)) { skip = t(k); break; }
+    if (!skip && cost < 0) skip = t('acc.skip.neg');
+    // The line's identity: department, description, start date, document — NOT the cost, which accounting
+    // corrects when a project is settled (a changed cost is a change of the same line, not a new one).
+    const base = [dept, accNorm(desc).slice(0, 80), start || '', accNorm(docs).slice(0, 40)].join('|');
+    const k = (seen.get(base) || 0) + 1; seen.set(base, k);
+    rows.push({ line_key: kind + ':' + base + '#' + k, src_row: r + 1, acc_code: C.code >= 0 ? String(a[C.code] ?? '').trim() : '',
+      entity: kind === 'fa' ? String(a[C.entity] ?? '').trim() : '', dept, grp, loai: String(a[C.loai] ?? '').trim(),
+      acct_debit: kind === 'fa' ? String(a[C.debit] ?? '').trim() : '2422', acct_credit: kind === 'fa' ? String(a[C.credit] ?? '').trim() : '',
+      acct_cost: kind === 'fa' ? String(a[C.costAcct] ?? '').trim() : '', description: desc,
+      qty: accNum(a[C.qty]), unit: C.unit >= 0 ? String(a[C.unit] ?? '').trim() : '', unit_price: C.price >= 0 ? accNum(a[C.price]) : null,
+      cost, start_date: start, term_months: accNum(a[C.term]), monthly, nbv, accum: nbv != null ? cost - nbv : null,
+      docs, project_code: accProject(a[C.docs], kind === 'fa' ? a[C.contract] : a[C.project], a[C.contract], desc),
+      tax_code: String(a[C.tax] ?? '').trim().replace(/^0$/, ''), supplier: String(a[C.sup] ?? '').trim().replace(/^0$/, ''),
+      contract: String(a[C.contract] ?? '').trim().replace(/^0$/, ''), location: C.loc >= 0 ? String(a[C.loc] ?? '').trim().replace(/^0$/, '') : '',
+      liquidation_no: C.liq >= 0 ? String(a[C.liq] ?? '').trim().replace(/^0$/, '') : '', skip });
+  }
+  if (kind === 'ccdc') for (const r of rows) r.acct_debit = '2422';
+  if (kind === 'st') for (const r of rows) r.acct_debit = '2421';
+  return { kind, sheet: found.name, rows, block: blk >= 0 };
+}
+
+async function accPick(files) {
+  const out = $('#accMsg');
+  try {
+    if (typeof XLSX === 'undefined') throw new Error('XLSX');
+    ACC.files = [];
+    for (const f of files) {
+      msg(out, 'info', t('acc.reading', { f: f.name }));
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array', cellFormula: false, cellHTML: false, cellStyles: false });
+      const ym = accPeriodOf(f.name);
+      const p = accParse(wb, f.name, ym);
+      ACC.files.push({ file: f.name, wb, ym, parsedYm: ym, ...p });
+    }
+    msg(out, '', '');
+    accRender();
+  } catch (e) { msg(out, 'err', e.message); }
+}
+async function accImport() {
+  const out = $('#accMsg');
+  try {
+    for (const f of ACC.files) {
+      if (f.ym !== f.parsedYm) Object.assign(f, accParse(f.wb, f.file, f.ym), { parsedYm: f.ym });
+      msg(out, 'info', t('acc.loading', { f: f.file, n: fmtInt(f.rows.length) }));
+      const id = await SB.rpc('am_acc_import_begin', { p_kind: f.kind, p_period: accMonthEnd(f.ym), p_file: f.file, p_sheet: f.sheet });
+      for (let i = 0; i < f.rows.length; i += 400) await SB.rpc('am_acc_import_rows', { p_import: id, p_rows: f.rows.slice(i, i + 400) });
+      let st;
+      do { st = await SB.rpc('am_acc_import_finish', { p_import: id, p_limit: 600 });
+           if (st.more) msg(out, 'info', t('acc.applying', { f: f.file, n: fmtInt(st.left) })); } while (st.more);
+      f.stats = st;
+    }
+    const done = ACC.files.map(f => `${f.file}: ${t('acc.stats', { n: f.stats.new || 0, c: f.stats.changed || 0, g: f.stats.gone || 0, r: f.stats.rekeyed || 0, a: f.stats.autolinked || 0 })}`).join('\n');
+    ACC.files = [];
+    await accLoad();
+    msg(out, 'ok', done);
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+/* ------------------------------------------------------------ loading */
+async function accLoad() {
+  const out = $('#accMsg');
+  msg(out, 'info', t('table.loading'));
+  try {
+    await pmLookups();
+    const [lines, links, imports, alias] = await Promise.all([
+      pmSelectAll('am_acc_line', 'select=*&order=id'), pmSelectAll('am_acc_link', 'select=*'),
+      SB.select('am_acc_import', 'select=*&order=id.desc&limit=30'), pmSelectAll('am_acc_alias', 'select=desc_norm,name')]);
+    const assets = await pmSelectAll('am_asset', 'select=id,asset_code,barcode,name_vi,name_en,qty,unit_code,unit_price,dept_code,location_code,purpose_code,supplier,invoice_no,'
+      + 'purchase_date,in_use_date,purchase_year,created_at,asset_kind,status_code,is_legacy,shipment_id,no_label,fin_status,fin_cost,fin_nbv,fin_start,fin_term,fin_account,fin_as_of,fin_note'
+      + '&or=(purchase_year.gte.2022,fin_status.not.is.null,is_legacy.eq.false)&order=id');
+    const last = imports.find(i => i.status === 'done');
+    const changes = last ? await pmSelectAll('am_acc_change', `select=*&period=gte.${imports.filter(i => i.status === 'done').map(i => i.period).sort()[0]}&order=id.desc`) : [];
+    Object.assign(ACC, { lines, links, imports, assets, changes, alias: new Map(alias.map(a => [a.desc_norm, a.name])), ready: true });
+    ACC.byLine = new Map(); ACC.byAsset = new Map();
+    for (const k of links) { (ACC.byLine.get(k.line_id) || ACC.byLine.set(k.line_id, []).get(k.line_id)).push(k); (ACC.byAsset.get(k.asset_id) || ACC.byAsset.set(k.asset_id, []).get(k.asset_id)).push(k); }
+    ACC.assetMap = new Map(assets.map(a => [a.id, a]));
+    ACC.lineMap = new Map(lines.map(l => [l.id, l]));
+    msg(out, '', '');
+    accRender();
+  } catch (e) {
+    ACC.ready = false; accRender();
+    msg(out, 'err', /am_acc_|PGRST205|404/.test(e.message) ? t('acc.notInstalled') : e.message);
+  }
+}
+const accYear = l => l.start_date ? Number(l.start_date.slice(0, 4)) : 0;
+const accInScope = l => l.status === 'active' && l.scope === 'in' && accYear(l) >= ACC.year;
+const accAssetName = a => [a.name_vi, a.name_en].filter(Boolean).join(' / ');
+const accAge = a => { const d = new Date(a.purchase_date || a.created_at); return isNaN(d) ? null : Math.max(0, Math.floor((Date.now() - d) / (30.44 * 864e5))); };
+// Assets waiting to be booked: in the app's own lifetime (not the old Beetrack register) or bought from 2022, not linked, not marked off.
+const accQueue = () => ACC.assets.filter(a => !a.fin_status && !ACC.byAsset.has(a.id) && (!a.is_legacy || (a.purchase_year || 0) >= ACC.year)
+  && !['7', '9', '0'].includes(String(a.status_code)));
+
+/* How well an accounting line and an asset fit (0–100): the project code first,
+   then value, date, department, supplier, and the name (the learned dictionary,
+   then shared words in either language). */
+function accScore(l, a) {
+  let s = 0;
+  if (l.project_code && a.purpose_code && l.project_code === String(a.purpose_code).toUpperCase()) s += 40;
+  const unit = l.unit_price || (l.qty ? l.cost / l.qty : l.cost), ap = Number(a.unit_price) || 0;
+  if (unit && ap) { const d = Math.abs(unit - ap) / Math.max(unit, ap); s += d <= 0.02 ? 22 : d <= 0.1 ? 14 : d <= 0.25 ? 5 : 0; }
+  const ad = a.in_use_date || a.purchase_date;
+  if (l.start_date && ad) { const g = Math.abs(new Date(l.start_date) - new Date(ad)) / 864e5; s += g <= 31 ? 10 : g <= 92 ? 5 : 0; }
+  if (l.dept && a.dept_code && l.dept === a.dept_code) s += 6;
+  if (l.supplier && a.supplier && accNorm(a.supplier).includes(accNorm(l.supplier).split(' ').slice(0, 3).join(' '))) s += 6;
+  const nm = accAssetName(a);
+  if (ACC.alias.get(accNorm(l.description)) === [a.name_vi, a.name_en].filter(Boolean).join('/')) s += 30;
+  else { const A = accTokens(l.description), B = accTokens(nm); let inter = 0; for (const w of A) if (B.has(w)) inter++;
+         s += A.size && B.size ? Math.round(24 * inter / Math.min(A.size, B.size)) : 0; }
+  return Math.min(100, s);
+}
+function accCandidates(l, pool, n = 5) {
+  const list = (l.project_code ? pool.filter(a => String(a.purpose_code || '').toUpperCase() === l.project_code) : pool)
+    .filter(a => !['7', '9', '0'].includes(String(a.status_code)));
+  const scored = (list.length ? list : pool).map(a => [a, accScore(l, a)]).filter(([, s]) => s >= 25).sort((x, y) => y[1] - x[1]);
+  return scored.slice(0, n);
+}
+
+/* ------------------------------------------------------------ actions */
+async function accLink(pairs, out) {
+  if (!pairs.length) return;
+  try {
+    const withAlias = pairs.map(p => Object.assign({}, p, { desc_norm: accNorm((ACC.lineMap.get(p.line_id) || {}).description) }));
+    const n = await SB.rpc('am_acc_link_set', { p_pairs: withAlias, p_method: 'manual' });
+    ACC.flash = t('acc.linked', { n }); await accLoad();
+  } catch (e) { msg(out || '#accMsg', 'err', e.message); }
+}
+async function accUnlink(pairs) {
+  try { await SB.rpc('am_acc_unlink', { p_pairs: pairs }); await accLoad(); } catch (e) { msg('#accMsg', 'err', e.message); }
+}
+async function accAllocate(lineId, mode) {
+  try { await SB.rpc('am_acc_allocate', { p_line: lineId, p_mode: mode, p_shares: null }); await accLoad(); } catch (e) { msg('#accMsg', 'err', e.message); }
+}
+async function accSkip(ids, skip) {
+  const why = skip ? prompt(t('acc.skipWhy')) : null;
+  if (skip && !why) return;
+  try { await SB.rpc('am_acc_scope', { p_lines: ids, p_skip: skip, p_reason: why }); await accLoad(); } catch (e) { msg('#accMsg', 'err', e.message); }
+}
+async function accOff(ids, off) {
+  const why = off ? prompt(t('acc.offWhy')) : null;
+  if (off && !why) return;
+  try { await SB.rpc('am_acc_asset_off', { p_assets: ids, p_off: off, p_note: why }); await accLoad(); } catch (e) { msg('#accMsg', 'err', e.message); }
+}
+/* Accounting lines not in the register → the intake screen, where they get
+   their codes the one way codes are given; once confirmed they are linked to
+   the lines they came from. One department at a time (the intake's header). */
+async function accToIntake(lineIds) {
+  const ls = lineIds.map(id => ACC.lineMap.get(id)).filter(Boolean);
+  const depts = [...new Set(ls.map(l => l.dept))];
+  if (depts.length > 1) return msg('#accMsg', 'err', t('acc.oneDept', { list: depts.join(', ') }));
+  if (IN.lines.length && !confirm(t('dn.replace', { n: IN.lines.length }))) return;
+  IN.lines = ls.map(l => {
+    const ln = Object.assign(inBlank(), { qty: l.kind === 'fa' ? (Number(l.qty) || 1) : (Number(l.qty) || 1),
+      unit_price: Math.round(l.unit_price || (l.qty ? l.cost / l.qty : l.cost)) || '', description: `${t('acc.fromAcc')} ${l.kind.toUpperCase()} #${l.src_row || ''}`.trim() });
+    if (l.unit) ln.unit_code = l.unit.toLowerCase();
+    if (l.location && WF_CAT.locs && WF_CAT.locs.has(l.location)) ln.location_code = l.location;
+    inSetName(ln, l.description);
+    ln._acc = [l.id];
+    // Software, renovation, relocation: kept in the register to match the books, not labelled.
+    ln._nolabel = /^(217|213|2135|2138)/.test(l.acct_debit || '') || /renovation|cải tạo|software|phần mềm|relocation|di dời/i.test(l.description);
+    return ln;
+  });
+  IN.checked = null; IN.sugRan = false;
+  IN.src = { acc: true };
+  showView('intake');
+  await inFill();
+  const dept = depts[0], start = ls.map(l => l.start_date).filter(Boolean).sort()[0];
+  const proj = [...new Set(ls.map(l => l.project_code).filter(Boolean))];
+  if ([...$('#inDept').options].some(o => o.value === dept)) $('#inDept').value = dept;
+  let o = PM.orgMap.get(dept), g = 0;
+  while (o && g++ < 10 && ![...$('#inCompany').options].some(x => x.value === o.code)) o = PM.orgMap.get(o.parent_code);
+  if (o) $('#inCompany').value = o.code;
+  if (start) $('#inDate').value = start;
+  $('#inPurpose').value = proj.length === 1 ? proj[0] : '';
+  $('#inSupplier').value = ls.length === 1 ? (ls[0].supplier || '') : '';
+  inRender();
+  msg('#inMsg', 'info', t('acc.intakeReady', { n: ls.length }));
+}
+
+/* ------------------------------------------------------------ export for accounting
+   One sheet per book, one row per line of the latest file (its row number, so
+   it can be pasted beside the right row): the asset codes to paste into "Mã TS
+   mới", and the group, the kind, how many assets, the standard names. */
+function accExport() {
+  const out = $('#accMsg');
+  try {
+    const wb = XLSX.utils.book_new();
+    for (const kind of ['fa', 'ccdc', 'st']) {
+      const ls = ACC.lines.filter(l => l.kind === kind && l.status === 'active' && ACC.byLine.has(l.id)).sort((a, b) => (a.src_row || 0) - (b.src_row || 0));
+      if (!ls.length) continue;
+      const rows = ls.map(l => {
+        const as = ACC.byLine.get(l.id).map(k => ACC.assetMap.get(k.asset_id)).filter(Boolean);
+        return { [t('acc.x.row')]: l.src_row, [t('acc.x.dept')]: l.dept, Description: l.description, [t('acc.x.start')]: l.start_date || '', [t('acc.x.cost')]: Number(l.cost),
+                 'Mã TS mới': as.map(a => a.asset_code).join('; '), 'Nhóm mới': [...new Set(as.map(a => a.asset_code.split('.')[1]))].join('; '),
+                 'Loại mới': [...new Set(as.map(a => a.asset_kind === 'low' ? 'CCDC' : 'TSCĐ'))].join('; '), 'Bộ TS': as.length,
+                 'Tên TS chuẩn hóa': [...new Set(as.map(a => [a.name_vi, a.name_en].filter(Boolean).join('/')))].join('; ') };
+      });
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), kind === 'fa' ? 'TSCD' : kind === 'ccdc' ? 'CCDC 2422' : 'Ngan han 2421');
+    }
+    if (!wb.SheetNames.length) return msg(out, 'warn', t('acc.nothingLinked'));
+    const file = `phcl-ma-ts-cho-ke-toan-${bkStamp()}.xlsx`;
+    XLSX.writeFile(wb, file);
+    msg(out, 'ok', t('acc.exported', { file }));
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+/* ------------------------------------------------------------ the screen */
+function accRender() {
+  const tabs = $('#accTabs'), body = $('#accBody');
+  if (!tabs) return;
+  tabs.innerHTML = ''; body.innerHTML = '';
+  if (ACC.flash) { msg('#accMsg', 'ok', ACC.flash); ACC.flash = null; }
+  const inScope = ACC.lines.filter(accInScope), unl = inScope.filter(l => !ACC.byLine.has(l.id)), queue = accQueue();
+  const groupsOpen = ACC.lines.filter(l => (ACC.byLine.get(l.id) || []).length > 1 && ACC.byLine.get(l.id).some(k => k.share == null));
+  const diffs = accDiffs();
+  for (const [v, k, n] of [['home', 'acc.t.home', null], ['proj', 'acc.t.proj', null], ['queue', 'acc.t.queue', queue.length],
+                           ['lines', 'acc.t.lines', unl.length], ['diff', 'acc.t.diff', diffs.length], ['alloc', 'acc.t.alloc', groupsOpen.length]]) {
+    const b = el('button', { textContent: t(k) + (n != null ? ` (${fmtInt(n)})` : '') });
+    b.classList.toggle('on', ACC.tab === v);
+    b.onclick = () => { ACC.tab = v; ACC.sel.clear(); ACC.asel.clear(); accRender(); };
+    tabs.append(b);
+  }
+  const edit = can('assets', 'edit');
+  if (ACC.tab === 'home') return accHome(body, { inScope, unl, queue, groupsOpen, diffs, edit });
+  if (!ACC.ready) return;
+  // A filter row shared by the lists: search, and from which year.
+  const q = el('input', { placeholder: t('pm.f.search'), value: ACC.q, spellcheck: false });
+  q.oninput = () => { ACC.q = q.value; clearTimeout(ACC.qt); ACC.qt = setTimeout(accRender, 250); };
+  const yr = el('select');
+  for (const y of [2022, 2020, 2015, 2000, 0]) yr.append(el('option', { value: y, textContent: y ? t('acc.fromYear', { y }) : t('acc.allYears') }));
+  yr.value = ACC.year; yr.onchange = () => { ACC.year = Number(yr.value); accRender(); };
+  body.append(el('div', { className: 'card row', style: 'gap:10px;align-items:flex-end;flex-wrap:wrap' }, [
+    el('div', { className: 'fld grow', style: 'max-width:340px' }, [el('label', { textContent: t('pm.f.search') }), q]),
+    el('div', { className: 'fld', style: 'max-width:200px' }, [el('label', { textContent: t('acc.scopeYear') }), yr])]));
+  setTimeout(() => { if (document.activeElement !== q && ACC.q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }, 0);
+  if (ACC.tab === 'proj') return accProjTab(body, edit);
+  if (ACC.tab === 'queue') return accQueueTab(body, queue, edit);
+  if (ACC.tab === 'lines') return accLinesTab(body, unl, edit);
+  if (ACC.tab === 'diff') return accDiffTab(body, diffs, edit);
+  if (ACC.tab === 'alloc') return accAllocTab(body, groupsOpen, edit);
+}
+
+function accHome(body, s) {
+  const up = el('div', { className: 'card' }, [el('h2', { textContent: t('acc.upload') }), el('div', { className: 'tdnote', textContent: t('acc.uploadHint') })]);
+  if (s.edit) {
+    const inp = el('input', { type: 'file', multiple: true, accept: '.xlsx,.xls,.xlsm', style: 'display:none', onchange: () => { accPick([...inp.files]); inp.value = ''; } });
+    up.append(inp, el('button', { className: 'btn pri', type: 'button', textContent: t('acc.pick'), onclick: () => inp.click() }));
+  }
+  if (ACC.files.length) {
+    const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['acc.f.file', 'acc.f.kind', 'acc.f.sheet', 'acc.f.period', 'acc.f.rows', 'acc.f.from22'].map(k => el('th', { textContent: t(k) })))]);
+    for (const f of ACC.files) {
+      const ym = el('input', { type: 'month', value: f.ym, onchange: e => { f.ym = e.target.value; } });
+      tb.append(el('tr', {}, [el('td', { textContent: f.file }), el('td', { textContent: t(ACC_KINDS[f.kind]) }), el('td', { textContent: f.sheet }), el('td', {}, ym),
+        el('td', { className: 'num', textContent: fmtInt(f.rows.length) }), el('td', { className: 'num', textContent: fmtInt(f.rows.filter(r => (r.start_date || '') >= '2022').length) })]));
+      if (!f.block) tb.append(el('tr', {}, el('td', { colSpan: 6, className: 'bad', textContent: t('acc.noBlock', { m: f.ym }) })));
+    }
+    up.append(el('div', { className: 'wrap', style: 'margin-top:8px' }, tb),
+      el('div', { className: 'row', style: 'gap:8px;margin-top:8px' }, [el('button', { className: 'btn pri', type: 'button', textContent: t('acc.import'), onclick: accImport }),
+        el('button', { className: 'btn', type: 'button', textContent: t('auth.cancel'), onclick: () => { ACC.files = []; accRender(); } })]));
+  }
+  body.append(up);
+  if (!ACC.ready) return;
+  const tile = (n, k, tab, warn) => el('button', { className: 'acctile' + (warn && n ? ' warn' : ''), type: 'button', onclick: () => { ACC.tab = tab; accRender(); } },
+    [el('b', { textContent: fmtInt(n) }), el('span', { textContent: t(k) })]);
+  const booked = ACC.assets.filter(a => a.fin_status === 'booked').length, linked = ACC.assets.filter(a => a.fin_status === 'linked').length;
+  const old = s.queue.filter(a => accAge(a) >= 3).length;
+  body.append(el('div', { className: 'acctiles' }, [tile(s.queue.length, 'acc.k.queue', 'queue', true), tile(old, 'acc.k.old3', 'queue', true),
+    tile(s.unl.length, 'acc.k.unl', 'lines', true), tile(s.groupsOpen.length, 'acc.k.alloc', 'alloc'), tile(s.diffs.length, 'acc.k.diff', 'diff', true),
+    tile(booked, 'acc.k.booked', 'proj'), tile(linked, 'acc.k.linked', 'alloc')]));
+  const hist = el('div', { className: 'card' }, [el('div', { className: 'chead' }, [el('h2', { textContent: t('acc.hist') }),
+    el('button', { className: 'btn', type: 'button', textContent: t('acc.export'), title: t('acc.exportHint'), onclick: accExport })])]);
+  const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['acc.f.period', 'acc.f.kind', 'acc.f.file', 'acc.f.rows', 'acc.h.result', 'acc.h.by'].map(k => el('th', { textContent: t(k) })))]);
+  for (const i of ACC.imports) tb.append(el('tr', {}, [el('td', { textContent: String(i.period).slice(0, 7) }), el('td', { textContent: t(ACC_KINDS[i.kind]) }),
+    el('td', { textContent: i.file_name || '' }), el('td', { className: 'num', textContent: fmtInt(i.rows_in) }),
+    el('td', { textContent: i.status === 'done' ? t('acc.stats', { n: i.stats.new || 0, c: i.stats.changed || 0, g: i.stats.gone || 0, r: i.stats.rekeyed || 0, a: i.stats.autolinked || 0 }) : i.status }),
+    el('td', { textContent: `${i.imported_name || ''} · ${fmtDateTime(i.imported_at)}` })]));
+  if (!ACC.imports.length) tb.append(el('tr', {}, el('td', { colSpan: 6, className: 'dim', textContent: t('acc.noImport') })));
+  hist.append(el('div', { className: 'wrap' }, tb), el('div', { className: 'tdnote', textContent: t('acc.exportHint') }));
+  body.append(hist);
+}
+
+const accQ = (...xs) => !ACC.q || hnorm(xs.join(' ')).includes(hnorm(ACC.q));
+const accLineCell = l => el('div', { className: 'accl' }, [el('b', { textContent: l.description }),
+  el('small', { textContent: [t(ACC_KINDS[l.kind]), l.dept, l.start_date && fmtDate(l.start_date), l.qty != null ? `SL ${fmtNum(l.qty)}` : '', lqN(l.cost), l.term_months ? `${l.term_months} th` : '',
+    l.project_code || l.docs].filter(Boolean).join(' · ') })]);
+const accAssetCell = a => el('div', { className: 'accl' }, [el('b', {}, [el('code', { textContent: a.asset_code }), document.createTextNode(' ' + accAssetName(a))]),
+  el('small', { textContent: [a.dept_code, a.purpose_code, `SL ${fmtNum(a.qty)}`, lqN(a.unit_price), a.purchase_date && fmtDate(a.purchase_date), a.is_legacy ? 'Beetrack' : ''].filter(Boolean).join(' · ') })]);
+const accChips = (l, edit) => (ACC.byLine.get(l.id) || []).map(k => { const a = ACC.assetMap.get(k.asset_id) || { asset_code: '#' + k.asset_id };
+  return el('span', { className: 'accchip' }, [el('code', { textContent: a.asset_code }), k.share != null ? ` ${Math.round(k.share * 1000) / 10}%` : '',
+    edit ? el('button', { className: 'x', type: 'button', textContent: '×', title: t('acc.unlink'), onclick: () => accUnlink([{ line_id: l.id, asset_id: k.asset_id }]) }) : '']); });
+
+// By project: the lines and the assets of one project side by side; tick on both sides, link.
+function accProjTab(body, edit) {
+  const codes = new Map();
+  for (const l of ACC.lines) if (accInScope(l) && l.project_code) { const c = codes.get(l.project_code) || { lines: 0, lu: 0, assets: 0, au: 0 }; c.lines++; if (!ACC.byLine.has(l.id)) c.lu++; codes.set(l.project_code, c); }
+  for (const a of ACC.assets) { const p = String(a.purpose_code || '').toUpperCase(); if (!/^FFE/.test(p)) continue; const c = codes.get(p) || { lines: 0, lu: 0, assets: 0, au: 0 }; c.assets++; if (!ACC.byAsset.has(a.id) && a.fin_status !== 'off') c.au++; codes.set(p, c); }
+  if (!ACC.proj) {
+    const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['acc.p.code', 'acc.p.lines', 'acc.p.lu', 'acc.p.assets', 'acc.p.au'].map((k, i) => el('th', { className: i ? 'num' : '', textContent: t(k) })))]);
+    const list = [...codes].filter(([c]) => accQ(c)).sort((x, y) => (y[1].lu + y[1].au) - (x[1].lu + x[1].au) || x[0].localeCompare(y[0]));
+    for (const [c, v] of list) tb.append(el('tr', { style: 'cursor:pointer', onclick: () => { ACC.proj = c; ACC.sel.clear(); ACC.asel.clear(); accRender(); } }, [
+      el('td', {}, el('code', { textContent: c })), el('td', { className: 'num', textContent: fmtInt(v.lines) }), el('td', { className: 'num' + (v.lu ? ' bad' : ''), textContent: fmtInt(v.lu) }),
+      el('td', { className: 'num', textContent: fmtInt(v.assets) }), el('td', { className: 'num' + (v.au ? ' bad' : ''), textContent: fmtInt(v.au) })]));
+    if (!list.length) tb.append(el('tr', {}, el('td', { colSpan: 5, className: 'dim', textContent: t('lq.none') })));
+    return body.append(el('div', { className: 'card' }, [el('h2', { textContent: t('acc.t.proj') }), el('div', { className: 'tdnote', textContent: t('acc.projHint') }), el('div', { className: 'wrap' }, tb)]));
+  }
+  const c = ACC.proj;
+  const ls = ACC.lines.filter(l => l.project_code === c && l.status === 'active');
+  const as = ACC.assets.filter(a => String(a.purpose_code || '').toUpperCase() === c);
+  const card = el('div', { className: 'card' });
+  card.append(el('div', { className: 'row', style: 'align-items:center;gap:10px;flex-wrap:wrap' }, [
+    el('a', { href: '#', textContent: '← ' + t('acc.t.proj'), onclick: e => { e.preventDefault(); ACC.proj = null; accRender(); } }), el('b', { textContent: c }),
+    el('span', { className: 'dim', textContent: t('acc.projSum', { l: ls.length, a: as.length, lc: lqN(pmSum(ls, 'cost')), ac: lqN(as.reduce((s, a) => s + n0(a.unit_price) * n0(a.qty), 0)) }) })]));
+  const grid = el('div', { className: 'accsplit' });
+  const left = el('div', {}, [el('h3', { className: 'lqsub', textContent: t('acc.side.lines') })]), right = el('div', {}, [el('h3', { className: 'lqsub', textContent: t('acc.side.assets') })]);
+  for (const l of ls) {
+    const cb = el('input', { type: 'checkbox', checked: ACC.sel.has(l.id), disabled: !edit, onchange: e => { e.target.checked ? ACC.sel.add(l.id) : ACC.sel.delete(l.id); } });
+    left.append(el('label', { className: 'accrow' + (ACC.byLine.has(l.id) ? ' ok' : '') + (l.scope === 'skip' ? ' skip' : '') }, [cb, el('div', {}, [accLineCell(l), el('div', { className: 'accchips' }, accChips(l, edit))])]));
+  }
+  for (const a of as) {
+    const cb = el('input', { type: 'checkbox', checked: ACC.asel.has(a.id), disabled: !edit, onchange: e => { e.target.checked ? ACC.asel.add(a.id) : ACC.asel.delete(a.id); } });
+    right.append(el('label', { className: 'accrow' + (ACC.byAsset.has(a.id) ? ' ok' : a.fin_status === 'off' ? ' skip' : '') }, [cb, accAssetCell(a)]));
+  }
+  if (!ls.length) left.append(el('div', { className: 'dim', textContent: t('acc.noLinesYet') }));
+  if (!as.length) right.append(el('div', { className: 'dim', textContent: t('acc.noAssetsYet') }));
+  grid.append(left, right);
+  card.append(grid);
+  if (edit) card.append(el('div', { className: 'row', style: 'gap:8px;margin-top:8px;flex-wrap:wrap' }, [
+    el('button', { className: 'btn pri', type: 'button', textContent: t('acc.linkSel'), onclick: () => {
+      const L = [...ACC.sel], A = [...ACC.asel];
+      if (!L.length || !A.length) return msg('#accMsg', 'warn', t('acc.pickBoth'));
+      if (L.length > 1 && A.length > 1 && !confirm(t('acc.crossQ', { l: L.length, a: A.length }))) return;
+      accLink(L.flatMap(line_id => A.map(asset_id => ({ line_id, asset_id }))));
+    } }),
+    el('button', { className: 'btn', type: 'button', textContent: t('acc.suggest'), title: t('acc.suggestHint'), onclick: () => {
+      // One-to-one by the best score, for lines and assets still free.
+      const L = ls.filter(l => !ACC.byLine.has(l.id) && l.scope === 'in'), used = new Set(), pairs = [];
+      for (const l of L) { const best = as.filter(a => !ACC.byAsset.has(a.id) && !used.has(a.id)).map(a => [a, accScore(l, a)]).sort((x, y) => y[1] - x[1])[0];
+        if (best && best[1] >= 60) { used.add(best[0].id); pairs.push({ line_id: l.id, asset_id: best[0].id }); } }
+      if (!pairs.length) return msg('#accMsg', 'info', t('acc.noSuggest'));
+      if (confirm(t('acc.suggestQ', { n: pairs.length }))) accLink(pairs);
+    } }),
+    el('button', { className: 'btn', type: 'button', textContent: t('acc.toIntake'), onclick: () => { const L = [...ACC.sel].filter(id => !ACC.byLine.has(id)); if (!L.length) return msg('#accMsg', 'warn', t('acc.pickLines')); accToIntake(L); } }),
+    el('button', { className: 'btn', type: 'button', textContent: t('acc.off'), onclick: () => { const A = [...ACC.asel]; if (A.length) accOff(A, true); } })]));
+  body.append(card);
+}
+
+// Provisional assets not yet booked, oldest first, each with the accounting lines that fit best.
+function accQueueTab(body, queue, edit) {
+  const pool = ACC.lines.filter(l => l.status === 'active' && l.scope === 'in' && !ACC.byLine.has(l.id));   // lines still free
+  const list = queue.filter(a => accQ(a.asset_code, a.barcode, accAssetName(a), a.purpose_code, a.dept_code)).sort((x, y) => (accAge(y) || 0) - (accAge(x) || 0));
+  const card = el('div', { className: 'card' }, [el('h2', { textContent: t('acc.t.queue') }), el('div', { className: 'tdnote', textContent: t('acc.queueHint') })]);
+  const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['acc.q.asset', 'acc.q.age', 'acc.q.best', ''].map(k => el('th', { textContent: k ? t(k) : '' })))]);
+  for (const a of list.slice(0, 120)) {
+    const best = pool.map(l => [l, accScore(l, a)]).filter(([, s]) => s >= 30).sort((x, y) => y[1] - x[1]).slice(0, 3);
+    tb.append(el('tr', {}, [el('td', {}, accAssetCell(a)), el('td', { className: 'num' + ((accAge(a) || 0) >= 3 ? ' bad' : ''), textContent: accAge(a) != null ? t('acc.months', { n: accAge(a) }) : '' }),
+      el('td', {}, best.length ? best.map(([l, s]) => el('div', { className: 'accsug' }, [el('span', { className: 'accsc', textContent: s }), accLineCell(l),
+        edit ? el('button', { className: 'btn tiny pri', type: 'button', textContent: t('acc.linkOne'), onclick: () => accLink([{ line_id: l.id, asset_id: a.id }]) }) : ''])) : el('span', { className: 'dim', textContent: t('acc.noCand') })),
+      el('td', { className: 'nowrap' }, edit ? el('button', { className: 'btn tiny', type: 'button', textContent: t('acc.off'), title: t('acc.offHint'), onclick: () => accOff([a.id], true) }) : '')]));
+  }
+  if (!list.length) tb.append(el('tr', {}, el('td', { colSpan: 4, className: 'dim', textContent: t('acc.queueEmpty') })));
+  card.append(el('div', { className: 'wrap' }, tb));
+  if (list.length > 120) card.append(el('div', { className: 'dim', textContent: t('acc.more', { n: list.length - 120 }) }));
+  body.append(card);
+}
+
+// Accounting lines (from the year chosen) with no asset: the best candidates, or add them to the register, or leave them out.
+function accLinesTab(body, unl, edit) {
+  const pool = ACC.assets.filter(a => !['7', '9', '0'].includes(String(a.status_code)) && a.fin_status !== 'off');
+  const list = unl.filter(l => accQ(l.description, l.dept, l.project_code, l.docs, l.supplier)).sort((x, y) => String(y.start_date).localeCompare(String(x.start_date)));
+  const card = el('div', { className: 'card' }, [el('h2', { textContent: t('acc.t.lines') }), el('div', { className: 'tdnote', textContent: t('acc.linesHint') })]);
+  const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['', 'acc.l.line', 'acc.l.cand'].map(k => el('th', { textContent: k ? t(k) : '' })))]);
+  for (const l of list.slice(0, 120)) {
+    const cb = el('input', { type: 'checkbox', checked: ACC.sel.has(l.id), disabled: !edit, onchange: e => { e.target.checked ? ACC.sel.add(l.id) : ACC.sel.delete(l.id); } });
+    const cands = accCandidates(l, pool, 3);
+    tb.append(el('tr', {}, [el('td', {}, cb), el('td', {}, accLineCell(l)),
+      el('td', {}, cands.length ? cands.map(([a, s]) => el('div', { className: 'accsug' }, [el('span', { className: 'accsc', textContent: s }), accAssetCell(a),
+        edit ? el('button', { className: 'btn tiny pri', type: 'button', textContent: t('acc.linkOne'), onclick: () => accLink([{ line_id: l.id, asset_id: a.id }]) }) : ''])) : el('span', { className: 'dim', textContent: t('acc.noCand') }))]));
+  }
+  if (!list.length) tb.append(el('tr', {}, el('td', { colSpan: 3, className: 'dim', textContent: t('acc.linesEmpty') })));
+  card.append(el('div', { className: 'wrap' }, tb));
+  if (list.length > 120) card.append(el('div', { className: 'dim', textContent: t('acc.more', { n: list.length - 120 }) }));
+  if (edit) card.append(el('div', { className: 'row', style: 'gap:8px;margin-top:8px;flex-wrap:wrap' }, [
+    el('button', { className: 'btn pri', type: 'button', textContent: t('acc.toIntake'), title: t('acc.toIntakeHint'), onclick: () => { if (!ACC.sel.size) return msg('#accMsg', 'warn', t('acc.pickLines')); accToIntake([...ACC.sel]); } }),
+    el('button', { className: 'btn', type: 'button', textContent: t('acc.skip'), onclick: () => { if (ACC.sel.size) accSkip([...ACC.sel], true); } })]));
+  // Lines left out, to put back.
+  const skipped = ACC.lines.filter(l => l.scope === 'skip' && l.status === 'active' && accYear(l) >= ACC.year && accQ(l.description));
+  if (skipped.length) card.append(el('details', { className: 'lqlog' }, [el('summary', { textContent: t('acc.skipped', { n: skipped.length }) }),
+    el('ul', {}, skipped.slice(0, 200).map(l => el('li', {}, [`${l.description} · ${lqN(l.cost)} · ${l.skip_reason || ''} `,
+      edit ? el('button', { className: 'btn tiny', type: 'button', textContent: t('acc.unskip'), onclick: () => accSkip([l.id], false) }) : ''])))]));
+  body.append(card);
+}
+
+/* What no longer agrees: a linked line changed or gone in the latest file; an
+   asset liquidated / destroyed / lost in the app while accounting still has
+   its line without a liquidation number; a line accounting wrote off while the
+   asset is still in use. */
+function accDiffs() {
+  if (!ACC.ready) return [];
+  const last = new Map(); for (const i of ACC.imports) if (i.status === 'done' && !last.has(i.kind)) last.set(i.kind, i.period);
+  const out = [];
+  for (const ch of ACC.changes) {
+    const l = ACC.lineMap.get(ch.line_id); if (!l || !ACC.byLine.has(l.id) || ch.period !== last.get(l.kind)) continue;
+    if (!['cost', 'term_months', 'dept', 'start_date', 'status'].includes(ch.field)) continue;
+    out.push({ kind: 'change', l, ch });
+  }
+  for (const l of ACC.lines) {
+    const as = (ACC.byLine.get(l.id) || []).map(k => ACC.assetMap.get(k.asset_id)).filter(Boolean);
+    if (!as.length) continue;
+    const gone = as.filter(a => ['7', '9', '0', '23'].includes(String(a.status_code)));
+    if (gone.length && !l.liquidation_no && l.status === 'active') out.push({ kind: 'writeoff', l, as: gone });
+    if (l.liquidation_no && as.some(a => !['7', '9', '0', '23', '8', '24'].includes(String(a.status_code)))) out.push({ kind: 'still', l, as });
+  }
+  return out;
+}
+function accDiffTab(body, diffs, edit) {
+  const card = el('div', { className: 'card' }, [el('h2', { textContent: t('acc.t.diff') }), el('div', { className: 'tdnote', textContent: t('acc.diffHint') })]);
+  const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['acc.d.what', 'acc.l.line', 'acc.d.assets'].map(k => el('th', { textContent: t(k) })))]);
+  for (const d of diffs.filter(d => accQ(d.l.description, d.l.project_code))) {
+    const what = d.kind === 'change' ? t('acc.d.ch.' + d.ch.field, { o: d.ch.old_val ?? '—', n: d.ch.new_val ?? '—' }) : t('acc.d.' + d.kind);
+    const as = d.as || (ACC.byLine.get(d.l.id) || []).map(k => ACC.assetMap.get(k.asset_id)).filter(Boolean);
+    tb.append(el('tr', {}, [el('td', {}, el('span', { className: 'stg band-' + (d.kind === 'change' ? 'am' : 'bad'), textContent: what })), el('td', {}, accLineCell(d.l)),
+      el('td', {}, as.map(a => el('div', {}, [el('code', { textContent: a.asset_code }), ` ${amStatusLabel(a.status_code)}`])))]));
+  }
+  if (!diffs.length) tb.append(el('tr', {}, el('td', { colSpan: 3, className: 'dim', textContent: t('acc.diffEmpty') })));
+  card.append(el('div', { className: 'wrap' }, tb));
+  const wo = diffs.filter(d => d.kind === 'writeoff');
+  if (wo.length) card.append(el('button', { className: 'btn', type: 'button', style: 'margin-top:8px', textContent: t('acc.woExport', { n: wo.length }), onclick: () => {
+    const rows = wo.map(d => ({ [t('acc.x.row')]: d.l.src_row, Sheet: t(ACC_KINDS[d.l.kind]), Description: d.l.description, [t('acc.x.cost')]: Number(d.l.cost),
+      'Mã TS': d.as.map(a => a.asset_code).join('; '), [t('acc.d.status')]: d.as.map(a => amStatusLabel(a.status_code)).join('; ') }));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Ghi giam'); XLSX.writeFile(wb, `phcl-de-nghi-ghi-giam-${bkStamp()}.xlsx`);
+  } }));
+  body.append(card);
+}
+
+// Typed percentages for one line (settlement breakdowns rarely follow the provisional prices).
+function accManual(l, ks) {
+  const n = ks.length, cost = n0(l.cost);
+  const pct = new Map(ks.map(k => [k.asset_id, k.share != null ? Math.round(k.share * 100000) / 1000 : Math.round(100000 / n) / 1000]));
+  const sum = el('b'), out = el('div', { className: 'msg' });
+  const show = () => { const s = [...pct.values()].reduce((a, b) => a + n0(b), 0);
+    sum.textContent = t('acc.a.sum', { p: Math.round(s * 1000) / 1000 }); sum.className = Math.abs(s - 100) > 0.1 ? 'lqneg' : ''; };
+  const rows = ks.map(k => { const a = ACC.assetMap.get(k.asset_id) || { asset_code: '#' + k.asset_id };
+    const amt = el('span', { className: 'dim' });
+    const put = () => { amt.textContent = cost ? lqN(Math.round(cost * n0(pct.get(k.asset_id)) / 100)) : ''; };
+    const i = el('input', { type: 'number', step: '0.001', min: '0', max: '100', value: pct.get(k.asset_id), className: 'accpct' });
+    i.oninput = () => { pct.set(k.asset_id, i.value === '' ? 0 : Number(i.value)); put(); show(); };
+    put();
+    return el('div', { className: 'accman' }, [el('code', { textContent: a.asset_code }), el('span', { textContent: accAssetName(a) }), i, '%', amt]); });
+  show();
+  const save = el('button', { className: 'btn primary tiny', type: 'button', textContent: t('acc.a.save'), onclick: async () => {
+    const s = [...pct.values()].reduce((a, b) => a + n0(b), 0);
+    if (Math.abs(s - 100) > 0.1) return msg(out, 'err', t('acc.a.sumErr', { p: Math.round(s * 1000) / 1000 }));
+    // The last share absorbs rounding so the database sees exactly 1.
+    const ids = [...pct.keys()], sh = {};
+    let acc = 0;
+    ids.forEach((id, j) => { const v = j < ids.length - 1 ? Math.round(n0(pct.get(id)) / 100 * 1e6) / 1e6 : Math.round((1 - acc) * 1e6) / 1e6; sh[id] = v; acc += v; });
+    try { await SB.rpc('am_acc_allocate', { p_line: l.id, p_mode: 'manual', p_shares: sh }); ACC.manual = null; await accLoad(); } catch (e) { msg(out, 'err', e.message); }
+  } });
+  return el('div', { className: 'accmanbox' }, [el('div', { className: 'tdnote', textContent: t('acc.a.manualHint') }), ...rows,
+    el('div', { className: 'row' }, [sum, save, el('button', { className: 'btn tiny', type: 'button', textContent: t('auth.cancel'), onclick: () => { ACC.manual = null; accRender(); } })]), out]);
+}
+// Lines holding several assets, linked but not allocated yet ("link first, allocate when the facts are in").
+function accAllocTab(body, groups, edit) {
+  const card = el('div', { className: 'card' }, [el('h2', { textContent: t('acc.t.alloc') }), el('div', { className: 'tdnote', textContent: t('acc.allocHint') })]);
+  const all = ACC.lines.filter(l => (ACC.byLine.get(l.id) || []).length > 1 && accQ(l.description, l.project_code));
+  const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['acc.l.line', 'acc.a.assets', ''].map(k => el('th', { textContent: k ? t(k) : '' })))]);
+  for (const l of all) {
+    const ks = ACC.byLine.get(l.id), open = ks.some(k => k.share == null);
+    tb.append(el('tr', {}, [el('td', {}, [accLineCell(l), el('span', { className: 'lqbs ' + (open ? 'open' : 'valued'), textContent: t(open ? 'acc.a.open' : 'acc.a.done') })]),
+      el('td', {}, el('div', { className: 'accchips' }, accChips(l, edit))),
+      el('td', { className: 'nowrap' }, edit ? [el('button', { className: 'btn tiny', type: 'button', textContent: t('acc.a.price'), onclick: () => accAllocate(l.id, 'price') }),
+        el('button', { className: 'btn tiny', type: 'button', textContent: t('acc.a.equal'), onclick: () => accAllocate(l.id, 'equal') }),
+        el('button', { className: 'btn tiny', type: 'button', textContent: t('acc.a.manual'), onclick: () => { ACC.manual = ACC.manual === l.id ? null : l.id; accRender(); } }),
+        ...(open ? [] : [el('button', { className: 'btn tiny', type: 'button', textContent: t('acc.a.clear'), onclick: () => accAllocate(l.id, 'clear') })])] : '')]));
+    if (edit && ACC.manual === l.id) tb.append(el('tr', {}, el('td', { colSpan: 3 }, accManual(l, ks))));
+  }
+  if (!all.length) tb.append(el('tr', {}, el('td', { colSpan: 3, className: 'dim', textContent: t('lq.none') })));
+  card.append(el('div', { className: 'wrap' }, tb));
+  body.append(card);
 }
