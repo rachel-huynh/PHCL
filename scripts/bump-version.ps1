@@ -27,7 +27,7 @@ if ($cur -match "APP_VERSION\s*=\s*'$today([a-z])'") {
 $ver = "$today$letter"
 
 $h = [IO.File]::ReadAllText($html, [Text.Encoding]::UTF8)
-$h = [regex]::Replace($h, '(?<=(?:app|i18n|flows|assetops)\.js\?v=)[0-9a-z]+', $ver)
+$h = [regex]::Replace($h, '(?<=(?:app|i18n|flows|assetops|pricedb)\.js\?v=)[0-9a-z]+', $ver)
 [IO.File]::WriteAllText($html, $h, (New-Object Text.UTF8Encoding $false))
 
 $j = [regex]::Replace($cur, "(?<=APP_VERSION = ')[0-9a-z]+", $ver)

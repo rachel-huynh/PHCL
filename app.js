@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260926l';
+const APP_VERSION = '20260926m';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -1890,6 +1890,7 @@ const NAV = [
     ['projects', 'nav.projects'],
     ['payments', 'nav.payments'],
     ['tbl:pm_vendor', null],
+    ['price', 'nav.price'],             // price reference database (pricedb.js, 32_price_db.sql)
     ['chains', 'nav.chains']
   ]],
   ['nav.assets', [
@@ -1950,6 +1951,7 @@ function viewModule(v) {
   if (v === 'inbox' || v === 'chains') return 'approval';
   if (v === 'liq' || v === 'lqcount') return 'liquidation';
   if (v === 'payments') return 'payment';
+  if (v === 'price') return 'price';
   if (['sources', 'backup', 'tbl:am_setting'].includes(v)) return 'system';
   if (v === 'cat' || v.startsWith('tbl:')) return 'master';
   return null;
@@ -2339,6 +2341,7 @@ function showView(view) {
     if (view === 'acc' && SB.ready()) accLoad();
     if (view === 'flows' && window.flowsRender) flowsRender();
     if (['transfer', 'incident', 'stock', 'stockcount', 'amrep'].includes(view) && SB.ready() && window.aoShow) aoShow(view);
+    if (view === 'price' && SB.ready() && window.prLoad) prLoad();
     if (view === 'payments' && SB.ready()) payLoad();
     if (view === 'admin' && SB.ready()) adLoad();
   }
@@ -9654,6 +9657,8 @@ function wfWarnRender() {
   if (ty === 'QC' && d.estimated) { const g = paGate(d, Object.assign({}, c, { prTotal: d.estimated })); if (!g.ok) put('warn', g.text); }
   if (ty === 'QC') { const r = qcScore(d); if (r.problems.length) put('warn', r.problems.join('\n')); else if (r.best) put('ok', t('wf.qc.ok', { v: d.chosen_vendor, s: r.best.total })); }
   if (ty === 'MC' && d.mc_over && d.mc_over.length) put('warn', t('wf.mc.over', { items: d.mc_over.join(', ') }));
+  // Stored prices for the MC lines, to take as B (historical) or C (market) — pricedb.js.
+  if (ty === 'MC' && wfEditable() && window.prMcButton) prMcButton(box);
   if (ty === 'CT' && off100(n0(d.pct_sum))) put('warn', t('wf.ct.pct', { p: Math.round(n0(d.pct_sum) * 100) / 100 }));
   if (ty === 'LR' && d.source === 'RR' && wfEditable()) put('info', t('lq.fromRR', { rr: d.rr_doc_no || 'RR', p: d.project_code || '' }));
   if (ty === 'LR') { const fb = (d.lines || []).filter(l => l.fin_as_of != null).map(l => l.asset_code);

@@ -84,8 +84,8 @@ const FLOWS = [
           doc: ['Thư mời chào giá', 'Hồ sơ dự thầu', 'QC'], go: 'projects' },
         { l: 'hotel', t: 'Duyệt QC', li: ['Trưởng BP → DOF → Hotel GM'] },
         { l: 'am', n: 'Bước 10', t: 'MC – kiểm tra giá thị trường', en: 'Market Check',
-          li: ['So giá chọn với giá lịch sử (quy về hiện tại 4,6%/năm) và giá thị trường', 'Lệch &gt; 10% phải giải trình'],
-          doc: ['MC'] },
+          li: ['So giá chọn với giá lịch sử (quy về hiện tại 4,6%/năm) và giá thị trường', 'Lấy giá tham chiếu từ <b>CSDL giá</b> (báo giá cũ, QC, PO, nhận hàng) → điền B / C', 'Lệch &gt; 10% phải giải trình'],
+          doc: ['MC'], go: 'price' },
         { l: 'jvc', t: 'Duyệt QC + MC', li: ['KTT → TGĐ JVC duyệt cùng lúc; có thể chỉ trả MC'], go: 'inbox' }] }] },
     { t: '📦 GIAI ĐOẠN 4 – Đặt hàng, hợp đồng & thanh toán', en: 'Order, contract & payment', n: 'Bước 11 → 12', rows: [
       { k: 'B11–B12', s: [
@@ -185,8 +185,8 @@ const FLOWS = [
       { k: 'B8–B9', s: [
         { l: 'pur', dec: true, t: 'Đạt?', li: ['Vượt ngân sách / &lt; 3 hồ sơ hợp lệ / không đạt kỹ thuật → mở <b>vòng mới</b> hoặc đàm phán'] },
         { l: 'am', n: 'Bước 8', t: 'MC – kiểm tra giá', en: 'Market Check',
-          li: ['Giá lịch sử quy về hiện tại: FV = PV × 1,046ⁿ', 'So với giá thị trường; lệch <b>&gt; 10%</b> phải giải trình'],
-          doc: ['MC'] },
+          li: ['Giá lịch sử quy về hiện tại: FV = PV × 1,046ⁿ', 'Giá tham chiếu tra ở <b>CSDL giá</b>: nút "Giá tham chiếu cho MC này" trên form MC', 'So với giá thị trường; lệch <b>&gt; 10%</b> phải giải trình'],
+          doc: ['MC'], go: 'price' },
         { l: 'hotel', n: 'Bước 9', t: 'Duyệt QC', en: 'QC approval', li: ['Trưởng BP → DOF → Hotel GM'], go: 'inbox' }] }] },
     { t: '🏆 GIAI ĐOẠN 4 – Phê duyệt & trao thầu', en: 'Approve & award', n: 'Bước 10 → 11', rows: [
       { k: 'B10–B11', s: [
