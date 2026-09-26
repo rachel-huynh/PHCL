@@ -1632,6 +1632,84 @@
   .phrow.one{grid-template-columns:minmax(180px,1.2fr) 2fr}
   .phshot .phmore{position:absolute;left:4px;bottom:4px;background:rgba(15,23,42,.72);color:#fff;font:600 11px/1 var(--font);padding:3px 6px;border-radius:6px}
   .fsheet .lqthumb{display:block;max-width:100%;max-height:64px;margin:0 auto;object-fit:contain}
+
+  /* ============ Liquidation batches, council, count — 26/09/2026 ============ */
+  .lqbt{width:100%;border-collapse:collapse;font-size:12.5px}
+  .lqbt th{background:var(--head);text-align:left;padding:6px 8px;font-size:11.5px;color:var(--dim);white-space:nowrap}
+  .lqbt td{border-top:1px solid var(--line);padding:5px 8px;vertical-align:middle}
+  .lqbt th.num,.lqbt td.num{text-align:right}
+  .lqbt td.bad{color:#b42318;font-weight:600}
+  .lqbt td.up{color:#15803d} .lqbt td.down{color:#b42318}
+  .lqbt tr.tot td{font-weight:700;background:#f5f7fb;border-top:2px solid var(--navy)}
+  .lqbt input,.lqbt select{width:100%;min-width:90px}
+  .lqbt .lqrv{max-width:130px;text-align:right}
+  .lqbt td.dim{color:var(--dim);padding:12px}
+  .nowrap{white-space:nowrap}
+  .lqbs{display:inline-block;padding:2px 9px;border-radius:999px;font:600 11.5px/1.5 var(--font);background:#eef2f7;color:#334155}
+  .lqbs.open{background:#fdf0dc;color:#94600f} .lqbs.decided{background:#e8eefc;color:#1d4ed8}
+  .lqbs.counted{background:#efe7fb;color:#6d28d9} .lqbs.valued,.lqbs.closed{background:#e3f3ea;color:#15803d}
+  .lqbs.bidding{background:#fff4e5;color:#b45309} .lqbs.cancelled{background:#f1f5f9;color:#64748b}
+  .lqsteps{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:12px}
+  .lqstep{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:#fff}
+  .lqstep .n{flex:none;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#e2e8f0;font:700 12px/1 var(--font)}
+  .lqstep small{display:block;color:var(--dim);font-size:11px;margin-top:2px}
+  .lqstep.done{background:#f6fbf8;border-color:#9fd3b0} .lqstep.done .n{background:#15803d;color:#fff}
+  .lqstep.cur{border-color:var(--navy);box-shadow:0 0 0 2px rgba(30,58,110,.12)} .lqstep.cur .n{background:var(--navy);color:#fff}
+  .lqstep.later{opacity:.55}
+  .lqgrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+  .lqgrid .lqwide{grid-column:span 2}
+  .lqgrid textarea{min-height:52px}
+  .lqsub{font-size:13px;margin:12px 0 4px}
+  .lqkept{margin:0;padding-left:18px;font-size:12.5px}
+  .lqpick{border:1px dashed #c8d1de;border-radius:10px;padding:10px;margin:8px 0;max-height:360px;overflow:auto;background:#fbfcfe}
+  .lqpg{margin-bottom:8px} .lqpi{display:flex;margin-left:22px;font-size:12.5px}
+  .lqforms{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;margin-top:8px}
+  .lqform{border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:4px;background:#fff}
+  .lqform small{color:#15803d} .lqform.draft small{color:#94600f}
+  .lqcouncil{border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:10px}
+  .lqcouncil.on{border-color:#9fd3b0;background:#f9fdfb}
+  @media (max-width:900px){ .lqsteps{grid-template-columns:1fr 1fr} .lqgrid{grid-template-columns:1fr 1fr} }
+  /* The printed forms 02–06: black on white, as the statutory templates. */
+  .lqsheet{color:#111}
+  .lqsheet .fpage{background:#fff;border:none;padding:18px 22px;font:11.5px/1.45 var(--font);text-align:left}
+  .lqsheet .lqh{display:flex;justify-content:space-between;gap:12px;font-size:11px}
+  .lqsheet .lqtt{text-align:center;font-size:10px}
+  .lqsheet h1{text-align:center;font-size:15px;margin:12px 0 2px;line-height:1.3}
+  .lqsheet h1 .en,.lqsheet .en{font-style:italic;font-weight:400;color:#333}
+  .lqsheet h1 .en{font-size:12.5px}
+  .lqsheet .bi{margin:3px 0} .lqsheet .bi.c{text-align:center}
+  .lqsheet .lqno{text-align:right;margin:4px 0 8px}
+  .lqsheet .lqsec{margin:10px 0 4px} .lqsheet .lqsec b{font-weight:700}
+  .lqsheet .lqmem{display:grid;grid-template-columns:30% 32% 38%;column-gap:8px;margin:4px 0 6px 14px;font-size:11px}
+  .lqsheet .lqmem .en{margin-bottom:5px}
+  .lqsheet .lqwarn{color:#b42318;font-weight:700;margin:6px 0}
+  .lqsheet table.lqt{width:100%;border-collapse:collapse;margin:6px 0;table-layout:fixed}
+  .lqsheet .lqt th,.lqsheet .lqt td{border:1px solid #444;padding:3px 4px;font-size:10px;vertical-align:top;overflow-wrap:anywhere}
+  .lqsheet .lqt th{background:#eef1f6;font-weight:700;text-align:center;vertical-align:middle;white-space:normal;position:static;color:#111;text-transform:none;letter-spacing:0}
+  .lqsheet .lqt td.n{text-align:right;white-space:nowrap} .lqsheet .lqt td.c{text-align:center}
+  .lqsheet .lqt tr.tot td{font-weight:700;background:#f7f8fa}
+  .lqsheet .lqcont{font-style:italic;color:#555;text-align:right;margin-bottom:6px}
+  .lqsheet .lqsigns{display:grid;gap:12px;margin-top:16px;text-align:center}
+  .lqsheet .lqsign .sp{height:62px}
+  .lqsheet .lqsign .nm{font-weight:700}
+  /* The count: big cards, big buttons, for a finger on a tablet. */
+  .lctop{display:flex;flex-wrap:wrap;gap:10px;align-items:center;position:sticky;top:0;z-index:5}
+  .lchead{flex:1 1 220px} .lchead b{display:block;margin-bottom:4px}
+  .lcprog{height:8px;border-radius:99px;background:#e2e8f0;overflow:hidden} .lcprog i{display:block;height:100%;background:#15803d;transition:width .3s}
+  .lcscan{flex:1 1 260px;font-size:16px;padding:10px 12px}
+  .lccards{display:flex;flex-direction:column;gap:8px}
+  .lccard{display:grid;grid-template-columns:minmax(0,2fr) auto minmax(0,3fr);gap:10px;align-items:center;background:#fff;border:1px solid var(--line);border-left:5px solid #cbd5e1;border-radius:10px;padding:10px 12px}
+  .lccard.ok{border-left-color:#15803d;background:#f6fbf8} .lccard.diff{border-left-color:#d97706;background:#fffaf0} .lccard.miss{border-left-color:#b42318;background:#fef6f5}
+  .lccard.flash{animation:lcflash 1.2s ease}
+  @keyframes lcflash{0%{box-shadow:0 0 0 4px rgba(21,128,61,.45)}100%{box-shadow:none}}
+  .lcwho{display:flex;flex-direction:column;gap:2px;min-width:0} .lcwho small{color:var(--dim)}
+  .lcbook{font-size:12.5px;color:var(--dim);white-space:nowrap}
+  .lcact{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:flex-end}
+  .lcact .btn{min-height:40px;padding:0 14px}
+  .lcyes.on{background:#15803d;color:#fff;border-color:#15803d} .lcno.on{background:#b42318;color:#fff;border-color:#b42318}
+  .lcql{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--dim)} .lcqty{width:70px;text-align:right}
+  .lcnote{flex:1 1 140px;min-width:120px}
+  @media (max-width:760px){ .lccard{grid-template-columns:1fr} .lcact{justify-content:flex-start} }
 </style>
 </head>
 <body>
@@ -2479,7 +2557,7 @@
             <button class="btn" id="lqXlsBtn" type="button" data-i18n="lq.xlsx"></button>
           </div>
         </div>
-        <div class="row" style="align-items:flex-end;flex-wrap:wrap;margin-top:10px">
+        <div class="row" id="lqFilt" style="align-items:flex-end;flex-wrap:wrap;margin-top:10px">
           <div class="fld" style="max-width:280px"><label data-i18n="pm.col.dept"></label><select id="lqDept"></select></div>
           <div class="fld" style="max-width:200px" id="lqStWrap"><label data-i18n="lq.f.status"></label><select id="lqSt"></select></div>
           <div class="fld grow" style="max-width:320px"><label data-i18n="pm.f.search"></label><input id="lqQ" spellcheck="false"></div>
@@ -2488,7 +2566,15 @@
       <div id="lqMsg"></div>
       <div id="lqNewBox"></div>
       <div id="lqSum"></div>
-      <div class="wrap pmgrid"><table id="lqGrid"><thead></thead><tbody></tbody></table></div>
+      <div id="lqPanel"></div>
+      <div class="wrap pmgrid" id="lqGridWrap"><table id="lqGrid"><thead></thead><tbody></tbody></table></div>
+    </section>
+
+    <!-- The physical count of a liquidation batch (28_liquidation_batch.sql), made
+         for walking round with a tablet: one card per item, found / not found. -->
+    <section id="v-lqcount">
+      <div id="lcMsg"></div>
+      <div id="lcBody"></div>
     </section>
 
     <section id="v-inbox">
@@ -2560,7 +2646,7 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260926g"></script>
-<script src="app.js?v=20260926g"></script>
+<script src="i18n.js?v=20260926h"></script>
+<script src="app.js?v=20260926h"></script>
 </body>
 </html>

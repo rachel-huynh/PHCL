@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260926g';
+const APP_VERSION = '20260926h';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -40,7 +40,7 @@ function colLabel(c) {
 const LS_KEY = 'asset-intake.sb';
 let CFG = { url: '', key: '' };
 /* Tablet / phone mode (tbDetect): declared up here because showView and firstView read it from the start. */
-const TB_VIEWS = ['pmdash', 'inbox', 'doc', 'settings', 'setup'];
+const TB_VIEWS = ['pmdash', 'inbox', 'doc', 'lqcount', 'settings', 'setup'];
 const TB = { on: false, pages: [], i: 0, key: null, busy: false };
 
 function loadCfg() {
@@ -1938,7 +1938,7 @@ function viewModule(v) {
   if (v === 'budget' || v === 'pmimport') return 'budget';
   if (v === 'projects' || v === 'tbl:pm_vendor' || v === 'doc') return 'project';
   if (v === 'inbox' || v === 'chains') return 'approval';
-  if (v === 'liq') return 'liquidation';
+  if (v === 'liq' || v === 'lqcount') return 'liquidation';
   if (v === 'payments') return 'payment';
   if (['sources', 'backup', 'tbl:am_setting'].includes(v)) return 'system';
   if (v === 'cat' || v.startsWith('tbl:')) return 'master';
@@ -2325,6 +2325,7 @@ function showView(view) {
     if (view === 'chains' && SB.ready()) wfChainsLoad();
     if (view === 'doc' && SB.ready()) wfLoad();
     if (view === 'liq' && SB.ready()) lqLoad();
+    if (view === 'lqcount' && SB.ready()) lcLoad();
     if (view === 'payments' && SB.ready()) payLoad();
     if (view === 'admin' && SB.ready()) adLoad();
   }
@@ -11041,6 +11042,7 @@ async function wfBadge(n) {
   if (n == null) { try { await wfLookups(); } catch {}   // types name the package's owner documents
                    try { n = wfInboxCount([...(await SB.rpc('pm_inbox')), ...(await wfPrepTodos().catch(() => [])), ...(await lqTodos().catch(() => []))]); } catch { return; } }
   WF.badgeN = n;                       // buildNav() redraws the menu and re-adds it from here
+  if (TB.on) await lcCheck();          // the tablet bar offers the count while a batch waits for it
   tbBarRender();
   const a = $('#nav a[data-view="inbox"]');
   if (!a) return;
@@ -12756,6 +12758,8 @@ function tbBarRender() {
   };
   if (canView('pmdash')) bar.append(item('pmdash', 'tb.dash', '▦'));
   if (canView('inbox')) bar.append(item('inbox', 'tb.todo', '✓', WF.badgeN));
+  // A liquidation batch waiting for its physical count: counted walking round with the tablet.
+  if (LQ.countN && canView('lqcount')) bar.append(item('lqcount', 'lc.tab', '☑', LQ.countN));
   // Back to the full screens (a PC with a narrow or zoomed window turns tablet mode on by itself):
   // remembered in this browser; Settings → tablet / phone view → "Automatic" undoes it.
   bar.append(el('button', { className: 'tbitem', type: 'button', title: t('tb.fullHint'), onclick: () => {
@@ -13469,7 +13473,9 @@ async function lqLoad() {
       .flatMap(d => ((d.data || {}).lines || []).map(l => l.asset_id).filter(Boolean)));
     LQ.orphans = marked.filter(a => !held.has(a.id));
     LQ.sel = new Set([...LQ.sel].filter(id => LQ.orphans.some(a => a.id === id)));
-    msg(out, '', '');
+    await lqLoadBatches();
+    if (can('liquidation', 'admin') && !LQ.users) LQ.users = await SB.select('app_user', 'select=id,email,full_name&active=eq.true&order=full_name').catch(() => []);
+    msg(out, LQ.flash ? 'ok' : '', LQ.flash || ''); LQ.flash = null;
     lqRender();
   } catch (e) { msg(out, 'err', e.message); }
 }
@@ -13481,12 +13487,20 @@ function lqRender() {
   const approved = new Map(LQ.docs.filter(d => d.status === 'approved').map(d => [d.id, d]));
   const pool = (LQ.items || []).filter(i => approved.has(i.lr_doc_id));
   for (const [v, key, n] of [['lr', 'lq.tab.lr', LQ.docs.length], ['pool', 'lq.tab.pool', pool.filter(i => i.status === 'pool').length],
-                             ['orphan', 'lq.tab.orphan', LQ.orphans.length]]) {
+                             ['orphan', 'lq.tab.orphan', LQ.orphans.length],
+                             ['batch', 'lqb.tab', (LQ.batches || []).filter(b => !['closed', 'cancelled'].includes(b.status)).length],
+                             ['council', 'lqc.tab', (LQ.councils || []).length]]) {
     const b = el('button', { textContent: `${t(key)} (${fmtInt(n)})` });
     b.classList.toggle('on', LQ.tab === v);
-    b.onclick = () => { LQ.tab = v; lqRender(); };
+    b.onclick = () => { LQ.tab = v; if (v !== 'batch') LQ.batchOpen = null; lqRender(); };
     tabs.append(b);
   }
+  // Batches and the council draw into a panel of their own; the filters and the grid are for the three lists.
+  const panel = $('#lqPanel'), boxed = LQ.tab === 'batch' || LQ.tab === 'council';
+  panel.innerHTML = '';
+  $('#lqFilt').hidden = boxed; $('#lqGridWrap').hidden = boxed; $('#lqSum').innerHTML = ''; $('#lqXlsBtn').hidden = boxed;
+  if (LQ.tab === 'batch') { $('#lqNewBtn').hidden = true; return lqBatchList(panel); }
+  if (LQ.tab === 'council') { $('#lqNewBtn').hidden = true; return lqCouncilTab(panel); }
   const depts = [...new Set([...LQ.docs.map(d => d.dept_code), ...pool.map(i => i.dept_code), ...LQ.orphans.map(a => a.dept_code)].filter(Boolean))].sort();
   selFill($('#lqDept'), [['', t('pm.f.all')], ...depts.map(c => [c, `${c} — ${pmDeptName(c)}`])]);
   const stOpts = LQ.tab === 'lr' ? [['', t('pm.f.all')], ...WF_STATUS.map(s => [s, t('wf.st.' + s)])]
@@ -13538,7 +13552,7 @@ function lqRender() {
         money(i.original_value), money(i.depreciation), money(i.nbv),
         el('td', { textContent: fmtDate(String(d.decided_at || i.approved_at).slice(0, 10)) }),
         el('td', { className: 'num' + (days > 180 ? ' bad' : ''), textContent: days != null ? fmtInt(days) : '' }),
-        el('td', {}, el('span', { className: 'lqis ' + i.status, textContent: t('lq.is.' + i.status) }))]);
+        el('td', {}, el('span', { className: 'lqis ' + i.status, textContent: t('lq.is.' + i.status) + (i.batch_id && (LQ.batches || []).some(x => x.id === i.batch_id) ? ' · ' + LQ.batches.find(x => x.id === i.batch_id).code : '') }))]);
       tr.onclick = () => wfOpen(d.id);
       body.append(tr);
       LQ.shown.push({ [t('lq.c.no')]: d.doc_no, [t('lq.c.code')]: i.asset_code || '', [t('lq.c.name')]: i.name, [t('lq.c.qty')]: Number(i.qty), unit: i.unit || '',
@@ -13659,4 +13673,640 @@ function initLq() {
   $('#lqQ').oninput = lqRender;
   $('#lqNewBtn').onclick = () => lqNewForm([]);
   $('#lqXlsBtn').onclick = lqXlsx;
+}
+
+/* ============================================================ LIQUIDATION — phase 2
+   The council and the liquidation batch (28_liquidation_batch.sql). The council
+   is the one set up by the GM's decision (L01/2026…), typed in here — names
+   never go in the public repo. A batch L0x.yyyy takes items from the pool and
+   goes: list → council meeting + decision (forms 02, 03) → physical count
+   (form 04, on the tablet) → revaluation (form 05, the floor price for the
+   quotations). Form 06 is drawn from the same list; its results are phase 3.
+   Every form comes out of the ONE list, with the same numbers and dates, so the
+   documents of a batch can no longer disagree with each other. */
+const LQB_STEPS = ['open', 'decided', 'counted', 'valued', 'bidding'];
+const LQB_NEXT = { open: 'decided', decided: 'counted', counted: 'valued' };
+const LQB_BACK = { decided: 'open', counted: 'decided', valued: 'counted' };
+const LQ_PLACE = '17 Lê Duẩn, phường Sài Gòn, TP.HCM / 17 Le Duan, Sai Gon Ward, Ho Chi Minh City';
+const lqMemRep = m => m.role === 'chair' ? ['Chủ tịch hội đồng', 'Chairman of the Council']
+  : m.role === 'vice' ? ['Phó Chủ tịch hội đồng', 'Vice Chairman of the Council']
+  : m.permanent ? ['Thành viên thường trực hội đồng', 'Permanent Member of the Council']
+  : ['Thành viên không thường trực hội đồng (Tham gia theo chỉ định của chủ tịch hội đồng)', "Non-permanent Member of the Council (Participating upon Chairman's appointment)"];
+const lqMembersOf = cid => (LQ.members || []).filter(m => m.council_id === cid).sort((a, b) => a.sort - b.sort || a.id - b.id);
+const lqBatchItems = b => (LQ.items || []).filter(i => i.batch_id === b.id);
+const lqD = iso => iso ? fmtDate(String(iso).slice(0, 10)) : '…………';
+const lqN = v => v == null || v === '' || !isFinite(v) ? '' : fmtNum(Math.round(Number(v)));
+
+async function lqLoadBatches() {
+  try {
+    const [councils, members, batches] = await Promise.all([
+      SB.select('pm_lq_council', 'select=*&order=id.desc'), SB.select('pm_lq_member', 'select=*&order=council_id,sort,id'),
+      SB.select('pm_lq_batch', 'select=*&order=id.desc')]);
+    Object.assign(LQ, { councils, members, batches, p2: true });
+  } catch { Object.assign(LQ, { councils: [], members: [], batches: [], p2: false }); }
+}
+
+/* ------------------------------------------------------------ batches tab */
+function lqBatchList(panel) {
+  const edit = can('liquidation', 'edit');
+  if (!LQ.p2) return panel.append(el('div', { className: 'msg warn', textContent: t('lqb.notInstalled') }));
+  if (LQ.batchOpen) { const b = LQ.batches.find(x => x.id === LQ.batchOpen); if (b) return lqBatchDetail(panel, b); LQ.batchOpen = null; }
+  const card = el('div', { className: 'card' });
+  const head = el('div', { className: 'chead' }, [el('h2', { textContent: t('lqb.list') })]);
+  if (edit) head.append(el('button', { className: 'btn pri', type: 'button', textContent: t('lqb.new'), onclick: () => lqBatchNew(card) }));
+  card.append(head);
+  if (!LQ.councils.some(c => c.active)) card.append(el('div', { className: 'msg warn', textContent: t('lqb.noCouncil') }));
+  const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['lqb.c.code', 'lqb.c.meeting', 'lqb.c.council', 'lqb.c.items', 'lq.c.orig', 'lq.c.nbv', 'lqb.c.reval', 'lqb.c.status']
+    .map((k, i) => el('th', { className: i >= 3 && i <= 6 ? 'num' : '', textContent: t(k) })))]);
+  for (const b of LQ.batches) {
+    const its = lqBatchItems(b).filter(i => i.status !== 'kept'), c = LQ.councils.find(x => x.id === b.council_id);
+    const tr = el('tr', { style: 'cursor:pointer', onclick: () => { LQ.batchOpen = b.id; lqRender(); } }, [
+      el('td', {}, el('b', { textContent: b.code })), el('td', { textContent: lqD(b.meeting_date) }), el('td', { textContent: c ? c.decision_no : '—' }),
+      el('td', { className: 'num', textContent: fmtInt(its.length) }), el('td', { className: 'num', textContent: lqN(pmSum(its, 'original_value')) }),
+      el('td', { className: 'num', textContent: lqN(pmSum(its, 'nbv')) }),
+      el('td', { className: 'num', textContent: its.some(i => i.reval_value != null) ? lqN(pmSum(its, 'reval_value')) : '' }),
+      el('td', {}, el('span', { className: 'lqbs ' + b.status, textContent: t('lqb.st.' + b.status) }))]);
+    tb.append(tr);
+  }
+  if (!LQ.batches.length) tb.append(el('tr', {}, el('td', { colSpan: 8, className: 'dim', textContent: t('lqb.none') })));
+  card.append(el('div', { className: 'wrap' }, tb));
+  panel.append(card);
+}
+
+function lqBatchNew(card) {
+  card.querySelector('.lqbnew')?.remove();
+  const code = el('input', { placeholder: '…', style: 'max-width:130px' });
+  const date = el('input', { type: 'date', value: new Date().toISOString().slice(0, 10) });
+  const out = el('div');
+  const peek = async () => { try { code.placeholder = await SB.rpc('pm_lq_batch_next', { p_year: Number(date.value.slice(0, 4)) || new Date().getFullYear() }); } catch {} };
+  date.onchange = peek;
+  const go = el('button', { className: 'btn pri', type: 'button', textContent: t('lq.create'), onclick: async () => {
+    go.disabled = true;
+    try {
+      const id = await SB.rpc('pm_lq_batch_create', { p_code: code.value.trim() || null, p_data: { meeting_date: date.value, meeting_place: LQ_PLACE } });
+      await lqLoadBatches(); LQ.batchOpen = id; lqRender();
+    } catch (e) { msg(out, 'err', e.message); go.disabled = false; }
+  } });
+  card.append(el('div', { className: 'lqbnew row', style: 'align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:10px' }, [
+    el('div', { className: 'fld' }, [el('label', { textContent: t('lqb.meetingDate') }), date]),
+    el('div', { className: 'fld' }, [el('label', { textContent: t('lqb.codeOpt') }), code]), go,
+    el('button', { className: 'btn', type: 'button', textContent: t('auth.cancel'), onclick: e => e.target.closest('.lqbnew').remove() }),
+    el('div', { className: 'tdnote', style: 'flex-basis:100%', textContent: t('lqb.codeHint') }), out]));
+  peek();
+}
+
+// One batch: its steps, the meeting, the list, the forms.
+function lqBatchDetail(panel, b) {
+  const edit = can('liquidation', 'edit') && !['closed', 'cancelled'].includes(b.status);
+  const its = lqBatchItems(b), live = its.filter(i => i.status === 'batched'), kept = its.filter(i => i.status === 'kept');
+  const out = el('div');
+  const docNo = id => (LQ.docs.find(d => d.id === id) || {}).doc_no || '';
+  // Header + steps.
+  const top = el('div', { className: 'card' });
+  top.append(el('div', { className: 'row', style: 'align-items:center;gap:10px;flex-wrap:wrap' }, [
+    el('a', { href: '#', textContent: '← ' + t('lqb.list'), onclick: e => { e.preventDefault(); LQ.batchOpen = null; lqRender(); } }),
+    el('b', { style: 'font-size:16px', textContent: b.code }), el('span', { className: 'lqbs ' + b.status, textContent: t('lqb.st.' + b.status) })]));
+  const idx = LQB_STEPS.indexOf(b.status);
+  top.append(el('div', { className: 'lqsteps' }, LQB_STEPS.map((s, i) => el('div', { className: 'lqstep' + (i < idx ? ' done' : i === idx ? ' cur' : '') + (s === 'bidding' ? ' later' : '') },
+    [el('span', { className: 'n', textContent: String(i + 1) }), el('div', {}, [el('b', { textContent: t('lqb.step.' + s) }), el('small', { textContent: t('lqb.stepHint.' + s) })])]))));
+  // What can be done now.
+  const acts = el('div', { className: 'row', style: 'gap:8px;flex-wrap:wrap;margin-top:10px' });
+  const act = (key, cls, fn) => acts.append(el('button', { className: 'btn ' + cls, type: 'button', textContent: t(key), onclick: fn }));
+  const move = async (to, ask) => {
+    if (ask && !confirm(ask)) return;
+    try { await SB.rpc('pm_lq_batch_move', { p_id: b.id, p_to: to }); await lqLoad(); msg('#lqMsg', 'ok', t('lqb.moved', { c: b.code, s: t('lqb.st.' + to) })); }
+    catch (e) { msg(out, 'err', e.message); }
+  };
+  if (edit && LQB_NEXT[b.status]) act('lqb.next.' + b.status, 'pri', () => move(LQB_NEXT[b.status], t('lqb.ask.' + b.status, { c: b.code })));
+  if (edit && b.status === 'decided') act('lqb.countOpen', '', () => { LQ.countBatch = b.id; showView('lqcount'); });
+  if (edit && LQB_BACK[b.status]) act('lqb.back', '', () => move(LQB_BACK[b.status], t('lqb.askBack', { c: b.code, s: t('lqb.st.' + LQB_BACK[b.status]) })));
+  if (edit && b.status === 'open') act('lqb.cancel', 'danger', () => move('cancelled', t('lqb.askCancel', { c: b.code })));
+  top.append(acts, out);
+  panel.append(top);
+
+  // The meeting and the dates.
+  const info = el('div', { className: 'card' });
+  info.append(el('h2', { textContent: t('lqb.meeting') }));
+  const d = Object.assign({}, b.data || {});
+  const patch = {};
+  const fld = (key, node, wide) => el('div', { className: 'fld' + (wide ? ' lqwide' : '') }, [el('label', { textContent: t(key) }), node]);
+  const inp = (k, type = 'text', v) => { const i = el('input', { type, value: v ?? b[k] ?? '', disabled: !edit }); i.onchange = () => { patch[k] = i.value; }; return i; };
+  const txt = k => { const i = el('textarea', { rows: 2, value: d[k] || '', disabled: !edit }); i.onchange = () => { patch.data = Object.assign(patch.data || {}, { [k]: i.value }); }; return i; };
+  const csel = el('select', { disabled: !edit || b.status !== 'open' });
+  csel.append(el('option', { value: '', textContent: '—' }));
+  for (const c of LQ.councils) csel.append(el('option', { value: c.id, textContent: `${c.decision_no}${c.active ? ' ✓' : ''}` }));
+  csel.value = b.council_id || '';
+  csel.onchange = () => { patch.council_id = csel.value; };
+  const codeIn = inp('code'); codeIn.disabled = !edit || b.status !== 'open';
+  info.append(el('div', { className: 'lqgrid' }, [
+    fld('lqb.c.code', codeIn), fld('lqb.c.council', csel), fld('lqb.meetingDate', inp('meeting_date', 'date')), fld('lqb.meetingTime', inp('meeting_time')),
+    fld('lqb.place', inp('meeting_place'), true), fld('lqb.decisionDate', inp('decision_date', 'date')), fld('lqb.countDate', inp('count_date', 'date')),
+    fld('lqb.valDate', inp('valuation_date', 'date')), fld('lqb.liqDate', inp('liquidation_date', 'date')),
+    fld('lqb.causesVi', txt('causes_vi'), true), fld('lqb.causesEn', txt('causes_en'), true),
+    fld('lqb.planVi', txt('plan_vi'), true), fld('lqb.planEn', txt('plan_en'), true),
+    fld('lqb.conclVi', txt('conclusion_vi'), true), fld('lqb.conclEn', txt('conclusion_en'), true)]));
+  if (edit) info.append(el('div', { className: 'row', style: 'margin-top:8px' }, [el('button', { className: 'btn pri', type: 'button', textContent: t('tool.save'), onclick: async () => {
+    if (!Object.keys(patch).length) return;
+    try { await SB.rpc('pm_lq_batch_save', { p_id: b.id, p_patch: patch }); await lqLoad(); msg('#lqMsg', 'ok', t('lqb.saved', { c: b.code })); }
+    catch (e) { msg(out, 'err', e.message); } } })]));
+  panel.append(info);
+
+  // The list.
+  const list = el('div', { className: 'card' });
+  const lh = el('div', { className: 'chead' }, [el('h2', { textContent: t('lqb.items', { n: fmtInt(live.length) }) })]);
+  if (edit && b.status === 'open') lh.append(el('button', { className: 'btn', type: 'button', textContent: t('lqb.addFromPool'), onclick: () => lqPoolPicker(list, b) }));
+  if (edit && b.status === 'counted') lh.append(el('button', { className: 'btn', type: 'button', textContent: t('lqb.revalFill'), onclick: async () => {
+    try { for (const i of live.filter(x => x.reval_value == null)) await SB.rpc('pm_lq_reval', { p_item: i.id, p_value: Math.max(0, Number(i.nbv) || 0), p_note: null });
+          await lqLoad(); } catch (e) { msg(out, 'err', e.message); } } }));
+  list.append(lh);
+  const showCount = ['decided', 'counted', 'valued', 'bidding', 'closed'].includes(b.status), showReval = ['counted', 'valued', 'bidding', 'closed'].includes(b.status);
+  const heads = ['lq.c.no', 'lq.c.code', 'lq.c.name', 'lq.c.qty', 'pm.col.dept', 'lq.c.cond', 'lq.c.mode', 'lq.c.orig', 'lq.c.dep', 'lq.c.nbv',
+                 ...(showCount ? ['lqb.c.counted'] : []), ...(showReval ? ['lqb.c.reval', 'lqb.c.diff'] : []), ...(edit && b.status === 'open' ? [''] : [])];
+  const tb = el('table', { className: 'lqbt' }, [el('tr', {}, heads.map(k => el('th', { className: /orig|dep|nbv|reval|diff|qty/.test(k) ? 'num' : '', textContent: k ? t(k) : '' })))]);
+  for (const i of live) {
+    const cells = [el('td', {}, el('code', { textContent: docNo(i.lr_doc_id) })), el('td', {}, el('code', { textContent: i.asset_code || 'N/A' })), el('td', { textContent: i.name }),
+      el('td', { className: 'num', textContent: `${fmtNum(i.qty)} ${i.unit || ''}` }), el('td', { textContent: i.dept_code || '' }),
+      el('td', { textContent: lqBi(LQ_COND, i.condition) }), el('td', { textContent: lqBi(LQ_MODE, i.mode) }),
+      el('td', { className: 'num', textContent: lqN(i.original_value) }), el('td', { className: 'num', textContent: lqN(i.depreciation) }), el('td', { className: 'num', textContent: lqN(i.nbv) })];
+    if (showCount) cells.push(el('td', { className: i.count_found === false || (i.count_found && n0(i.count_qty) !== n0(i.qty)) ? 'bad' : '',
+      textContent: i.count_found == null ? '—' : i.count_found ? `✓ ${fmtNum(i.count_qty)}` : '✗ ' + t('lqb.notFound'), title: i.count_note || '' }));
+    if (showReval) {
+      if (edit && b.status === 'counted') {
+        const r = el('input', { value: i.reval_value != null ? fmtNum(i.reval_value) : '', inputMode: 'decimal', className: 'lqrv' });
+        r.onchange = async () => { try { await SB.rpc('pm_lq_reval', { p_item: i.id, p_value: numIn(r.value), p_note: null }); i.reval_value = numIn(r.value); } catch (e) { msg(out, 'err', e.message); } };
+        cells.push(el('td', { className: 'num' }, r));
+      } else cells.push(el('td', { className: 'num', textContent: lqN(i.reval_value) }));
+      const df = i.reval_value != null ? Number(i.reval_value) - n0(i.nbv) : null;
+      cells.push(el('td', { className: 'num' + (df > 0 ? ' up' : df < 0 ? ' down' : ''), textContent: df == null ? '' : (df > 0 ? '+' : '') + lqN(df) }));
+    }
+    if (edit && b.status === 'open') cells.push(el('td', { className: 'nowrap' }, [
+      el('button', { className: 'btn tiny', type: 'button', textContent: t('lqb.keep'), title: t('lqb.keepHint'), onclick: async () => {
+        const why = prompt(t('lqb.keepWhy', { n: i.name })); if (!why) return;
+        try { await SB.rpc('pm_lq_keep', { p_item: i.id, p_keep: true, p_note: why }); await lqLoad(); } catch (e) { msg(out, 'err', e.message); } } }),
+      el('button', { className: 'xbtn', type: 'button', textContent: '×', title: t('lqb.remove'), onclick: async () => {
+        try { await SB.rpc('pm_lq_batch_items', { p_id: b.id, p_add: [], p_remove: [i.id] }); await lqLoad(); } catch (e) { msg(out, 'err', e.message); } } })]));
+    tb.append(el('tr', {}, cells));
+  }
+  if (live.length) {
+    const tot = [el('td', { colSpan: 7, textContent: t('lq.total', { n: fmtInt(live.length) }) }),
+      ...['original_value', 'depreciation', 'nbv'].map(k => el('td', { className: 'num', textContent: lqN(pmSum(live, k)) })),
+      ...(showCount ? [el('td')] : []), ...(showReval ? [el('td', { className: 'num', textContent: lqN(pmSum(live, 'reval_value')) }),
+        el('td', { className: 'num', textContent: lqN(pmSum(live.filter(i => i.reval_value != null), i => Number(i.reval_value) - n0(i.nbv))) })] : []),
+      ...(edit && b.status === 'open' ? [el('td')] : [])];
+    tb.append(el('tr', { className: 'tot' }, tot));
+  } else tb.append(el('tr', {}, el('td', { colSpan: heads.length, className: 'dim', textContent: t('lqb.noItems') })));
+  list.append(el('div', { className: 'wrap' }, tb));
+  if (kept.length) {
+    list.append(el('h3', { className: 'lqsub', textContent: t('lqb.kept', { n: kept.length }) }));
+    list.append(el('ul', { className: 'lqkept' }, kept.map(i => el('li', {}, [el('code', { textContent: i.asset_code || 'N/A' }), document.createTextNode(` ${i.name} — ${i.keep_note || ''} `),
+      ...(edit && b.status === 'open' ? [el('button', { className: 'btn tiny', type: 'button', textContent: t('lqb.unkeep'), onclick: async () => {
+        try { await SB.rpc('pm_lq_keep', { p_item: i.id, p_keep: false, p_note: null }); await lqLoad(); } catch (e) { msg(out, 'err', e.message); } } })] : [])]))));
+  }
+  panel.append(list);
+
+  // The forms.
+  const forms = el('div', { className: 'card' });
+  const fout = el('div');
+  forms.append(el('h2', { textContent: t('lqb.forms') }), el('div', { className: 'tdnote', textContent: t('lqb.formsHint') }));
+  const grid = el('div', { className: 'lqforms' });
+  for (const k of LQB_FORMS) {
+    const ready = lqbFormReady(k, b);
+    grid.append(el('div', { className: 'lqform' + (ready ? '' : ' draft') }, [
+      el('b', { textContent: `${k} — ${t('lqb.f.' + k)}` }), el('small', { textContent: ready ? t('lqb.fReady') : t('lqb.fDraft.' + k) }),
+      el('div', { className: 'row', style: 'gap:6px' }, [
+        el('button', { className: 'btn tiny', type: 'button', textContent: t('wf.cap.preview'), onclick: () => lqbCapture(b, [k], 'preview', fout) }),
+        el('button', { className: 'btn tiny', type: 'button', textContent: 'PDF', onclick: () => lqbCapture(b, [k], 'pdf', fout) })])]));
+  }
+  forms.append(grid, el('div', { className: 'row', style: 'gap:6px;margin-top:8px' }, [
+    el('button', { className: 'btn', type: 'button', textContent: t('lqb.allPdf'), onclick: () => lqbCapture(b, LQB_FORMS, 'pdf', fout) }),
+    el('button', { className: 'btn', type: 'button', textContent: t('lqb.allPreview'), onclick: () => lqbCapture(b, LQB_FORMS, 'preview', fout) })]), fout);
+  panel.append(forms);
+}
+
+// Pool items to add: every item still waiting, grouped by its LR, ticked and added in one go.
+function lqPoolPicker(card, b) {
+  card.querySelector('.lqpick')?.remove();
+  const approved = new Set(LQ.docs.filter(d => d.status === 'approved').map(d => d.id));
+  const pool = (LQ.items || []).filter(i => i.status === 'pool' && approved.has(i.lr_doc_id));
+  const box = el('div', { className: 'lqpick' });
+  if (!pool.length) { box.append(el('div', { className: 'msg info', textContent: t('lqb.poolEmpty') })); card.append(box); return; }
+  const pick = new Set();
+  const byLr = new Map();
+  for (const i of pool) (byLr.get(i.lr_doc_id) || byLr.set(i.lr_doc_id, []).get(i.lr_doc_id)).push(i);
+  for (const [lr, list] of byLr) {
+    const doc = LQ.docs.find(d => d.id === lr) || {};
+    const all = el('input', { type: 'checkbox' });
+    const boxes = list.map(i => { const c = el('input', { type: 'checkbox' }); c.onchange = () => { c.checked ? pick.add(i.id) : pick.delete(i.id); }; return [i, c]; });
+    all.onchange = () => { for (const [i, c] of boxes) { c.checked = all.checked; all.checked ? pick.add(i.id) : pick.delete(i.id); } };
+    box.append(el('div', { className: 'lqpg' }, [el('label', { className: 'chk' }, [all, el('b', { textContent: `${doc.doc_no || lr} · ${pmDeptName(doc.dept_code)} · ${lqD((doc.data || {}).date || doc.decided_at)}` })]),
+      ...boxes.map(([i, c]) => el('label', { className: 'chk lqpi' }, [c, el('span', { textContent: `${i.asset_code || 'N/A'} — ${i.name} · ${fmtNum(i.qty)} ${i.unit || ''} · ${lqN(i.nbv)}` })]))]));
+  }
+  box.append(el('div', { className: 'row', style: 'gap:8px;margin-top:8px' }, [
+    el('button', { className: 'btn pri', type: 'button', textContent: t('lqb.addSel'), onclick: async () => {
+      if (!pick.size) return;
+      try { await SB.rpc('pm_lq_batch_items', { p_id: b.id, p_add: [...pick], p_remove: [] }); await lqLoad(); } catch (e) { msg('#lqMsg', 'err', e.message); } } }),
+    el('button', { className: 'btn', type: 'button', textContent: t('auth.cancel'), onclick: () => box.remove() })]));
+  card.querySelector('.chead').after(box);
+}
+
+/* ------------------------------------------------------------ council tab */
+async function lqCouncilTab(panel) {
+  if (!LQ.p2) return panel.append(el('div', { className: 'msg warn', textContent: t('lqb.notInstalled') }));
+  const admin = can('liquidation', 'admin');
+  const out = el('div');
+  const card = el('div', { className: 'card' });
+  card.append(el('div', { className: 'chead' }, [el('h2', { textContent: t('lqc.h') }),
+    ...(admin ? [el('button', { className: 'btn pri', type: 'button', textContent: t('lqc.new'), onclick: () => lqCouncilNew(card, out) })] : [])]),
+    el('div', { className: 'tdnote', textContent: t('lqc.hint') }), out);
+  if (!LQ.councils.length) card.append(el('div', { className: 'msg info', textContent: t('lqc.none') }));
+  for (const c of LQ.councils) {
+    const mem = lqMembersOf(c.id);
+    const box = el('div', { className: 'lqcouncil' + (c.active ? ' on' : '') });
+    const head = el('div', { className: 'row', style: 'align-items:center;gap:10px;flex-wrap:wrap' }, [
+      el('b', { textContent: t('lqc.decision', { no: c.decision_no }) }), el('span', { className: 'dim', textContent: lqD(c.decision_date) }),
+      c.active ? el('span', { className: 'lqbs valued', textContent: t('lqc.active') }) : '',
+      wfSafeUrl(c.file_url) ? el('a', { href: c.file_url, target: '_blank', rel: 'noopener noreferrer', textContent: '🔗 ' + t('lqc.file') }) : '']);
+    if (admin && !c.active) head.append(el('button', { className: 'btn tiny', type: 'button', textContent: t('lqc.makeActive'), onclick: async () => {
+      try { await SB.patch('pm_lq_council', 'active=eq.true', { active: false }); await SB.patch('pm_lq_council', `id=eq.${c.id}`, { active: true }); await lqLoad(); }
+      catch (e) { msg(out, 'err', e.message); } } }));
+    box.append(head);
+    const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['lqc.m.name', 'lqc.m.posVi', 'lqc.m.posEn', 'lqc.m.role', 'lqc.m.user', ...(admin ? [''] : [])]
+      .map(k => el('th', { textContent: k ? t(k) : '' })))]);
+    const users = LQ.users || [];
+    const row = m => {
+      const nm = el('input', { value: m.full_name || '', disabled: !admin }), pv = el('input', { value: m.position_vi || '', disabled: !admin }),
+            pe = el('input', { value: m.position_en || '', disabled: !admin });
+      const role = el('select', { disabled: !admin });
+      for (const [v, k] of [['chair', 'lqc.r.chair'], ['vice', 'lqc.r.vice'], ['member:1', 'lqc.r.perm'], ['member:0', 'lqc.r.nonperm']]) role.append(el('option', { value: v, textContent: t(k) }));
+      role.value = m.role === 'member' ? `member:${m.permanent === false ? 0 : 1}` : (m.role || 'member:1');
+      const us = el('select', { disabled: !admin });
+      us.append(el('option', { value: '', textContent: '—' }));
+      for (const u of users) us.append(el('option', { value: u.id, textContent: u.full_name || u.email }));
+      us.value = m.user_id || '';
+      const save = async () => {
+        if (!nm.value.trim()) return;
+        const [r, p] = role.value.split(':');
+        const rec = { council_id: c.id, sort: m.sort ?? mem.length, full_name: nm.value.trim(), position_vi: pv.value.trim() || null, position_en: pe.value.trim() || null,
+                      role: r, permanent: r !== 'member' || p !== '0', user_id: us.value || null };
+        try { if (m.id) await SB.patch('pm_lq_member', `id=eq.${m.id}`, rec); else await SB.insert('pm_lq_member', [rec]); await lqLoad(); }
+        catch (e) { msg(out, 'err', e.message); }
+      };
+      for (const i of [nm, pv, pe, role, us]) i.onchange = () => { if (m.id) save(); };
+      return el('tr', {}, [el('td', {}, nm), el('td', {}, pv), el('td', {}, pe), el('td', {}, role), el('td', {}, us),
+        ...(admin ? [el('td', { className: 'nowrap' }, m.id ? el('button', { className: 'xbtn', type: 'button', textContent: '×', title: t('lqc.m.del'), onclick: async () => {
+          if (!confirm(t('lqc.m.delQ', { n: m.full_name }))) return;
+          try { await SB.remove('pm_lq_member', `id=eq.${m.id}`); await lqLoad(); } catch (e) { msg(out, 'err', e.message); } } })
+          : el('button', { className: 'btn tiny pri', type: 'button', textContent: t('lqc.m.add'), onclick: save }))] : [])]);
+    };
+    for (const m of mem) tb.append(row(m));
+    if (admin) tb.append(row({ sort: mem.length, role: 'member', permanent: false }));
+    box.append(el('div', { className: 'wrap' }, tb));
+    if (!mem.some(m => m.role === 'chair')) box.append(el('div', { className: 'msg warn', textContent: t('lqc.noChair') }));
+    card.append(box);
+  }
+  panel.append(card);
+}
+function lqCouncilNew(card, out) {
+  card.querySelector('.lqbnew')?.remove();
+  const no = el('input', { placeholder: 'L01/2026', style: 'max-width:140px' }), date = el('input', { type: 'date' }), url = el('input', { placeholder: 'https://…', style: 'min-width:260px' });
+  const copy = el('input', { type: 'checkbox', checked: LQ.councils.some(c => c.active) });
+  card.querySelector('.chead').after(el('div', { className: 'lqbnew row', style: 'align-items:flex-end;gap:12px;flex-wrap:wrap' }, [
+    el('div', { className: 'fld' }, [el('label', { textContent: t('lqc.no') }), no]), el('div', { className: 'fld' }, [el('label', { textContent: t('lqc.date') }), date]),
+    el('div', { className: 'fld' }, [el('label', { textContent: t('lqc.file') }), url]),
+    el('label', { className: 'chk' }, [copy, el('span', { textContent: t('lqc.copy') })]),
+    el('button', { className: 'btn pri', type: 'button', textContent: t('lq.create'), onclick: async () => {
+      if (!no.value.trim()) return msg(out, 'err', t('lqc.needNo'));
+      try {
+        const prev = LQ.councils.find(c => c.active);
+        if (prev) await SB.patch('pm_lq_council', 'active=eq.true', { active: false });
+        const [c] = await SB.insert('pm_lq_council', [{ decision_no: no.value.trim(), decision_date: date.value || null, file_url: url.value.trim() || null, active: true }]);
+        if (copy.checked && prev) {
+          const ms = lqMembersOf(prev.id).map(({ id, council_id, ...m }) => Object.assign(m, { council_id: c.id }));
+          if (ms.length) await SB.insert('pm_lq_member', ms);
+        }
+        await lqLoad();
+      } catch (e) { msg(out, 'err', e.message); }
+    } })]));
+}
+
+/* ------------------------------------------------------------ the forms
+   02 minutes of the council meeting · 03 decision · 04 count (Mẫu 05-TSCĐ) ·
+   05 revaluation (Mẫu 04-TSCĐ) · 06 liquidation minutes (Mẫu 02-TSCĐ).
+   Bilingual as the templates are; long lists run on over as many A4 pages as
+   they need, the signatures on the last. */
+const LQB_FORMS = ['02', '03', '04', '05', '06'];
+const lqbFormReady = (k, b) => { const i = LQB_STEPS.indexOf(b.status);
+  return k === '02' || k === '03' ? i >= 1 : k === '04' ? i >= 2 : k === '05' ? i >= 3 : i >= 4; };
+const LQB_TT200 = { '04': 'Mẫu số 05 - TSCĐ', '05': 'Mẫu số 04 - TSCĐ', '06': 'Mẫu số 02 - TSCĐ' };
+
+function lqbCtx(b, assets) {
+  const its = lqBatchItems(b), live = its.filter(i => i.status === 'batched');
+  const council = LQ.councils.find(c => c.id === b.council_id) || null;
+  const mem = council ? lqMembersOf(council.id) : [];
+  const lrIds = [...new Set(live.map(i => i.lr_doc_id))];
+  const lrs = lrIds.map(id => LQ.docs.find(d => d.id === id)).filter(Boolean)
+    .sort((a, b2) => String((b2.data || {}).date || b2.created_at).localeCompare(String((a.data || {}).date || a.created_at)));
+  return { b, d: b.data || {}, live, kept: its.filter(i => i.status === 'kept'), council, mem, chair: mem.find(m => m.role === 'chair'), lrs, assets };
+}
+const lqbBi = (vi, en, cls = '') => el('div', { className: 'bi ' + cls }, [el('div', { textContent: vi }), en ? el('div', { className: 'en', textContent: en }) : '']);
+function lqbHead(key, titleVi, titleEn, no, date, sub) {
+  return el('div', {}, [
+    el('div', { className: 'lqh' }, [
+      el('div', { className: 'lqco' }, [el('b', { textContent: 'Công ty TNHH Liên Doanh Khách Sạn Plaza' }), el('div', { textContent: 'Plaza Hotel Company Limited' })]),
+      LQB_TT200[key] ? el('div', { className: 'lqtt' }, [el('b', { textContent: LQB_TT200[key] }), el('div', { textContent: '(Ban hành theo Thông tư số 200/2014/TT-BTC' }),
+        el('div', { textContent: 'Ngày 22/12/2014 của Bộ Tài chính)' })]) : '']),
+    el('h1', {}, [el('div', { textContent: titleVi }), el('div', { className: 'en', textContent: titleEn })]),
+    sub ? lqbBi(sub[0], sub[1], 'c') : '',
+    el('div', { className: 'lqno' }, [...(no ? [el('div', { textContent: `Số/No: ${no}` })] : []), el('div', { textContent: `Ngày/Date: ${lqD(date)}` })])]);
+}
+function lqbMembers(c) {
+  if (!c.mem.length) return el('div', { className: 'lqwarn', textContent: t('lqb.noMembers') });
+  return el('div', { className: 'lqmem' }, c.mem.flatMap(m => { const r = lqMemRep(m); const n = String(m.full_name || '').toUpperCase();
+    return [el('div', { textContent: `Ông/Bà: ${n}` }), el('div', { textContent: `Chức vụ: ${m.position_vi || ''}` }), el('div', { textContent: `Đại diện: ${r[0]}` }),
+            el('div', { className: 'en', textContent: `Mr./Mrs. ${n}` }), el('div', { className: 'en', textContent: `Position: ${m.position_en || ''}` }),
+            el('div', { className: 'en', textContent: `Represent: ${r[1]}` })]; }));
+}
+const lqbLrBasis = c => c.lrs.map(d => lqbBi(`Căn cứ theo Đề nghị thanh lý tài sản - Disposal form No.: ${d.doc_no} ngày ${lqD((d.data || {}).date)};`,
+  `According to the Asset Liquidation Request - Disposal form No.: ${d.doc_no} dated ${lqD((d.data || {}).date)};`));
+const lqbSec = (vi, en) => el('div', { className: 'lqsec' }, [el('b', { textContent: vi }), en ? el('span', { className: 'en', textContent: ' / ' + en }) : '']);
+// A signature row: [[label vi/en, name]...]
+const lqbSigns = boxes => el('div', { className: 'lqsigns', style: `grid-template-columns:repeat(${boxes.length},1fr)` },
+  boxes.map(([vi, en, name]) => el('div', { className: 'lqsign' }, [el('b', { textContent: vi }), el('div', { className: 'en', textContent: en }), el('div', { className: 'sp' }), el('div', { className: 'nm', textContent: name || '' })])));
+// A table: cols [[header vi/en, get(item, i), cls, width]]; groups: [[label, span]] above.
+function lqbTable(cols, rows, o = {}) {
+  const tb = el('table', { className: 'lqt' });
+  tb.append(el('colgroup', {}, cols.map(c => el('col', { style: c[3] ? `width:${c[3]}` : '' }))));
+  if (o.groups) tb.append(el('tr', {}, o.groups.map(([g, n, rs]) => el('th', { colSpan: n, rowSpan: rs || 1, textContent: g }))));
+  tb.append(el('tr', {}, cols.filter(c => !c[4]).map(c => el('th', { textContent: c[0] }))));
+  rows.forEach((r, i) => tb.append(el('tr', {}, cols.map(c => el('td', { className: c[2] || '', textContent: c[1](r, (o.start || 0) + i) ?? '' })))));
+  if (o.total) tb.append(el('tr', { className: 'tot' }, o.total));
+  return tb;
+}
+// Paged: the first page carries the head, the rest carry the table on; the last one the foot.
+function lqbPages(land, head, rows, table, foot, first, next) {
+  const pages = [];
+  let at = 0;
+  do {
+    const n = pages.length ? next : first, chunk = rows.slice(at, at + n);
+    const last = at + n >= rows.length;
+    pages.push(el('div', { className: 'fpage lqpage' + (land ? ' land' : '') }, [...(pages.length ? [el('div', { className: 'lqcont', textContent: t('lqb.cont') })] : head),
+      table(chunk, at, last), ...(last ? foot : [])]));
+    at += n;
+  } while (at < rows.length);
+  return pages;
+}
+
+function lqbForm(k, c) {
+  const { b, d, live } = c;
+  const A = id => c.assets.get(id) || {};
+  const chairName = c.chair ? String(c.chair.full_name).toUpperCase() : '';
+  const ref = (i) => (LQ.docs.find(x => x.id === i.lr_doc_id) || {}).doc_no || '';
+  if (k === '02') {
+    const cols = [['STT / No.', (r, i) => i + 1, 'c', '6%'], ['Tên tài sản / Asset Name', r => r.name, '', '34%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '22%'],
+      ['SL / Qnt.', r => fmtNum(r.qty), 'n', '8%'], ['Bộ phận / Dept.', r => r.dept_code, 'c', '9%'], ['Đề nghị / Request', r => ref(r), '', '21%']];
+    const head = [lqbHead(k, 'BIÊN BẢN HỌP HỘI ĐỒNG THANH LÝ TSCĐ', 'MINUTES OF THE ASSET LIQUIDATION COUNCIL MEETING', b.code, b.meeting_date),
+      lqbSec('I. Thông tin cuộc họp', 'Meeting Information:'), lqbBi('1. Thành phần tham dự buổi họp:', 'Attendance:'), lqbMembers(c),
+      lqbBi(`2. Cuộc họp diễn ra tại: ${b.meeting_place || '…………'}`, 'The meeting took place at the address above'),
+      lqbBi(`3. Thời gian cuộc họp: ${b.meeting_time || '…………'}`, 'Meeting time'),
+      lqbSec('II. Nội dung cuộc họp', 'Meeting Details:'), ...lqbLrBasis(c),
+      lqbBi('Hội đồng thanh lý tài sản và các thành viên cuộc họp xem xét nguyên nhân và các phương án thanh lý TSCĐ chi tiết như sau:',
+            'The asset liquidation council and members of the meeting shall consider the causes and options for liquidation of fixed assets in detail as follows:'),
+      lqbBi(`Về nguyên nhân thanh lý tài sản: ${d.causes_vi || '…………'}`, `Regarding the causes of asset liquidation: ${d.causes_en || '…………'}`),
+      lqbBi(`Về phương án thanh lý tài sản: ${d.plan_vi || '…………'}`, `Regarding the asset liquidation plan: ${d.plan_en || '…………'}`),
+      lqbBi(`Danh sách tài sản xem xét (${live.length} món):`, `Assets considered (${live.length} item(s)):`)];
+    const foot = [
+      ...(c.kept.length ? [lqbBi(`Hội đồng giữ lại, không thanh lý: ${c.kept.map(i => `${i.asset_code || i.name} (${i.keep_note || ''})`).join('; ')}`,
+                                 `Kept by the council, not liquidated: ${c.kept.map(i => i.asset_code || i.name).join('; ')}`)] : []),
+      lqbSec('III. Kết luận cuộc họp', 'Meeting Conclusion:'),
+      lqbBi('Hội đồng thanh lý và các thành viên cuộc họp nhất trí với các nội dung sau:', 'The liquidation council and meeting members unanimously agree on the following contents:'),
+      lqbBi('- Chấp thuận với nguyên nhân thanh lý TSCĐ;', '- Approving the reasons for asset liquidation;'),
+      lqbBi('- Không có ý kiến khác với phương án thanh lý TSCĐ.', '- No different opinions regarding the asset liquidation plan.'),
+      ...(d.conclusion_vi || d.conclusion_en ? [lqbBi(d.conclusion_vi || '', d.conclusion_en || '')] : []),
+      lqbSigns([['Các thành viên cuộc họp', 'Attendances', c.mem.filter(m => m.role !== 'chair').map(m => String(m.full_name).toUpperCase()).join(' · ')],
+                ['Chủ tịch hội đồng thanh lý / Chủ trì cuộc họp', 'Chairman of the Council', chairName]])];
+    return lqbPages(false, head, live, (rows, at) => lqbTable(cols, rows, { start: at }), foot, 8, 34);
+  }
+  if (k === '03') {
+    const cols = [['STT / No.', (r, i) => i + 1, 'c', '6%'], ['Tên tài sản / Asset Name', r => r.name, '', '25%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '19%'],
+      ['SL / Qnt.', r => fmtNum(r.qty), 'n', '7%'], ['Mã hiệu / Model', r => A(r.asset_id).spec_model || '', '', '11%'], ['Nước sx / Country', r => A(r.asset_id).origin_iso2 || '', 'c', '8%'],
+      ['Năm sx / Year', r => A(r.asset_id).spec_mfg_year || '', 'c', '7%'], ['Bộ phận / Dept.', r => r.dept_code, 'c', '8%'],
+      ['Năm đưa vào sd / Being used from', r => { const a = A(r.asset_id); return String(a.in_use_date || a.purchase_date || '').slice(0, 4); }, 'c', '9%']];
+    const head = [lqbHead(k, 'QUYẾT ĐỊNH', 'DECISION', b.code, b.decision_date || b.meeting_date, ['Về việc thanh lý tài sản cố định', 'Regarding the Asset Liquidation']),
+      lqbBi('Căn cứ vào hướng dẫn của Thông tư số 45/2013/TT-BTC của Bộ Tài Chính;', 'Pursuant to Circular 45/2013/TT-BTC dated April 25, 2013, by the Ministry of Finance;'),
+      ...lqbLrBasis(c),
+      lqbBi(`Căn cứ quyền hạn theo Quyết định thành lập hội đồng thanh lý số ${c.council ? c.council.decision_no : '…'}, ngày ${lqD(c.council && c.council.decision_date)};`,
+            `Pursuant to the Asset Liquidation Council Establishment Decision No. ${c.council ? c.council.decision_no : '…'} dated ${lqD(c.council && c.council.decision_date)};`),
+      lqbBi(`Căn cứ vào Biên bản họp hội đồng thanh lý tài sản số ${b.code}, ngày ${lqD(b.meeting_date)}.`,
+            `Pursuant to the Minutes of the Asset Liquidation Council Meeting No. ${b.code}, dated ${lqD(b.meeting_date)}.`),
+      lqbSec('Quyết định các vấn đề sau', 'Decides on the following issues:'), lqbSec('Điều 1', 'Article 1:'),
+      lqbBi('Thanh lý các tài sản sau:', 'To liquidate the following assets:')];
+    const foot = [lqbSec('Điều 2', 'Article 2:'),
+      lqbBi('Ban thanh lý tài sản và các phòng ban có liên quan có trách nhiệm thi hành quyết định này.', 'The Asset Liquidation Committee and related departments are responsible for implementing this decision.'),
+      lqbSigns([['Nơi nhận', 'Recipients:', ''], ['TỔNG GIÁM ĐỐC', 'GENERAL MANAGER', chairName]])];
+    return lqbPages(false, head, live, (rows, at, last) => lqbTable(cols, rows, { start: at,
+      total: last ? [el('td', { colSpan: 3, textContent: 'Tổng cộng / Total' }), el('td', { className: 'n', textContent: fmtNum(pmSum(live, 'qty')) }), el('td', { colSpan: 5 })] : null }), foot, 12, 34);
+  }
+  if (k === '04') {
+    const cq = r => r.count_found == null ? null : n0(r.count_qty), ratio = r => n0(r.qty) ? (cq(r) ?? 0) / n0(r.qty) : 0;
+    const co = r => cq(r) == null ? null : n0(r.original_value) * ratio(r), cr = r => cq(r) == null ? null : n0(r.nbv) * ratio(r);
+    const cols = [['A', (r, i) => i + 1, 'c', '4%', 1], ['B', r => r.name, '', '17%', 1], ['C', r => r.asset_code || 'N/A', '', '13%', 1], ['D', r => r.dept_code, 'c', '5%', 1],
+      ['SL / Qnt.', r => fmtNum(r.qty), 'n', '5%'], ['Nguyên giá / Original Cost', r => lqN(r.original_value), 'n', '8%'], ['Giá trị còn lại / Residual Value', r => lqN(r.nbv), 'n', '8%'],
+      ['SL / Qnt.', r => cq(r) == null ? '' : fmtNum(cq(r)), 'n', '5%'], ['Nguyên giá / Original Cost', r => lqN(co(r)), 'n', '8%'], ['Giá trị còn lại / Residual Value', r => lqN(cr(r)), 'n', '8%'],
+      ['SL / Qnt.', r => cq(r) == null ? '' : fmtNum(cq(r) - n0(r.qty)), 'n', '5%'], ['Nguyên giá / Original Cost', r => co(r) == null ? '' : lqN(co(r) - n0(r.original_value)), 'n', '7%'],
+      ['Giá trị còn lại / Residual Value', r => cr(r) == null ? '' : lqN(cr(r) - n0(r.nbv)), 'n', '7%'],
+      ['Ghi chú / Notes', r => [r.count_found === false ? 'Không thấy / Not found' : '', r.count_note || ''].filter(Boolean).join(' — '), '', '', 1]];
+    const groups = [['STT / No.', 1, 2], ['Tên TSCĐ / Asset Name', 1, 2], ['Mã số / Asset Code', 1, 2], ['Bộ phận / Dept.', 1, 2], ['Theo sổ kế toán / Accounting Books', 3],
+      ['Theo sổ kiểm kê / Asset Count', 3], ['Chênh lệch / Difference', 3], ['Ghi chú / Notes', 1, 2]];
+    const head = [lqbHead(k, 'BIÊN BẢN KIỂM KÊ TÀI SẢN', 'MINUTES OF ASSET COUNT', b.code, b.count_date),
+      lqbBi('Ban kiểm kê gồm:', 'Asset Count Committee Comprises:'), lqbMembers(c), lqbBi('Đã kiểm kê TSCĐ, kết quả như sau:', 'The fixed assets were inventoried, with the following results:')];
+    const sum = f => lqN(live.reduce((s, r) => s + n0(f(r)), 0));
+    const foot = [lqbSigns([['Tổng Giám đốc', 'General Manager', chairName], ['Kế toán trưởng', 'Chief Accountant', ''], ['Trưởng Ban kiểm kê', 'Head of Committee', '']])];
+    return lqbPages(true, head, live, (rows, at, last) => lqbTable(cols, rows, { start: at, groups,
+      total: last ? [el('td', { colSpan: 4, textContent: 'Tổng cộng / Total' }), el('td'), el('td', { className: 'n', textContent: sum(r => r.original_value) }), el('td', { className: 'n', textContent: sum(r => r.nbv) }),
+        el('td'), el('td', { className: 'n', textContent: sum(co) }), el('td', { className: 'n', textContent: sum(cr) }), el('td'),
+        el('td', { className: 'n', textContent: sum(r => co(r) == null ? 0 : co(r) - n0(r.original_value)) }), el('td', { className: 'n', textContent: sum(r => cr(r) == null ? 0 : cr(r) - n0(r.nbv)) }), el('td')] : null }),
+      foot, 6, 20);
+  }
+  if (k === '05') {
+    const df = r => r.reval_value == null ? null : Number(r.reval_value) - n0(r.nbv);
+    const cols = [['', (r, i) => i + 1, 'c', '5%', 1], ['', r => r.name, '', '24%', 1], ['', r => r.asset_code || 'N/A', '', '16%', 1],
+      ['Nguyên giá / Original Cost', r => lqN(r.original_value), 'n', '10%'], ['Hao mòn lũy kế / Depreciation', r => lqN(r.depreciation), 'n', '10%'],
+      ['Giá trị còn lại / Residual Value', r => lqN(r.nbv), 'n', '10%'], ['', r => lqN(r.reval_value), 'n', '11%', 1],
+      ['Tăng / Increase', r => df(r) > 0 ? lqN(df(r)) : '', 'n', '7%'], ['Giảm / Decrease', r => df(r) < 0 ? lqN(-df(r)) : '', 'n', '7%']];
+    const groups = [['STT / No.', 1, 2], ['Tên tài sản / Asset Name', 1, 2], ['Mã Tài sản / Asset Code', 1, 2], ['Giá trị đang ghi sổ / Book Value', 3],
+      ['Đánh giá lại giá trị còn lại / Revaluated Residual Value', 1, 2], ['Chênh lệch / Difference', 2]];
+    const head = [lqbHead(k, 'BIÊN BẢN ĐÁNH GIÁ LẠI TÀI SẢN', 'MINUTES OF ASSETS REVALUATION', b.code, b.valuation_date),
+      lqbBi(`- Căn cứ Quyết định số: ${b.code}, ngày ${lqD(b.decision_date || b.meeting_date)} của Hội Đồng Thanh Lý TSCĐ về việc đánh giá lại TSCĐ`,
+            `- Pursuant to Decision No. ${b.code}, dated ${lqD(b.decision_date || b.meeting_date)}, by the Asset Liquidation Council regarding the revaluation of fixed assets.`),
+      lqbMembers(c), lqbBi('Đã thực hiện đánh giá lại giá trị các TSCĐ sau đây:', 'The revaluation of the following fixed assets has been carried out:')];
+    const s = f => lqN(live.reduce((a, r) => a + n0(f(r)), 0));
+    const foot = [lqbSigns([['Chủ tịch Hội đồng thanh lý', 'Chairman of the Council', chairName], ['Các thành viên hội đồng thanh lý', 'Consented by', ''], ['Kế toán trưởng', 'Chief Accountant JVC', '']])];
+    return lqbPages(true, head, live, (rows, at, last) => lqbTable(cols, rows, { start: at, groups,
+      total: last ? [el('td', { colSpan: 3, textContent: 'Tổng cộng / Total' }), el('td', { className: 'n', textContent: s(r => r.original_value) }), el('td', { className: 'n', textContent: s(r => r.depreciation) }),
+        el('td', { className: 'n', textContent: s(r => r.nbv) }), el('td', { className: 'n', textContent: s(r => r.reval_value) }),
+        el('td', { className: 'n', textContent: s(r => Math.max(0, n0(df(r)))) }), el('td', { className: 'n', textContent: s(r => Math.max(0, -n0(df(r)))) })] : null }), foot, 7, 22);
+  }
+  // 06 — the liquidation minutes; results (buyer, value) come in phase 3.
+  const cols = [['', (r, i) => i + 1, 'c', '4%', 1], ['', r => r.name, '', '18%', 1], ['', r => fmtNum(r.qty), 'n', '5%', 1], ['', r => r.asset_code || 'N/A', '', '13%', 1],
+    ['Mã hiệu / Model', r => A(r.asset_id).spec_model || '', '', '9%'], ['Năm sx / Year', r => A(r.asset_id).spec_mfg_year || '', 'c', '6%'], ['Nước sx / Country', r => A(r.asset_id).origin_iso2 || '', 'c', '6%'],
+    ['', r => { const a = A(r.asset_id); return String(a.in_use_date || a.purchase_date || '').slice(0, 4); }, 'c', '7%', 1], ['', r => r.dept_code, 'c', '6%', 1],
+    ['', r => lqN(r.original_value), 'n', '9%', 1], ['', r => lqN(r.depreciation), 'n', '8%', 1], ['', r => lqN(r.nbv), 'n', '9%', 1]];
+  const groups = [['STT / No.', 1, 2], ['Tên tài sản / Asset Name', 1, 2], ['SL / Qnt.', 1, 2], ['Số hiệu TSCĐ / Asset Code', 1, 2], ['Thông số kỹ thuật / Specification', 3],
+    ['Năm đưa vào sử dụng / Year Usage', 1, 2], ['Thuộc bộ phận / Dept.', 1, 2], ['Nguyên giá / Original Cost', 1, 2], ['Giá trị hao mòn / Depreciation', 1, 2], ['Giá trị còn lại / Residual', 1, 2]];
+  const rcols = [['#', (r, i) => i + 1, 'c', '4%'], ['Tên tài sản / Item', r => r.name, '', '22%'], ['SL', r => fmtNum(r.qty), 'n', '5%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '14%'],
+    ['Bên thu mua — Họ tên / Bidder — Name', r => r.buyer || '', '', '16%'], ['ID / CMND / MST', r => r.buyer_id || '', '', '11%'], ['Thuộc phòng ban', r => r.dept_code, 'c', '7%'],
+    ['Giá trị thanh lý (thu hồi) / Liquidation value', r => lqN(r.sale_value), 'n', '11%'], ['Chi phí thanh lý (nếu có) / Outstanding exps', r => lqN(r.sale_cost), 'n', '10%']];
+  const head = [lqbHead(k, 'BIÊN BẢN THANH LÝ TÀI SẢN', 'MINUTES OF ASSET LIQUIDATION', b.code, b.liquidation_date),
+    lqbBi(`- Căn cứ Quyết định số: ${b.code}, ngày ${lqD(b.decision_date || b.meeting_date)} của Hội Đồng Thanh Lý TSCĐ về việc thanh lý TSCĐ`,
+          `- Pursuant to Decision No. ${b.code}, dated ${lqD(b.decision_date || b.meeting_date)}, by the Asset Liquidation Council regarding the liquidation of fixed assets.`),
+    lqbSec('I. Ban thanh lý TSCĐ gồm', 'Liquidation Committee Comprises:'), lqbMembers(c),
+    lqbSec('II. Tiến hành thanh lý TSCĐ', 'Proceed with the Liquidation of Fixed Assets:')];
+  const s = f => lqN(live.reduce((a, r) => a + n0(f(r)), 0));
+  const foot = [lqbSec('III. Kết quả thanh lý TSCĐ', 'Results:'), lqbTable(rcols, live),
+    lqbBi('- Tổng chi phí thanh lý TSCĐ (viết bằng chữ): …………', '- Total cost of fixed asset liquidation: …………'),
+    lqbBi('- Tổng giá trị thu hồi (viết bằng chữ): …………', '- Total residual value: …………'),
+    lqbBi('- Đã ghi giảm sổ TSCĐ ngày …… tháng …… năm ……', '- Liquidation confirmed on'),
+    lqbSigns([['Chủ tịch Hội đồng thanh lý tài sản', 'Chairman of the Council', chairName], ['Các thành viên hội đồng thanh lý tài sản', 'Consented by', ''], ['Kế toán trưởng', 'Chief Accountant JVC', '']])];
+  return lqbPages(true, head, live, (rows, at, last) => lqbTable(cols, rows, { start: at, groups,
+    total: last ? [el('td', { colSpan: 2, textContent: 'Tổng cộng / Total' }), el('td', { className: 'n', textContent: fmtNum(pmSum(live, 'qty')) }), el('td', { colSpan: 6 }),
+      el('td', { className: 'n', textContent: s(r => r.original_value) }), el('td', { className: 'n', textContent: s(r => r.depreciation) }), el('td', { className: 'n', textContent: s(r => r.nbv) })] : null }),
+    foot, 6, 20);
+}
+
+// Every page of the chosen forms, fitted to A4 each, as one PDF / a print preview.
+async function lqbCapture(b, keys, fmt, out) {
+  const host = el('div', { className: 'fpdfhost' });
+  try {
+    msg(out, 'info', t('wf.pdfMaking'));
+    await Promise.all(['html2canvas', 'jspdf'].map(snapLib));
+    const ids = [...new Set(lqBatchItems(b).map(i => i.asset_id).filter(Boolean))];
+    const assets = new Map();
+    for (let i = 0; i < ids.length; i += 200)
+      for (const a of await SB.select('am_asset', `select=id,asset_code,spec_model,origin_iso2,spec_mfg_year,in_use_date,purchase_date,location_code&id=in.(${ids.slice(i, i + 200).join(',')})`)) assets.set(a.id, a);
+    const c = lqbCtx(b, assets);
+    if (!c.live.length) throw new Error(t('lqb.noItems'));
+    document.body.append(host);
+    const shots = [];
+    for (const k of keys) {
+      const pages = fsPages(el('div', { className: 'lqsheet print' }, lqbForm(k, c)));
+      for (let i = 0; i < pages.length; i++) {
+        host.innerHTML = ''; host.append(pages[i].box);
+        const canvas = await html2canvas(pages[i].box, { scale: 2, backgroundColor: '#ffffff', logging: false });
+        shots.push({ label: `${b.code} - ${k}`, first: i === 0, doc: `${k} — ${t('lqb.f.' + k)}`, land: pages[i].land, canvas });
+      }
+    }
+    const name = keys.length > 1 ? `${b.code} - ${t('lqb.allName')}` : `${b.code} - ${keys[0]} ${t('lqb.f.' + keys[0])}`;
+    if (fmt === 'preview') wfCapPreview(wfCapPdf(shots), name); else wfCapPdf(shots).save(name + '.pdf');
+    msg(out, 'ok', t('lqb.made', { n: shots.length }));
+  } catch (e) { msg(out, 'err', e.message); }
+  finally { host.remove(); }
+}
+
+/* ------------------------------------------------------------ the count
+   Walking the hotel with the tablet: every item of the batch as a card — found
+   (with the quantity) or not found, a note. A code or barcode typed or scanned
+   in the box on top jumps to its card and, on Enter, counts it as found. */
+const LC = { batch: null, items: [], assets: new Map(), q: '' };
+async function lcLoad() {
+  const out = $('#lcMsg'), body = $('#lcBody');
+  msg(out, 'info', t('table.loading'));
+  try {
+    await wfLookups();
+    if (!LQ.batches) await lqLoadBatches();
+    const bs = await SB.select('pm_lq_batch', 'select=*&status=eq.decided&order=id');
+    if (!bs.length) { body.innerHTML = ''; return msg(out, 'info', t('lc.none')); }
+    const b = bs.find(x => x.id === LQ.countBatch) || bs[0];
+    LQ.countBatch = b.id;
+    const items = await SB.select('pm_lq_item', `select=*&batch_id=eq.${b.id}&status=eq.batched&order=id`);
+    const docs = await SB.select('pm_doc', `select=id,doc_no&id=in.(${[...new Set(items.map(i => i.lr_doc_id))].join(',') || 0})`);
+    const ids = items.map(i => i.asset_id).filter(Boolean);
+    const assets = new Map();
+    for (let i = 0; i < ids.length; i += 200)
+      for (const a of await SB.select('am_asset', `select=id,barcode,location_code&id=in.(${ids.slice(i, i + 200).join(',')})`)) assets.set(a.id, a);
+    Object.assign(LC, { batch: b, batches: bs, items, assets, docs: new Map(docs.map(d => [d.id, d.doc_no])) });
+    msg(out, '', '');
+    lcRender();
+  } catch (e) { msg(out, 'err', e.message); }
+}
+function lcRender() {
+  const body = $('#lcBody'), b = LC.batch;
+  body.innerHTML = '';
+  $('#pageTitle').textContent = `${t('lc.title')} — ${b.code}`;
+  const done = LC.items.filter(i => i.count_found != null).length;
+  const top = el('div', { className: 'card lctop' });
+  if (LC.batches.length > 1) {
+    const s = el('select');
+    for (const x of LC.batches) s.append(el('option', { value: x.id, textContent: x.code }));
+    s.value = b.id; s.onchange = () => { LQ.countBatch = Number(s.value); lcLoad(); };
+    top.append(s);
+  }
+  const bar = el('div', { className: 'lcprog' }, [el('i', { style: `width:${LC.items.length ? Math.round(done / LC.items.length * 100) : 0}%` })]);
+  const scan = el('input', { className: 'lcscan', placeholder: t('lc.scan'), value: LC.q, spellcheck: false, autocapitalize: 'characters' });
+  scan.oninput = () => { LC.q = scan.value; lcFilter(); };
+  scan.onkeydown = async e => {
+    if (e.key !== 'Enter') return;
+    const q = scan.value.trim().toUpperCase(); if (!q) return;
+    const hit = LC.items.find(i => (i.asset_code || '').toUpperCase() === q || ((LC.assets.get(i.asset_id) || {}).barcode || '').toUpperCase() === q);
+    if (!hit) return msg('#lcMsg', 'warn', t('lc.noMatch', { q }));
+    if (hit.count_found == null) await lcSet(hit, true, null, hit.count_note);
+    LC.q = ''; lcRender();
+    const card = document.getElementById('lc-' + hit.id); if (card) { card.scrollIntoView({ block: 'center' }); card.classList.add('flash'); }
+    setTimeout(() => $('.lcscan') && $('.lcscan').focus(), 50);
+  };
+  top.append(el('div', { className: 'lchead' }, [el('b', { textContent: t('lc.progress', { n: done, of: LC.items.length }) }), bar]), scan);
+  if (can('liquidation', 'edit')) top.append(el('button', { className: 'btn pri', type: 'button', textContent: t('lqb.next.decided'), disabled: done < LC.items.length, onclick: async () => {
+    if (!confirm(t('lqb.ask.decided', { c: b.code }))) return;
+    try { await SB.rpc('pm_lq_batch_move', { p_id: b.id, p_to: 'counted' });
+          LQ.flash = t('lqb.moved', { c: b.code, s: t('lqb.st.counted') });
+          // Back to the batch on a PC; a tablet has no batch screen, so it stays here and says so.
+          if (TB.on) { await lcLoad(); msg('#lcMsg', 'ok', LQ.flash); LQ.flash = null; } else { LQ.tab = 'batch'; LQ.batchOpen = b.id; showView('liq'); } }
+    catch (e) { msg('#lcMsg', 'err', e.message); } } }));
+  body.append(top);
+  const list = el('div', { className: 'lccards' });
+  for (const i of LC.items) list.append(lcCard(i));
+  body.append(list);
+  lcFilter();
+}
+function lcFilter() {
+  const q = hnorm(LC.q);
+  for (const i of LC.items) {
+    const c = document.getElementById('lc-' + i.id); if (!c) continue;
+    const a = LC.assets.get(i.asset_id) || {};
+    c.hidden = !!q && !hnorm(`${i.asset_code || ''} ${a.barcode || ''} ${i.name} ${a.location_code || ''}`).includes(q);
+  }
+}
+async function lcSet(i, found, qty, note) {
+  try {
+    await SB.rpc('pm_lq_count', { p_item: i.id, p_found: found, p_qty: qty, p_note: note || null });
+    Object.assign(i, { count_found: found, count_qty: found == null ? null : found ? (qty ?? i.qty) : 0, count_note: found == null ? null : note || null });
+    msg('#lcMsg', '', '');
+  } catch (e) { msg('#lcMsg', 'err', e.message); }
+}
+function lcCard(i) {
+  const a = LC.assets.get(i.asset_id) || {};
+  const st = i.count_found == null ? '' : i.count_found ? (n0(i.count_qty) === n0(i.qty) ? ' ok' : ' diff') : ' miss';
+  const qty = el('input', { className: 'lcqty', inputMode: 'decimal', value: i.count_found === false ? '0' : i.count_found ? fmtNum(i.count_qty) : fmtNum(i.qty), disabled: i.kind === 'unique' });
+  const note = el('input', { className: 'lcnote', placeholder: t('lc.note'), value: i.count_note || '' });
+  const redo = () => { const c = document.getElementById('lc-' + i.id); if (c) c.replaceWith(lcCard(i)); lcHead(); };
+  const yes = el('button', { className: 'btn lcyes' + (i.count_found === true ? ' on' : ''), type: 'button', textContent: '✓ ' + t('lc.found'),
+    onclick: async () => { await lcSet(i, true, numIn(qty.value), note.value); redo(); } });
+  const no = el('button', { className: 'btn lcno' + (i.count_found === false ? ' on' : ''), type: 'button', textContent: '✗ ' + t('lc.missing'),
+    onclick: async () => { await lcSet(i, false, 0, note.value); redo(); } });
+  note.onchange = qty.onchange = async () => { if (i.count_found != null) { await lcSet(i, i.count_found, i.count_found ? numIn(qty.value) : 0, note.value); redo(); } };
+  const undo = i.count_found != null ? el('button', { className: 'btn tiny', type: 'button', textContent: t('lc.undo'), onclick: async () => { await lcSet(i, null); redo(); } }) : '';
+  return el('div', { className: 'lccard' + st, id: 'lc-' + i.id }, [
+    el('div', { className: 'lcwho' }, [el('code', { textContent: i.asset_code || 'N/A' }), el('b', { textContent: i.name }),
+      el('small', { textContent: [LC.docs.get(i.lr_doc_id), i.dept_code, a.location_code, a.barcode].filter(Boolean).join(' · ') })]),
+    el('div', { className: 'lcbook', textContent: t('lc.book', { q: `${fmtNum(i.qty)} ${i.unit || ''}` }) }),
+    el('div', { className: 'lcact' }, [yes, no, el('label', { className: 'lcql' }, [el('span', { textContent: t('lc.qty') }), qty]), note, undo])]);
+}
+function lcHead() {
+  const done = LC.items.filter(i => i.count_found != null).length;
+  const h = $('.lchead b'); if (h) h.textContent = t('lc.progress', { n: done, of: LC.items.length });
+  const bar = $('.lcprog i'); if (bar) bar.style.width = `${LC.items.length ? Math.round(done / LC.items.length * 100) : 0}%`;
+  const btn = $('.lctop .btn.pri'); if (btn) btn.disabled = done < LC.items.length;
+}
+// Is there a batch waiting for its count that this person may count (for the tablet bar)?
+async function lcCheck() {
+  try { LQ.countN = can('liquidation', 'view') ? (await SB.select('pm_lq_batch', 'select=id&status=eq.decided')).length : 0; } catch { LQ.countN = 0; }
 }
