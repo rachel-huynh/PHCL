@@ -102,10 +102,15 @@ begin
         raise notice 'Không tạo được tài khoản % bằng SQL (%). Tạo tay ở Authentication → Users rồi chạy lại am_demo_accounts().', r.email, sqlerrm;
         n_fail := n_fail + 1; v_id := null;
       end;
+    else
+      -- Tài khoản đã có (chạy lại / đổi mật khẩu): đặt lại mật khẩu, xác nhận e-mail.
+      update auth.users set encrypted_password = crypt(p_password, gen_salt('bf')), email_confirmed_at = coalesce(email_confirmed_at, now()),
+                            updated_at = now()
+      where id = v_id;
     end if;
     if v_id is not null then
       insert into app_user (id, email, full_name) values (v_id, r.email, r.full_name)
-      on conflict (id) do update set full_name = excluded.full_name, active = true;
+      on conflict (id) do update set full_name = coalesce(nullif(trim(app_user.full_name), ''), excluded.full_name), active = true;   -- giữ tên đã đổi trong app
       insert into app_user_role (user_id, role_code, scope_org) values (v_id, r.role_code, r.scope_org) on conflict do nothing;
       n_role := n_role + 1;
     end if;
@@ -116,6 +121,14 @@ end $$;
 create or replace function am_demo_uid(p_email text)
 returns uuid language sql stable security definer set search_path = public as $$
   select id from app_user where email = p_email
+$$;
+
+-- Tên hiển thị của một tài khoản demo: tên đang dùng trong app (quản trị có thể đổi cho quen thuộc),
+-- không có thì tên mặc định. Dữ liệu thử ghi tên này, nên "Làm mới dữ liệu thử" khớp với tên đã đổi.
+create or replace function am_demo_nm(p_email text)
+returns text language sql stable security definer set search_path = public as $$
+  select coalesce((select nullif(trim(full_name), '') from app_user where email = p_email),
+                  (select full_name from am_demo_people() where email = p_email), p_email)
 $$;
 
 
@@ -192,8 +205,8 @@ declare
     ["DCL0005","Pressure Hose Reel (Kg/cm2)","SB201E0","B2","Pressure","kg/cm²",5,8,6.3],["DCL0016","Pressure (kg/cm2)","SRT00E3","Rooftop","Pressure","kg/cm²",3,6,4.2],
     ["DCL0016","Domestic Water Tank (level)","SRT00E1","Rooftop","Level","%",40,100,78],["DCL0016","Fire Water Tank (level)","SRT00E1","Rooftop","Level","%",80,100,92]]';
   x jsonb; v_asset bigint; v_run bigint; v_d date; v_s text; v_pt am_chk_point; v_iname text; v_r float; v_st text; v_n1 numeric; v_n2 numeric; v_ok boolean;
-  v_runs int := 0; v_names text[] := array['Phan Văn Tài (Kỹ thuật viên ca)', 'Ngô Minh Trí (KTV ca)', 'Đặng Quốc Việt (KTV ca)', 'Lý Thành Công (KTV ca)'];
-  v_inc bigint; v_head text := 'Lê Văn Cường (Trưởng Kỹ thuật)';
+  v_runs int := 0; v_names text[] := array[am_demo_nm('demo.engtech@plaza-demo.test'), 'Ngô Minh Trí (KTV ca)', 'Đặng Quốc Việt (KTV ca)', 'Lý Thành Công (KTV ca)'];
+  v_inc bigint; v_head text := am_demo_nm('demo.enghead@plaza-demo.test');
 begin
   perform am_demo_guard();
   if to_regclass('public.am_sys') is null then return 0; end if;   -- 37 chưa chạy
@@ -276,7 +289,7 @@ begin
   if v_asset is not null then
     insert into am_incident (no, asset_id, dept_code, kind, status, reported_at, description, created_name)
     values ('SC.2026.00901', v_asset, 'ENG', 'repair', 'in_progress', current_date - 9,
-            'DCL0002 — Chiller Water Pump CHWP-2 — Off — bơm tự ngắt, nóng động cơ, nghi hỏng bạc đạn', 'Phan Văn Tài (Kỹ thuật viên ca)')
+            'DCL0002 — Chiller Water Pump CHWP-2 — Off — bơm tự ngắt, nóng động cơ, nghi hỏng bạc đạn', am_demo_nm('demo.engtech@plaza-demo.test'))
     returning id into v_inc;
     update am_chk_val v set incident_id = v_inc from am_chk_run r, am_chk_point p
     where v.run_id = r.id and p.id = v.point_id and p.task = 'Chiller Water Pump CHWP-2' and v.ok = false
@@ -595,20 +608,20 @@ begin
             case when p.contract_value >= 500000000 then jsonb_build_array(jsonb_build_object('kind', 'performance', 'pct', 10,
                    'expiry', (current_date + (20 + floor(random() * 200))::int)::text, 'issuer', 'Vietcombank CN Sài Gòn')) else '[]'::jsonb end,
             'Chậm giao: phạt 0,05%/ngày giá trị hàng giao chậm, tối đa 8%', case when p.handover_date is not null then 'completed' else 'active' end,
-            'app', 'manual', v_amx, 'Bùi Đức Minh (AM Executive)', p.purchase_date - 3);
+            'app', 'manual', v_amx, am_demo_nm('demo.amx@plaza-demo.test'), p.purchase_date - 3);
   end loop;
   -- Hợp đồng dịch vụ / bảo trì hằng năm (một số sắp hết hạn để có nhắc hạn).
   insert into pm_contract (no, contract_no, title, kind, scope, entity, dept_code, vendor_code, supplier, signed_date, start_date, end_date, currency,
                            value_pre_vat, vat_pct, value_total, pay_terms, notice_days, auto_renew, status, source, terms_src, created_by, created_name, summary)
   values
     ('HD-2026-' || lpad(nextval('pm_contract_no_seq')::text, 4, '0'), 'BT-TM/2026/01', 'Bảo trì thang máy khách sạn 2026', 'maintenance', 'opex', 'SSP', 'ENG', v_vcodes[6], v_vendors[6],
-     make_date(2026, 1, 2), make_date(2026, 1, 1), current_date + 45, 'VND', 480000000, 8, 518400000, '[{"milestone": "Progress", "pct": 25, "condition": "Hằng quý"}]', 30, false, 'active', 'app', 'manual', v_amx, 'Bùi Đức Minh (AM Executive)', 'Bảo trì định kỳ 12 thang máy, cứu hộ 24/7 [DEMO]'),
+     make_date(2026, 1, 2), make_date(2026, 1, 1), current_date + 45, 'VND', 480000000, 8, 518400000, '[{"milestone": "Progress", "pct": 25, "condition": "Hằng quý"}]', 30, false, 'active', 'app', 'manual', v_amx, am_demo_nm('demo.amx@plaza-demo.test'), 'Bảo trì định kỳ 12 thang máy, cứu hộ 24/7 [DEMO]'),
     ('HD-2026-' || lpad(nextval('pm_contract_no_seq')::text, 4, '0'), 'XLNT/2026', 'Vận hành hệ thống xử lý nước thải', 'maintenance', 'opex', 'SSP', 'ENG', v_vcodes[9], v_vendors[9],
-     make_date(2026, 3, 1), make_date(2026, 3, 1), make_date(2027, 2, 28), 'VND', 360000000, 8, 388800000, '[{"milestone": "Progress", "pct": 8.33, "condition": "Hằng tháng"}]', 60, true, 'active', 'app', 'manual', v_amx, 'Bùi Đức Minh (AM Executive)', 'Vận hành, lấy mẫu quan trắc định kỳ [DEMO]'),
+     make_date(2026, 3, 1), make_date(2026, 3, 1), make_date(2027, 2, 28), 'VND', 360000000, 8, 388800000, '[{"milestone": "Progress", "pct": 8.33, "condition": "Hằng tháng"}]', 60, true, 'active', 'app', 'manual', v_amx, am_demo_nm('demo.amx@plaza-demo.test'), 'Vận hành, lấy mẫu quan trắc định kỳ [DEMO]'),
     ('HD-2026-' || lpad(nextval('pm_contract_no_seq')::text, 4, '0'), 'PCCC-BT/2026', 'Bảo trì hệ thống PCCC', 'maintenance', 'opex', 'SSP', 'ENG', v_vcodes[7], v_vendors[7],
-     make_date(2025, 10, 1), make_date(2025, 10, 1), current_date + 12, 'VND', 210000000, 8, 226800000, '[]', 30, false, 'active', 'app', 'manual', v_amx, 'Bùi Đức Minh (AM Executive)', 'Kiểm tra, bảo dưỡng bình chữa cháy, sprinkler, báo cháy [DEMO]'),
+     make_date(2025, 10, 1), make_date(2025, 10, 1), current_date + 12, 'VND', 210000000, 8, 226800000, '[]', 30, false, 'active', 'app', 'manual', v_amx, am_demo_nm('demo.amx@plaza-demo.test'), 'Kiểm tra, bảo dưỡng bình chữa cháy, sprinkler, báo cháy [DEMO]'),
     ('HD-2026-' || lpad(nextval('pm_contract_no_seq')::text, 4, '0'), 'VS-CT/2026', 'Kiểm soát côn trùng cao ốc', 'service', 'opex', 'CP', 'CEN', v_vcodes[29], v_vendors[29],
-     make_date(2026, 1, 15), make_date(2026, 1, 15), make_date(2027, 1, 14), 'VND', 96000000, 8, 103680000, '[]', 30, true, 'active', 'app', 'manual', v_amx, 'Bùi Đức Minh (AM Executive)', null);
+     make_date(2026, 1, 15), make_date(2026, 1, 15), make_date(2027, 1, 14), 'VND', 96000000, 8, 103680000, '[]', 30, true, 'active', 'app', 'manual', v_amx, am_demo_nm('demo.amx@plaza-demo.test'), null);
   -- Hai hợp đồng đang chờ duyệt: một dưới hạn mức khách sạn, một vượt hạn mức (qua Pháp chế + JVC).
   for i in 1 .. 2 loop
     v_c := null;
@@ -616,7 +629,7 @@ begin
                              pay_terms, warranty_months, status, source, created_by, created_name, submitted_at)
     select 'HD-2026-' || lpad(nextval('pm_contract_no_seq')::text, 4, '0'), null, 'Hợp đồng ' || lower(pp.name), 'supply', 'capex', 'SSP', pp.dept_code, pp.code, v_vcodes[10 + i], v_vendors[10 + i],
            'VND', case when i = 1 then 245000000 else 1850000000 end, 8, case when i = 1 then 264600000 else 1998000000 end,
-           '[{"milestone": "Deposit", "pct": 30}, {"milestone": "Handover", "pct": 70}]', 12, 'review', 'app', v_amx, 'Bùi Đức Minh (AM Executive)', now() - interval '1 day'
+           '[{"milestone": "Deposit", "pct": 30}, {"milestone": "Handover", "pct": 70}]', 12, 'review', 'app', v_amx, am_demo_nm('demo.amx@plaza-demo.test'), now() - interval '1 day'
     from pm_project pp where pp.year = 2026 and pp.approve_date is not null and pp.purchase_date is null and pp.dept_code in ('KIT', 'ENG') order by pp.code offset i - 1 limit 1
     returning * into v_c;
     if v_c.id is not null then
@@ -628,20 +641,20 @@ begin
   ---------------------------------------------------------------- họp dự án
   for p in select * from pm_project where year = 2026 and approve_date is not null order by code limit 6 loop
     insert into pm_mt_topic (title_vi, title_en, project_code, status, sort, source, created_name)
-    values (p.name, null, p.code, 'open', (select coalesce(max(sort), 0) + 10 from pm_mt_topic), 'app', 'Huỳnh Ngọc Lan (AM Coordinator)');
+    values (p.name, null, p.code, 'open', (select coalesce(max(sort), 0) + 10 from pm_mt_topic), 'app', am_demo_nm('demo.amc@plaza-demo.test'));
   end loop;
   insert into pm_mt_topic (title_vi, title_en, status, sort, source, created_name)
-  values ('Kế hoạch Capex 2027', 'Capex plan 2027', 'open', 900, 'app', 'Huỳnh Ngọc Lan (AM Coordinator)');
+  values ('Kế hoạch Capex 2027', 'Capex plan 2027', 'open', 900, 'app', am_demo_nm('demo.amc@plaza-demo.test'));
   for i in 0 .. 5 loop
     v_d := current_date - (70 - i * 14);
     insert into pm_mt_meeting (no, meeting_date, title_vi, title_en, place, attendees, status, issued_at, issued_name, source, created_name)
     values ('MT-' || to_char(v_d, 'YYMMDD'), v_d, 'Họp định kỳ dự án Capex', 'Capex projects progress meeting', 'Phòng họp tầng 3',
-            jsonb_build_array(jsonb_build_object('side', 'owner', 'name', 'Huỳnh Ngọc Lan (AM Coordinator)', 'user_id', v_amc),
-                              jsonb_build_object('side', 'owner', 'name', 'Bùi Đức Minh (AM Executive)', 'user_id', v_amx),
-                              jsonb_build_object('side', 'operator', 'name', 'Daniel Martin (Hotel GM)', 'position', 'GM', 'user_id', am_demo_uid('demo.gm@plaza-demo.test')),
-                              jsonb_build_object('side', 'operator', 'name', 'Lê Văn Cường (Trưởng Kỹ thuật)', 'position', 'DOE', 'user_id', am_demo_uid('demo.enghead@plaza-demo.test'))),
-            case when i = 5 then 'draft' else 'issued' end, case when i < 5 then v_d + 1 end, case when i < 5 then 'Huỳnh Ngọc Lan (AM Coordinator)' end,
-            'app', 'Huỳnh Ngọc Lan (AM Coordinator)')
+            jsonb_build_array(jsonb_build_object('side', 'owner', 'name', am_demo_nm('demo.amc@plaza-demo.test'), 'user_id', v_amc),
+                              jsonb_build_object('side', 'owner', 'name', am_demo_nm('demo.amx@plaza-demo.test'), 'user_id', v_amx),
+                              jsonb_build_object('side', 'operator', 'name', am_demo_nm('demo.gm@plaza-demo.test'), 'position', 'GM', 'user_id', am_demo_uid('demo.gm@plaza-demo.test')),
+                              jsonb_build_object('side', 'operator', 'name', am_demo_nm('demo.enghead@plaza-demo.test'), 'position', 'DOE', 'user_id', am_demo_uid('demo.enghead@plaza-demo.test'))),
+            case when i = 5 then 'draft' else 'issued' end, case when i < 5 then v_d + 1 end, case when i < 5 then am_demo_nm('demo.amc@plaza-demo.test') end,
+            'app', am_demo_nm('demo.amc@plaza-demo.test'))
     returning id into v_meet;
     if i = 5 then continue; end if;                       -- cuộc họp sắp tới: nháp, chưa ghi
     for t in select * from pm_mt_topic order by sort loop
@@ -653,14 +666,14 @@ begin
               am_demo_pick(array['Cần cân đối lại ngân sách vì giá thiết bị tăng.', 'Operator đề xuất thi công ngoài giờ để không ảnh hưởng khách.', 'Thống nhất phương án kỹ thuật như đề xuất.', 'Yêu cầu nhà thầu trình tiến độ chi tiết theo tuần.']),
               am_demo_pick(array['Budget to be rebalanced due to higher equipment prices.', 'Operator proposes off-hours works to avoid guest impact.', 'Technical option agreed as proposed.', 'Contractor to submit a weekly detailed schedule.']),
               case when random() < 0.5 then am_demo_pick(array['Chốt nhà cung cấp trước ngày 15', 'Duyệt ngân sách điều chỉnh', 'Triển khai thử 1 tầng trước']) end,
-              null, 10, 'Huỳnh Ngọc Lan (AM Coordinator)')
+              null, 10, am_demo_nm('demo.amc@plaza-demo.test'))
       returning id into v_entry;
       insert into pm_mt_action (meeting_id, topic_id, entry_id, text_vi, pic_user, pic_name, due_date, status, done_at, done_name, closed_meeting_id)
       values (v_meet, t.id, v_entry, am_demo_pick(array['Gửi lại BOQ đã điều chỉnh', 'Làm việc với nhà cung cấp về giá chiết khấu', 'Trình hồ sơ đề xuất (PR)', 'Lập kế hoạch thi công chi tiết']),
               case when random() < 0.5 then am_demo_uid('demo.enghead@plaza-demo.test') else v_amx end,
-              case when random() < 0.5 then 'Lê Văn Cường (Trưởng Kỹ thuật)' else 'Bùi Đức Minh (AM Executive)' end,
+              case when random() < 0.5 then am_demo_nm('demo.enghead@plaza-demo.test') else am_demo_nm('demo.amx@plaza-demo.test') end,
               v_d + 10, case when i < 3 then 'done' else 'open' end, case when i < 3 then (v_d + 12)::timestamptz end,
-              case when i < 3 then 'Bùi Đức Minh (AM Executive)' end, null);
+              case when i < 3 then am_demo_nm('demo.amx@plaza-demo.test') end, null);
     end loop;
   end loop;
 
@@ -669,8 +682,8 @@ begin
     insert into am_transfer (no, from_dept, to_dept, to_location, reason, tf_date, status, steps, cur, created_name, created_at, submitted_at, done_at)
     values (format('TF.%s.%s.2026', (array['FBD','KIT','HKD','ENG','FOD','ADM'])[i], lpad(i::text, 3, '0')), (array['FBD','KIT','HKD','ENG','FOD','ADM'])[i],
             (array['KIT','FBD','FBD','CEN','ADM','FOD'])[i], null, 'Điều chuyển phục vụ vận hành [DEMO]', current_date - (100 - i * 12), 'done',
-            '[{"key": "from", "action": "approve", "name": "Trưởng bộ phận giao"}, {"key": "to", "action": "approve", "name": "Trưởng bộ phận nhận"}, {"key": "am", "action": "approve", "name": "Bùi Đức Minh (AM Executive)"}]',
-            null, 'Nguyễn Minh Anh (NV Bếp)', now() - make_interval(days => 100 - i * 12), now() - make_interval(days => 100 - i * 12), now() - make_interval(days => 98 - i * 12))
+            jsonb_build_array(jsonb_build_object('key', 'from', 'action', 'approve', 'name', 'Trưởng bộ phận giao'), jsonb_build_object('key', 'to', 'action', 'approve', 'name', 'Trưởng bộ phận nhận'), jsonb_build_object('key', 'am', 'action', 'approve', 'name', am_demo_nm('demo.amx@plaza-demo.test'))),
+            null, am_demo_nm('demo.staff@plaza-demo.test'), now() - make_interval(days => 100 - i * 12), now() - make_interval(days => 100 - i * 12), now() - make_interval(days => 98 - i * 12))
     returning id into v_tf;
     insert into am_transfer_line (transfer_id, asset_id, old_code, new_code)
     select v_tf, id, asset_code, asset_code from am_asset where dept_code = (array['FBD','KIT','HKD','ENG','FOD','ADM'])[i] and asset_kind = 'unique' order by random() limit 2;
@@ -678,7 +691,7 @@ begin
   -- Một phiếu đang chờ duyệt (Bếp → F&B) để thử chuỗi duyệt.
   insert into am_transfer (no, from_dept, to_dept, reason, tf_date, status, steps, cur, created_by, created_name, submitted_at)
   values ('TF.KIT.007.2026', 'KIT', 'FBD', 'Chuyển tủ mát sang quầy bar [DEMO]', current_date - 1, 'pending', am_tf_steps('KIT', 'FBD'), 0,
-          am_demo_uid('demo.staff@plaza-demo.test'), 'Nguyễn Minh Anh (NV Bếp)', now() - interval '1 day')
+          am_demo_uid('demo.staff@plaza-demo.test'), am_demo_nm('demo.staff@plaza-demo.test'), now() - interval '1 day')
   returning id into v_tf;
   insert into am_transfer_line (transfer_id, asset_id) select v_tf, id from am_asset where dept_code = 'KIT' and asset_kind = 'unique' order by random() limit 1;
 
@@ -693,21 +706,21 @@ begin
             am_demo_pick(array['Hao mòn tự nhiên', 'Sử dụng sai cách', 'Chập điện', null]), 'WO-' || lpad((5000 + i)::text, 6, '0'), am_demo_pick(v_vendors),
             random() < 0.3, case when i % 4 >= 2 then round((1 + random() * 25)) * 1000000 end,
             case when i % 4 >= 2 then am_demo_pick(array['fixed', 'fixed', 'fixed', 'no_fault', 'replace']) end, '1',
-            'Nguyễn Minh Anh (NV Bếp)', now() - make_interval(days => 5 + i * 9), case when i % 4 <> 0 then now() - make_interval(days => 4 + i * 9) end,
-            case when i % 4 >= 2 then now() - make_interval(days => 1 + i * 9) end, case when i % 4 >= 2 then 'Lê Văn Cường (Trưởng Kỹ thuật)' end);
+            am_demo_nm('demo.staff@plaza-demo.test'), now() - make_interval(days => 5 + i * 9), case when i % 4 <> 0 then now() - make_interval(days => 4 + i * 9) end,
+            case when i % 4 >= 2 then now() - make_interval(days => 1 + i * 9) end, case when i % 4 >= 2 then am_demo_nm('demo.enghead@plaza-demo.test') end);
   end loop;
 
   ---------------------------------------------------------------- kiểm kê: một đợt đã đóng (Buồng), một đợt đang mở (Bếp)
   insert into am_count (code, title, depts, count_date, status, members, created_name, opened_at, closed_at, closed_name)
   values ('KK.2026.01', 'Kiểm kê giữa năm — Buồng', array['HKD'], current_date - 60, 'closed',
-          '[{"name": "Phạm Thu Dung", "position": "Trưởng Buồng"}, {"name": "Bùi Đức Minh", "position": "AM Executive"}]', 'Bùi Đức Minh (AM Executive)',
-          now() - interval '62 days', now() - interval '58 days', 'Bùi Đức Minh (AM Executive)')
+          jsonb_build_array(jsonb_build_object('name', am_demo_nm('demo.hkhead@plaza-demo.test'), 'position', 'Trưởng Buồng'), jsonb_build_object('name', am_demo_nm('demo.amx@plaza-demo.test'), 'position', 'AM Executive')), am_demo_nm('demo.amx@plaza-demo.test'),
+          now() - interval '62 days', now() - interval '58 days', am_demo_nm('demo.amx@plaza-demo.test'))
   returning id into v_cid;
   insert into am_count_line (count_id, asset_id, barcode, asset_code, name, kind, dept_code, loc_book, qty_book, status_book, group_code, category_code,
                              found, qty_found, loc_found, cond, by_name, at)
   select v_cid, id, barcode, asset_code, concat_ws(' / ', name_vi, name_en), asset_kind, dept_code, location_code, qty, status_code, group_code, category_code,
          r < 0.96, case when r < 0.96 then qty else 0 end, case when r < 0.96 then location_code end,
-         case when r < 0.96 then (case when r < 0.9 then 'good' when r < 0.94 then 'poor' else 'damaged' end) end, 'Bùi Đức Minh (AM Executive)', now() - interval '59 days'
+         case when r < 0.96 then (case when r < 0.9 then 'good' when r < 0.94 then 'poor' else 'damaged' end) end, am_demo_nm('demo.amx@plaza-demo.test'), now() - interval '59 days'
   from (select *, random() r from am_asset where dept_code = 'HKD') x;
   update am_count set summary = (select jsonb_build_object('total', count(*), 'found', count(*) filter (where cl.found), 'missing', count(*) filter (where not cl.found),
                                                           'damaged', count(*) filter (where cl.cond = 'damaged'), 'extra', 0, 'moved', 0, 'short', 0,
@@ -715,14 +728,14 @@ begin
                                  from am_count_line cl where cl.count_id = v_cid)
   where id = v_cid;
   insert into am_count (code, title, depts, count_date, status, members, created_name, opened_at)
-  values ('KK.2026.02', 'Kiểm kê định kỳ Q3 — Bếp', array['KIT'], current_date, 'open', '[{"name": "Trần Quốc Bảo", "position": "Bếp trưởng"}]',
-          'Bùi Đức Minh (AM Executive)', now() - interval '2 hours')
+  values ('KK.2026.02', 'Kiểm kê định kỳ Q3 — Bếp', array['KIT'], current_date, 'open', jsonb_build_array(jsonb_build_object('name', am_demo_nm('demo.kithead@plaza-demo.test'), 'position', 'Bếp trưởng')),
+          am_demo_nm('demo.amx@plaza-demo.test'), now() - interval '2 hours')
   returning id into v_cid;
   insert into am_count_line (count_id, asset_id, barcode, asset_code, name, kind, dept_code, loc_book, qty_book, status_book, group_code, category_code,
                              found, qty_found, loc_found, cond, by_name, at)
   select v_cid, id, barcode, asset_code, concat_ws(' / ', name_vi, name_en), asset_kind, dept_code, location_code, qty, status_code, group_code, category_code,
          case when r < 0.4 then true when r < 0.43 then false end, case when r < 0.4 then qty when r < 0.43 then 0 end, case when r < 0.4 then location_code end,
-         case when r < 0.4 then 'good' end, case when r < 0.43 then 'Nguyễn Minh Anh (NV Bếp)' end, case when r < 0.43 then now() - make_interval(mins => (r * 100)::int) end
+         case when r < 0.4 then 'good' end, case when r < 0.43 then am_demo_nm('demo.staff@plaza-demo.test') end, case when r < 0.43 then now() - make_interval(mins => (r * 100)::int) end
   from (select *, random() r from am_asset where dept_code = 'KIT') x;
 
   v_n := am_demo_eng();   -- hệ thống kỹ thuật & checklist ca
@@ -745,7 +758,7 @@ begin
   return am_demo_seed(1200);
 end $$;
 
-revoke execute on function am_demo_on(), am_demo_guard(), am_demo_people(), am_demo_accounts(text), am_demo_uid(text), am_demo_wipe(),
+revoke execute on function am_demo_on(), am_demo_guard(), am_demo_people(), am_demo_accounts(text), am_demo_uid(text), am_demo_nm(text), am_demo_wipe(),
   am_demo_pick(text[]), am_demo_eng(), am_demo_seed(int), am_demo_reset() from public, anon;
 grant execute on function am_demo_on(), am_demo_reset() to authenticated;
 
