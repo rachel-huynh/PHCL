@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260927b';
+const APP_VERSION = '20260927d';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -40,7 +40,7 @@ function colLabel(c) {
 const LS_KEY = 'asset-intake.sb';
 let CFG = { url: '', key: '' };
 /* Tablet / phone mode (tbDetect): declared up here because showView and firstView read it from the start. */
-const TB_VIEWS = ['pmdash', 'inbox', 'doc', 'lqcount', 'stockcount', 'meetings', 'contracts', 'flows', 'settings', 'setup'];
+const TB_VIEWS = ['pmdash', 'inbox', 'doc', 'lqcount', 'stockcount', 'engchk', 'meetings', 'contracts', 'flows', 'settings', 'setup'];
 const TB = { on: false, pages: [], i: 0, key: null, busy: false };
 
 function loadCfg() {
@@ -1908,6 +1908,9 @@ const NAV = [
     // The asset-management module in detail (assetops.js, 31_asset_ops.sql).
     ['transfer', 'nav.transfer'],
     ['incident', 'nav.incident'],
+    // Building systems, shift checklists and condition (eng.js, 37_eng_checklist.sql).
+    ['engchk', 'nav.engchk'],
+    ['eng', 'nav.eng'],
     ['stock', 'nav.stock'],
     ['liq', 'nav.liq'],
     ['acc', 'nav.acc'],
@@ -1962,6 +1965,7 @@ function viewModule(v) {
   if (v === 'price') return 'price';
   if (v === 'meetings') return 'meeting';
   if (v === 'contracts') return 'contract';
+  if (v === 'eng' || v === 'engchk') return 'eng';
   if (['sources', 'backup', 'tbl:am_setting'].includes(v)) return 'system';
   if (v === 'cat' || v.startsWith('tbl:')) return 'master';
   return null;
@@ -2353,6 +2357,7 @@ function showView(view) {
     if (['transfer', 'incident', 'stock', 'stockcount', 'amrep'].includes(view) && SB.ready() && window.aoShow) aoShow(view);
     if (view === 'price' && SB.ready() && window.prLoad) prLoad();
     if (view === 'meetings' && SB.ready() && window.mtLoad) mtLoad();
+    if ((view === 'eng' || view === 'engchk') && SB.ready() && window.enShow) enShow(view);
     if (view === 'contracts' && SB.ready() && window.ctLoad) ctLoad();
     if (view === 'payments' && SB.ready()) payLoad();
     if (view === 'admin' && SB.ready()) adLoad();
@@ -11326,6 +11331,8 @@ function ntText(r) {
   if (r.doc_type === 'MT') return t('mt.nt.issued', { no: r.doc_no || '', who: r.actor_email || '' });
   if (r.doc_type === 'MA') return t('mt.nt.action', { no: r.doc_no || '', who: r.actor_email || '' });
   if (r.doc_type === 'SC' && r.kind === 'todo') return t('ao.nt.inc', { no: r.doc_no || '', who: r.actor_email || '' });
+  if (r.doc_type === 'CK') return t('en.nt', { no: String(r.doc_no || '').replace(/\/(\d{4})-(\d\d)-(\d\d)\//, ' $3/$2 ').replace(/ ([SCD])$/, (m, s) => ' ' + t('en.shift.' + s)),
+                                               who: r.actor_email || '' }) + (r.comment ? ' — ' + r.comment : '');
   return t('nt.k.' + r.kind, { no: r.doc_no || '', type: r.doc_type ? wfTypeName(r.doc_type) : '', who: r.actor_email || '' });
 }
 
@@ -11373,6 +11380,7 @@ async function ntOpen(r) {
   // Project meetings (meetings.js): the minutes, or my actions.
   else if (r.doc_type === 'HD' && window.ctOpenNo) ctOpenNo(r.doc_no);     // contracts (contracts.js)
   else if (r.doc_type === 'MT' && window.mtOpenNo) mtOpenNo(r.doc_no);
+  else if (r.doc_type === 'CK' && window.enOpenRun) enOpenRun(r.doc_no);   // shift checklist with abnormal readings (eng.js)
   else if (r.doc_type === 'MA' && window.mtOpenActions) mtOpenActions();
   else if (r.doc_id) wfOpen(r.doc_id);
   ntLoad();

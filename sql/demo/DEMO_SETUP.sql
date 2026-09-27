@@ -64,6 +64,7 @@ language sql immutable as $$
   values ('demo.staff@plaza-demo.test',   'Nguyễn Minh Anh (NV Bếp)',         'DEPT_STAFF', 'KIT'),
          ('demo.kithead@plaza-demo.test', 'Trần Quốc Bảo (Bếp trưởng)',       'DEPT_HEAD',  'KIT'),
          ('demo.enghead@plaza-demo.test', 'Lê Văn Cường (Trưởng Kỹ thuật)',   'DEPT_HEAD',  'ENG'),
+         ('demo.engtech@plaza-demo.test', 'Phan Văn Tài (Kỹ thuật viên ca)',  'DEPT_STAFF', 'ENG'),
          ('demo.hkhead@plaza-demo.test',  'Phạm Thu Dung (Trưởng Buồng)',     'DEPT_HEAD',  'HKD'),
          ('demo.dof@plaza-demo.test',     'Võ Thị Hạnh (DOF)',                'DOF',        'SOF'),
          ('demo.gm@plaza-demo.test',      'Daniel Martin (Hotel GM)',         'HOTEL_GM',   'SOF'),
@@ -130,6 +131,7 @@ begin
   -- Dữ liệu nghiệp vụ. Danh mục (am_org, am_location, am_category…, am_product, am_unit, am_origin,
   -- pr_term, pr_unit), tài khoản, quyền, chuỗi duyệt, cài đặt và GÓP Ý (app_feedback) giữ nguyên.
   foreach t in array array[
+    'am_chk_val', 'am_chk_run', 'am_cond', 'am_chk_point', 'am_chk', 'am_sys_item', 'am_sys',
     'pm_notice', 'pm_mt_action', 'pm_mt_entry', 'pm_mt_meeting', 'pm_mt_topic',
     'pm_contract_file', 'pm_contract', 'pr_line', 'pr_source', 'pr_import', 'pr_alias',
     'am_count_line', 'am_count', 'am_incident', 'am_transfer_line', 'am_transfer', 'am_report_snap',
@@ -153,6 +155,170 @@ end $$;
 
 create or replace function am_demo_pick(a text[])
 returns text language sql volatile as $$ select a[1 + floor(random() * array_length(a, 1))::int] $$;
+
+/* Hệ thống kỹ thuật & checklist ca (37_eng_checklist.sql): 4 hệ thống thật của
+   toà nhà (Chiller — thí điểm, PCCC, Máy phát, Cấp nước), 14 ngày checklist 3 ca
+   với vài bất thường có chủ ý (bơm CHWP-2 xuống cấp, Chiller 1 trip), 2 sự cố,
+   đánh giá hiện trạng đủ cho ST04. Trả số lần kiểm. */
+create or replace function am_demo_eng()
+returns int language plpgsql security definer set search_path = public as $$
+declare
+  v_sys  jsonb := '[["ST04","Chiller","Hệ thống Chiller"],["ST10","Fire fighting system","Hệ thống chữa cháy"],
+                    ["ST11","Generator","Máy phát điện"],["ST20","Water Supply","Hệ thống cấp nước"]]';
+  -- [mã, tên, vị trí, năm lắp, tuổi thọ, mức quan trọng]
+  v_items jsonb := '[["ST04.01","Chiller 1","S0311E1",1998,25,5],["ST04.02","Chiller 2","S0311E1",1998,25,5],["ST04.03","Chiller 3","S0311E1",2016,25,5],
+    ["ST04.04","Chiller Water Pump CHWP-1","S0311E1",1998,15,4],["ST04.05","Chiller Water Pump CHWP-2","S0311E1",1998,15,4],["ST04.06","Chiller Water Pump CHWP-3","S0311E1",1998,15,4],
+    ["ST04.07","Chiller Water Pump CHWP-4","S0311E1",2019,15,4],["ST04.08","Chiller Water Pump CHWP-5","S0311E1",2019,15,4],
+    ["ST04.09","Cooling Chiller Water Pump CCWP1","S0311E1",1998,15,4],["ST04.10","Cooling Chiller Water Pump CCWP2","S0311E1",1998,15,4],
+    ["ST04.11","Cooling Chiller Water Pump CCWP3","S0311E1",2012,15,4],["ST04.12","Cooling Chiller Water Pump CCWP4","S0311E1",2012,15,4],
+    ["ST04.13","Cooling Chiller Water Pump CCWP5","S0311E1",2012,15,3],["ST04.14","Cooling Tower CT-1","S0311E2",1998,20,4],
+    ["ST04.15","Cooling Tower CT-2","S0311E2",1998,20,4],["ST04.16","Cooling Tower CT-3","S0311E2",2010,20,4],["ST04.17","Cooling Tower CT-4","S0311E2",2010,20,4],
+    ["ST04.18","Cooling Tower CT-5","S0311E2",2010,20,3],
+    ["ST10.01","FS Transfer Pump 1","SB201E0",1998,20,4],["ST10.02","FS Transfer Pump 2","SB201E0",1998,20,4],["ST10.03","Hose Reel Pump A (Duty)","SB201E0",1998,20,5],
+    ["ST10.04","Hose Reel Pump B (Stanby)","SB201E0",1998,20,5],["ST10.05","Jockey Pump Hose Reel","SB201E0",2015,15,4],
+    ["ST10.06","Jockey Pump Sprinkler High Zone","SB201E0",2015,15,4],["ST10.07","Jockey Pump Sprinkler Low Zone","SB201E0",2015,15,4],
+    ["ST10.08","Sprinkler Pump High Zone A","SB201E0",1998,20,5],["ST10.09","Sprinkler Pump High Zone B","SB201E0",1998,20,5],
+    ["ST10.10","Sprinkler Pump Low Zone A","SB201E0",1998,20,5],["ST10.11","Sprinkler Pump Low Zone B","SB201E0",1998,20,5],
+    ["ST11.01","DO Daily Tank (liter)","SB103E0",1998,40,3],["ST11.02","DO store tank","SB103E0",1998,40,3],["ST11.03","Generator 1","SB103E0",1998,30,5],
+    ["ST11.04","Generator 2","SB103E0",1998,30,5],["ST11.05","Generator 3","SB103E0",2008,30,5],
+    ["ST20.01","Booster Pump 1","SRT00E3",2014,15,4],["ST20.02","Booster Pump 2","SRT00E3",2014,15,4],["ST20.03","Booster Pump 3","SRT00E3",2014,15,3],
+    ["ST20.06","Domestic Water Tank 160m3 rooftop","SRT00E1",1998,40,3],["ST20.10","Fire Water Tank 75 m3 Rooftop","SRT00E1",1998,40,4],
+    ["ST20.13","Transfer Pump TP - 1 (Office)","SB201E0",2005,15,3],["ST20.14","Transfer Pump TP - 2 (Spare)","SB201E0",2005,15,3],
+    ["ST20.15","Transfer Pump TP - 3 (Hotel)","SB201E0",2005,15,4],["ST20.16","Ultraviolet rays UV-1","SRT00E3",2020,10,3],["ST20.17","Ultraviolet rays UV-2","SRT00E3",2020,10,3]]';
+  v_chk  jsonb := '[["DCL0002","Chiller","ST04"],["DCL0005","Fire Fighting","ST10"],["DCL0006","Generator","ST11"],["DCL0016","Water Supply","ST20"]]';
+  -- Số đo không gắn hạng mục: [checklist, nhiệm vụ, vị trí, tầng, nhãn, đơn vị, min, max, giá trị thường]
+  v_nums jsonb := '[["DCL0002","Chilled water supply temp","S0311E1","3F","°C","°C",6,9,7.2],["DCL0002","Chilled water return temp","S0311E1","3F","°C","°C",10,14,12.1],
+    ["DCL0005","Pressure High Zone (Kg/cm2)","SB201E0","B2","Pressure","kg/cm²",6,9,7.5],["DCL0005","Pressure Low Zone (Kg/cm2)","SB201E0","B2","Pressure","kg/cm²",4,7,5.4],
+    ["DCL0005","Pressure Hose Reel (Kg/cm2)","SB201E0","B2","Pressure","kg/cm²",5,8,6.3],["DCL0016","Pressure (kg/cm2)","SRT00E3","Rooftop","Pressure","kg/cm²",3,6,4.2],
+    ["DCL0016","Domestic Water Tank (level)","SRT00E1","Rooftop","Level","%",40,100,78],["DCL0016","Fire Water Tank (level)","SRT00E1","Rooftop","Level","%",80,100,92]]';
+  x jsonb; v_asset bigint; v_run bigint; v_d date; v_s text; v_pt am_chk_point; v_iname text; v_r float; v_st text; v_n1 numeric; v_n2 numeric; v_ok boolean;
+  v_runs int := 0; v_names text[] := array['Phan Văn Tài (Kỹ thuật viên ca)', 'Ngô Minh Trí (KTV ca)', 'Đặng Quốc Việt (KTV ca)', 'Lý Thành Công (KTV ca)'];
+  v_inc bigint; v_head text := 'Lê Văn Cường (Trưởng Kỹ thuật)';
+begin
+  perform am_demo_guard();
+  if to_regclass('public.am_sys') is null then return 0; end if;   -- 37 chưa chạy
+  for x in select * from jsonb_array_elements(v_sys) loop
+    -- Tài sản cha: một tài sản cơ điện của phòng Kỹ thuật trong bộ dữ liệu giả.
+    select id into v_asset from am_asset where dept_code = 'ENG' and category_code = 'MES' and not exists (select 1 from am_sys s where s.asset_id = am_asset.id)
+    order by id limit 1;
+    insert into am_sys (code, name_en, name_vi, dept_code, parent_code, asset_id, sort)
+    values (x ->> 0, x ->> 1, x ->> 2, 'ENG', (select asset_code from am_asset where id = v_asset), v_asset, substr(x ->> 0, 3)::int);
+  end loop;
+  insert into am_sys_item (code, sys_code, name, location_code, install_year, life_years, criticality, sort)
+  select e ->> 0, split_part(e ->> 0, '.', 1), e ->> 1, e ->> 2, (e ->> 3)::int, (e ->> 4)::int, (e ->> 5)::smallint, n
+  from jsonb_array_elements(v_items) with ordinality as q(e, n);
+  insert into am_chk (code, name, sys_code, sort) select e ->> 0, e ->> 1, e ->> 2, n from jsonb_array_elements(v_chk) with ordinality as q(e, n);
+  -- Trạng thái: mọi hạng mục có máy chạy (không phải bể). Máy phát: kèm điện áp ắc quy.
+  insert into am_chk_point (chk_code, seq, task, location_code, floor, item_id, options, ok_states, num_labels, unit, min_ok, max_ok)
+  select c.code, i.sort, i.name, i.location_code, case when i.location_code like 'S03%' then '3F' when i.location_code like 'SB2%' then 'B2'
+                                                        when i.location_code like 'SB1%' then 'B1' else 'Rooftop' end, i.id,
+         case when i.name ilike '%tank%' then null else '{Auto,On,Off}'::text[] end,
+         case when i.name ~* 'stanby|spare| B$|pump 2$|CHWP-[345]|CCWP[345]|CT-[45]|Generator|Chiller 3' then '{Auto,On,Off}'::text[] else '{Auto,On}'::text[] end,
+         case when i.name ilike 'Generator%' then '{Battery}'::text[] when i.name ilike 'DO Daily%' then '{Liter}'::text[] end,
+         case when i.name ilike 'Generator%' then 'V' when i.name ilike 'DO Daily%' then 'L' end,
+         case when i.name ilike 'Generator%' then 24 when i.name ilike 'DO Daily%' then 300 end,
+         case when i.name ilike 'Generator%' then 28.5 when i.name ilike 'DO Daily%' then 1000 end
+  from am_sys_item i join am_chk c on c.sys_code = i.sys_code
+  where not (i.name ilike 'DO store%' or i.name ilike '%Water Tank%');
+  insert into am_chk_point (chk_code, seq, task, location_code, floor, num_labels, unit, min_ok, max_ok)
+  select e ->> 0, 100 + n, e ->> 1, e ->> 2, e ->> 3, array[e ->> 4], e ->> 5, (e ->> 6)::numeric, (e ->> 7)::numeric
+  from jsonb_array_elements(v_nums) with ordinality as q(e, n);
+
+  -- 14 ngày × 3 ca; ca hiện tại đang ghi dở, thỉnh thoảng một ca bị bỏ.
+  for v_d in select generate_series(current_date - 13, current_date, interval '1 day')::date loop
+    foreach v_s in array array['S', 'C', 'D'] loop
+      if v_d = current_date and v_s <> 'S' then continue; end if;
+      for x in select * from jsonb_array_elements(v_chk) loop
+        if random() < 0.04 and v_d < current_date then continue; end if;
+        insert into am_chk_run (chk_code, run_date, shift, status, started_name, started_at, done_name, done_at)
+        values (x ->> 0, v_d, v_s, case when v_d = current_date then 'open' else 'done' end, am_demo_pick(v_names),
+                v_d + case v_s when 'S' then time '06:40' when 'C' then time '14:35' else time '22:30' end,
+                case when v_d < current_date then am_demo_pick(v_names) end,
+                case when v_d < current_date then v_d + case v_s when 'S' then time '07:25' when 'C' then time '15:20' else time '23:15' end end)
+        returning id into v_run;
+        v_runs := v_runs + 1;
+        for v_pt in select * from am_chk_point p where p.chk_code = x ->> 0 order by p.seq loop
+          v_iname := (select name from am_sys_item where id = v_pt.item_id);
+          if v_d = current_date and random() < 0.5 then continue; end if;   -- ca đang làm: mới ghi một nửa
+          -- Độc lập với thứ tự gọi random() (setseed cố định làm các vị trí lặp lại theo chu kỳ).
+          v_r := (abs(hashtext(v_d::text || v_s || v_pt.id::text)) % 10000) / 10000.0; v_st := null; v_n1 := null; v_n2 := null;
+          if v_pt.options is not null then
+            v_st := case when v_pt.ok_states @> '{Off}' then am_demo_pick(array['Auto', 'Auto', 'Off', 'Off', 'On'])
+                         else am_demo_pick(array['Auto', 'Auto', 'On']) end;
+            -- Xuống cấp có chủ ý: CHWP-2 hay dừng; Chiller 1 trip vài lần tuần này; lác đác nơi khác.
+            if (v_iname = 'Chiller Water Pump CHWP-2' and v_r < 0.18) or (v_iname = 'Chiller 1' and v_d > current_date - 6 and v_r < 0.15)
+               or v_r < 0.006 then v_st := 'Off'; end if;
+          end if;
+          if v_pt.num_labels is not null then
+            v_n1 := case when v_pt.unit = 'V' then round((26.2 + (random() - 0.5) * 2.4)::numeric, 1)
+                         when v_pt.unit = 'L' then round((650 + (random() - 0.5) * 500)::numeric, -1)
+                         when v_pt.unit = '%' then least(100, round((coalesce((select (e ->> 8)::numeric from jsonb_array_elements(v_nums) e where e ->> 1 = v_pt.task), 80)
+                                     * (1 + (random() - 0.5) * 0.12))::numeric, 0))
+                         else round((coalesce((select (e ->> 8)::numeric from jsonb_array_elements(v_nums) e where e ->> 1 = v_pt.task), 5)
+                                     * (1 + (random() - 0.5) * 0.16))::numeric, 1) end;
+            if v_r > 0.975 then   -- ngoài ngưỡng: mức bể thì hụt, còn lại vượt
+              v_n1 := case when v_pt.unit = '%' then round((coalesce(v_pt.min_ok, v_n1) * 0.85)::numeric, 0) else round((coalesce(v_pt.max_ok, v_n1) * 1.12)::numeric, 1) end;
+            end if;
+            if v_pt.task = 'Chilled water supply temp' and v_d > current_date - 4 and v_r < 0.3 then v_n1 := 9.8; end if;
+          end if;
+          v_ok := am_chk_ok(v_pt, v_st, v_n1, v_n2);
+          insert into am_chk_val (run_id, point_id, state, num1, num2, ok, by_name, at)
+          values (v_run, v_pt.id, v_st, v_n1, v_n2, v_ok, am_demo_pick(v_names), v_d + time '07:00');
+        end loop;
+        update am_chk_run set abn = (select count(*) from am_chk_val where run_id = v_run and ok = false),
+                              filled = (select count(*) from am_chk_val where run_id = v_run and ok is not null) where id = v_run;
+      end loop;
+    end loop;
+  end loop;
+
+  -- Hai sự cố báo từ checklist, trên tài sản cha của hệ thống Chiller.
+  select asset_id into v_asset from am_sys where code = 'ST04';
+  if v_asset is not null then
+    insert into am_incident (no, asset_id, dept_code, kind, status, reported_at, description, created_name)
+    values ('SC.2026.00901', v_asset, 'ENG', 'repair', 'in_progress', current_date - 9,
+            'DCL0002 — Chiller Water Pump CHWP-2 — Off — bơm tự ngắt, nóng động cơ, nghi hỏng bạc đạn', 'Phan Văn Tài (Kỹ thuật viên ca)')
+    returning id into v_inc;
+    update am_chk_val v set incident_id = v_inc from am_chk_run r, am_chk_point p
+    where v.run_id = r.id and p.id = v.point_id and p.task = 'Chiller Water Pump CHWP-2' and v.ok = false
+      and r.run_date = (select min(r2.run_date) from am_chk_run r2 join am_chk_val v2 on v2.run_id = r2.id join am_chk_point p2 on p2.id = v2.point_id
+                        where p2.task = 'Chiller Water Pump CHWP-2' and v2.ok = false and r2.run_date >= current_date - 9);
+    insert into am_incident (no, asset_id, dept_code, kind, status, reported_at, description, created_name, closed_at, closed_name, outcome, cost)
+    values ('SC.2026.00902', v_asset, 'ENG', 'maintenance', 'closed', current_date - 40, 'Bảo dưỡng Chiller 1 — vệ sinh dàn ngưng, thay lọc gas',
+            v_head, now() - interval '38 days', v_head, 'fixed', 38000000);
+  end if;
+
+  -- Đánh giá hiện trạng: đủ ST04 (thí điểm), vài hạng mục PCCC / máy phát.
+  insert into am_cond (item_id, assessed_on, score, remaining_years, action, target_year, est_cost, reason, created_name)
+  select i.id, current_date - 3, c.score, c.rem, c.act, c.yr, c.cost, c.reason, v_head
+  from (values
+    ('ST04.01', 2, 1.5, 'replace', 2027, 4200000000, 'Máy 1998 (28 năm, quá tuổi thọ 25). Gas R22 đã ngừng sản xuất, rò gas 2 lần/năm, COP giảm ~30%. Trip 3 lần tuần này.'),
+    ('ST04.02', 2, 2.0, 'replace', 2028, 4200000000, 'Cùng đời Chiller 1, gas R22; vận hành ổn định hơn nhưng máy nén ồn, dầu nhanh bẩn.'),
+    ('ST04.03', 4, 15, 'monitor', null, null, 'Lắp 2016, hiệu suất tốt; bảo dưỡng theo hợp đồng.'),
+    ('ST04.04', 3, 4, 'overhaul', 2027, 85000000, 'Rung nhẹ, đã thay phớt 2024.'),
+    ('ST04.05', 1, 0.5, 'replace', 2026, 180000000, 'Bơm tự ngắt nhiều lần, nóng động cơ, bạc đạn mòn — đang có sự cố SC.2026.00901. Thay ngay trước mùa nóng.'),
+    ('ST04.06', 2, 2, 'replace', 2027, 180000000, 'Gỉ vỏ bơm, hiệu suất thấp, 28 năm.'),
+    ('ST04.07', 5, 12, 'none', null, null, 'Thay mới 2019.'),
+    ('ST04.08', 5, 12, 'none', null, null, 'Thay mới 2019.'),
+    ('ST04.09', 2, 2, 'replace', 2027, 160000000, 'Mòn cánh bơm, lưu lượng giảm.'),
+    ('ST04.10', 3, 4, 'overhaul', 2028, 70000000, 'Còn dùng được, cần đại tu động cơ.'),
+    ('ST04.11', 4, 8, 'monitor', null, null, 'Lắp 2012, ổn định.'),
+    ('ST04.12', 4, 8, 'monitor', null, null, 'Lắp 2012, ổn định.'),
+    ('ST04.13', 4, 8, 'monitor', null, null, 'Dự phòng, chạy luân phiên.'),
+    ('ST04.14', 2, 2, 'replace', 2027, 650000000, 'Khung thép gỉ, tấm tản nhiệt vỡ nhiều, quạt rung.'),
+    ('ST04.15', 3, 3, 'repair', 2027, 220000000, 'Thay tấm tản nhiệt và bạc đạn quạt.'),
+    ('ST04.16', 4, 7, 'monitor', null, null, 'Lắp 2010.'),
+    ('ST04.17', 4, 7, 'monitor', null, null, 'Lắp 2010.'),
+    ('ST04.18', 3, 5, 'repair', 2028, 90000000, 'Rò nước bể chứa.'),
+    ('ST10.08', 3, 5, 'overhaul', 2028, 120000000, 'Bơm chữa cháy 1998, chạy thử định kỳ đạt; nên đại tu động cơ.'),
+    ('ST11.03', 3, 6, 'overhaul', 2029, 350000000, 'Máy phát 1998, 5.800 giờ chạy; đại tu đầu máy.'),
+    ('ST11.05', 4, 12, 'monitor', null, null, 'Lắp 2008, ít giờ chạy.')
+  ) as c(code, score, rem, act, yr, cost, reason)
+  join am_sys_item i on i.code = c.code;
+  -- Một lần đánh giá cũ để thấy lịch sử.
+  insert into am_cond (item_id, assessed_on, score, remaining_years, action, target_year, est_cost, reason, created_name)
+  select id, current_date - 200, 2, 1.5, 'overhaul', 2026, 60000000, 'Rung, nóng — đề xuất đại tu.', v_head from am_sys_item where code = 'ST04.05';
+  return v_runs;
+end $$;
 
 create or replace function am_demo_seed(p_assets int default 1200)
 returns jsonb language plpgsql security definer set search_path = public as $$
@@ -559,7 +725,9 @@ begin
          case when r < 0.4 then 'good' end, case when r < 0.43 then 'Nguyễn Minh Anh (NV Bếp)' end, case when r < 0.43 then now() - make_interval(mins => (r * 100)::int) end
   from (select *, random() r from am_asset where dept_code = 'KIT') x;
 
-  select jsonb_build_object('vendors', (select count(*) from pm_vendor), 'assets', (select count(*) from am_asset), 'projects', (select count(*) from pm_project),
+  v_n := am_demo_eng();   -- hệ thống kỹ thuật & checklist ca
+
+  select jsonb_build_object('checklist_runs', v_n,'vendors', (select count(*) from pm_vendor), 'assets', (select count(*) from am_asset), 'projects', (select count(*) from pm_project),
                             'budget_lines', (select count(*) from pm_budget_line), 'invoices', (select count(*) from pm_invoice), 'payments', (select count(*) from pm_payment),
                             'price_lines', (select count(*) from pr_line), 'contracts', (select count(*) from pm_contract), 'meetings', (select count(*) from pm_mt_meeting),
                             'actions', (select count(*) from pm_mt_action), 'transfers', (select count(*) from am_transfer), 'incidents', (select count(*) from am_incident),
@@ -578,7 +746,7 @@ begin
 end $$;
 
 revoke execute on function am_demo_on(), am_demo_guard(), am_demo_people(), am_demo_accounts(text), am_demo_uid(text), am_demo_wipe(),
-  am_demo_pick(text[]), am_demo_seed(int), am_demo_reset() from public, anon;
+  am_demo_pick(text[]), am_demo_eng(), am_demo_seed(int), am_demo_reset() from public, anon;
 grant execute on function am_demo_on(), am_demo_reset() to authenticated;
 
 

@@ -1996,6 +1996,58 @@
   main h3,.drawer h3{font-size:12px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;margin:14px 0 6px}
   main .card > h3:first-child,.drawer .dbody > h3:first-child{margin-top:0}
   .role{font-size:11px} .kt{font-size:10.5px}
+  /* Building systems & shift checklists (eng.js). Tablet first: big touch targets on the checklist. */
+  .enhead{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
+  .enshifts button{display:flex;flex-direction:column;align-items:center;padding:7px 16px;gap:2px}
+  .enshifts button b{font-size:13px} .enshifts button small{font-size:10.5px;font-weight:500;opacity:.8}
+  .encards{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+  .encard{display:flex;flex-direction:column;gap:5px;text-align:left;padding:12px 14px;border:1px solid var(--line);border-left:5px solid var(--line);
+          border-radius:8px;background:var(--panel);cursor:pointer;font:inherit;color:inherit;min-height:96px}
+  .encard small{font-size:10.5px;color:var(--dim);letter-spacing:.04em} .encard b{font-size:14px;color:var(--navy)}
+  .encard.st-open{border-left-color:var(--blue)} .encard.st-done{border-left-color:var(--green)} .encard.abn{border-left-color:var(--red)}
+  .encard:hover{border-color:var(--navy)}
+  .enbar{display:block;height:6px;border-radius:3px;background:var(--chip);overflow:hidden} .enbar i{display:block;height:100%;background:var(--green)}
+  .enbar.big{height:8px;width:160px}
+  .enrunhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+  .enprog{display:flex;flex-direction:column;gap:4px;font-size:12px}
+  .enpts h3{margin-top:0}
+  .enpt{display:grid;grid-template-columns:22px minmax(180px,1fr) auto auto;align-items:center;gap:10px;padding:8px 6px;border-top:1px solid var(--line)}
+  .enpt:first-of-type{border-top:0}
+  .enpt.bad{background:var(--bad-bg)} .enpt.ok .enmark{color:var(--green)} .enpt.bad .enmark{color:var(--red)}
+  .enmark{font-weight:800;text-align:center}
+  .enname{display:flex;flex-direction:column;gap:2px} .enname small{font-size:11px}
+  .enctl{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+  .enstate button{min-width:62px;padding:10px 12px;font-size:13px}
+  .enstate button.on{background:var(--green);color:#fff} .enstate button.on.abnopt{background:var(--red)}
+  .ennum{display:flex;flex-direction:column;gap:2px} .ennum small{font-size:10px;color:var(--dim)}
+  .ennum input{width:92px;padding:8px;font-size:15px;text-align:right}
+  .ennum input.bad{border-color:var(--red);color:var(--red);font-weight:700}
+  .enacts{display:flex;gap:6px;align-items:center} .enacts .btn.on{background:var(--info-bg)} .enacts [hidden]{display:none}
+  .btn.sm{padding:4px 9px;font-size:12px}
+  @media (max-width:760px){.enpt{grid-template-columns:22px 1fr}.enctl,.enacts{grid-column:2;justify-content:flex-start}}
+  .ensplit{display:flex;gap:14px;align-items:flex-start} .ensplit > .grow{flex:1;min-width:0}
+  #v-eng .grow,#v-engchk .grow{flex:1;min-width:0;text-align:left} #v-eng .card h2{text-align:left}
+  .enside{width:280px;flex:none;padding:6px;display:flex;flex-direction:column;gap:2px;max-height:calc(100vh - 220px);overflow:auto}
+  .ensys{display:flex;align-items:center;gap:6px;text-align:left;border:0;background:none;padding:7px 8px;border-radius:6px;cursor:pointer;font:inherit;font-size:12.5px;color:inherit}
+  .ensys .code{font:700 11px/1 var(--font);color:var(--dim);width:36px} .ensys .grow{flex:1}
+  .ensys:hover{background:var(--head)} .ensys.on{background:var(--navy);color:#fff} .ensys.on .code{color:#cfd8e6} .ensys.off{opacity:.55}
+  @media (max-width:900px){.ensplit{flex-direction:column}.enside{width:auto;max-height:none}}
+  .entbl tr.click{cursor:pointer} .entbl tr.click:hover td{background:var(--head)} .entbl tr.off td{opacity:.5}
+  .entbl .entxt{min-width:200px;max-width:420px;white-space:pre-wrap;font-size:12px} .entbl .nowrap{white-space:nowrap}
+  .enscore{display:inline-block;min-width:22px;text-align:center;font:700 11.5px/1.6 var(--font);padding:0 7px;border-radius:999px;background:var(--chip);color:var(--chip-ink)}
+  .enscore.s5{background:var(--ok-bg);color:var(--green)} .enscore.s4{background:#e6f2ec;color:#2f7a55}
+  .enscore.s3{background:var(--warn-bg);color:var(--warn-ink)} .enscore.s2{background:#fbe1d6;color:#b24a1c} .enscore.s1{background:var(--bad-bg);color:var(--red)}
+  .endist{display:flex;gap:4px;flex-wrap:wrap;margin-top:3px}
+  .enscoreseg{margin:8px 0} .enscoreseg button{display:flex;flex-direction:column;align-items:center;padding:6px 12px;gap:1px}
+  .enscoreseg button small{font-size:10px;font-weight:500}
+  .enscoreseg button.on.s5,.enscoreseg button.on.s4{background:var(--green)} .enscoreseg button.on.s3{background:var(--amber)} .enscoreseg button.on.s2,.enscoreseg button.on.s1{background:var(--red)}
+  .encondform{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px}
+  .encondform textarea{width:100%;font:13px/1.4 var(--font);padding:6px 8px;border:1px solid var(--line);border-radius:6px}
+  .engrid2{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px 12px}
+  .enlog th.c,.enlog td.c{text-align:center;white-space:nowrap;font-size:11.5px;min-width:64px} .enlog td.bad{background:var(--bad-bg);color:var(--red);font-weight:700}
+  .enlog .enlp{white-space:nowrap;position:sticky;left:0;background:var(--panel);font-size:12px}
+  .encfg input{padding:4px 6px;font-size:12.5px} .encfg select{max-width:220px;font-size:12px} .chk.inl{display:inline-flex;margin-right:8px}
+  .enwarn{margin:0;padding-left:18px;font-size:12.5px} .enwarn li{margin:3px 0}
   /* Demo / training mode (demo.js): a striped amber bar on every screen, the sign-in box included. */
   .demobar{position:fixed;top:0;left:0;right:0;height:30px;z-index:70;display:flex;align-items:center;gap:12px;padding:0 16px;
            font-size:12.5px;color:#3d2a00;overflow:hidden;white-space:nowrap;
@@ -2006,10 +2058,12 @@
   .demobar.clash{background:var(--red);color:#fff;border-bottom-color:#8e2a20}
   body.demo .shell,body.democlash .shell{height:calc(100vh - 30px);margin-top:30px}
   body.demo .login,body.democlash .login{top:30px}
+  body.demo .drawer,body.democlash .drawer{top:30px}
   body.demo aside{box-shadow:inset -4px 0 0 #f2b632}
   .fbbtn{position:fixed;right:18px;bottom:18px;z-index:45;border:none;border-radius:999px;padding:10px 16px;cursor:pointer;
          background:var(--navy);color:#fff;font:600 13px/1 var(--font);box-shadow:0 4px 16px rgba(15,30,58,.28)}
   .fbbtn:hover{filter:brightness(1.15)}
+  body.tab .fbbtn{bottom:calc(76px + env(safe-area-inset-bottom))}   /* above the tablet bottom bar */
   .dmfb textarea{width:100%;margin-top:10px;font:13px/1.45 var(--font);padding:8px 10px;border:1px solid var(--line);border-radius:6px;resize:vertical}
   .dmkinds{margin-top:8px}
   .dminv{width:100%;margin-top:8px;font:12px/1.45 Consolas,monospace;padding:8px 10px;border:1px solid var(--line);border-radius:6px}
@@ -2940,6 +2994,18 @@
       <div id="mtBody"></div>
     </section>
 
+    <!-- Building systems, shift checklists, condition (eng.js, 37_eng_checklist.sql) -->
+    <section id="v-engchk">
+      <div id="ecMsg"></div>
+      <div id="ecBody"></div>
+    </section>
+    <section id="v-eng">
+      <p class="lead" data-i18n="en.lead"></p>
+      <div class="card"><div class="seg permtabs" id="enTabs"></div></div>
+      <div id="enMsg"></div>
+      <div id="enBody"></div>
+    </section>
+
     <!-- Asset management in detail (assetops.js, 31_asset_ops.sql) -->
     <section id="v-transfer">
       <p class="lead" data-i18n="ao.tf.lead"></p>
@@ -3051,13 +3117,14 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260927b"></script>
-<script src="flows.js?v=20260927b"></script>
-<script src="app.js?v=20260927b"></script>
-<script src="assetops.js?v=20260927b"></script>
-<script src="pricedb.js?v=20260927b"></script>
-<script src="meetings.js?v=20260927b"></script>
-<script src="contracts.js?v=20260927b"></script>
-<script src="demo.js?v=20260927b"></script>
+<script src="i18n.js?v=20260927d"></script>
+<script src="flows.js?v=20260927d"></script>
+<script src="app.js?v=20260927d"></script>
+<script src="assetops.js?v=20260927d"></script>
+<script src="pricedb.js?v=20260927d"></script>
+<script src="meetings.js?v=20260927d"></script>
+<script src="contracts.js?v=20260927d"></script>
+<script src="demo.js?v=20260927d"></script>
+<script src="eng.js?v=20260927d"></script>
 </body>
 </html>
