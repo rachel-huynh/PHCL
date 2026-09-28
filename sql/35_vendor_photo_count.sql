@@ -198,8 +198,9 @@ begin
   if not am_count_can(c.id) then raise exception 'Bạn không kiểm được đợt này.' using errcode = '42501'; end if;
   if not exists (select 1 from am_asset_photo where id = p_photo and asset_id = l.asset_id) then raise exception 'Ảnh không thuộc tài sản của dòng này.'; end if;
   update am_asset_photo set count_line_id = l.id where id = p_photo;
-  update am_count_line set photo_id = p_photo,
-         found = coalesce(found, true), qty_found = coalesce(qty_found, qty_book), loc_found = case when found is null then loc_book else loc_found end,
+  -- "found" cũng là biến có sẵn của plpgsql: gọi cột qua bí danh cl, không thì Postgres báo "ambiguous".
+  update am_count_line cl set photo_id = p_photo,
+         found = coalesce(cl.found, true), qty_found = coalesce(cl.qty_found, cl.qty_book), loc_found = case when cl.found is null then cl.loc_book else cl.loc_found end,
          by_user = coalesce(by_user, auth.uid()), by_name = coalesce(by_name, am_me_name()), at = coalesce(at, now())
   where id = l.id;
   if p_avatar then update am_asset set avatar_photo_id = p_photo where id = l.asset_id; end if;

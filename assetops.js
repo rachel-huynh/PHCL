@@ -24,7 +24,8 @@ const AO = {
   tf:  { rows: [], lines: [], assets: new Map(), inbox: [], tab: 'todo', open: null, edit: null, q: '' },
   inc: { rows: [], assets: new Map(), tab: 'open', open: null, draft: null, q: '' },
   kk:  { rows: [], open: null, lines: [], filter: 'all', edit: null, q: '' },
-  sc:  { count: null, lines: [], loc: '', q: '', only: 'here' },
+  // avatar: the newest stock-take photo becomes the avatar (user 28/09/2026); earlier photos stay in the asset's photo history.
+  sc:  { count: null, lines: [], loc: '', q: '', only: 'here', avatar: true },
   rep: { mode: 'month', val: '', data: null, snaps: [], cmp: '', view: null }
 };
 let AO_LOC = null;
@@ -696,8 +697,8 @@ function kkLiveStart(c) {
     } catch {}
   }, KK_LIVE_MS) };
 }
-// A photo of the asset of a count line: stored with a thumbnail, tied to the line; the first photo of an asset
-// without an avatar becomes its avatar (database trigger); "photo = avatar" makes every photo the avatar.
+// A photo of the asset of a count line: stored with a thumbnail, tied to the line. With "photo = avatar" (on by default)
+// it becomes the avatar; the older photos are kept, dated, in the asset's photo history. Off: only an asset without one gets it.
 async function kkPhoto(l, file, out) {
   if (!l.asset_id) return msg(out, 'warn', t('ao.kk.noPhotoUnknown'));
   msg(out, 'info', t('ph.uploading'));
@@ -830,7 +831,7 @@ function scRender() {
   };
   const only = el('select'); selFill(only, [['here', t('ao.sc.onlyHere')], ['pending', t('ao.sc.onlyPending')], ['all', t('ao.sc.onlyAll')]]); only.value = S.only;
   only.onchange = () => { S.only = only.value; scRender(); };
-  // Every photo taken here becomes the asset's avatar (otherwise only when it has none yet).
+  // Every photo taken here becomes the asset's avatar (on by default); unticked, only an asset without one gets it.
   const avBox = el('input', { type: 'checkbox', checked: !!S.avatar }); avBox.onchange = () => { S.avatar = avBox.checked; };
   top.append(el('div', { className: 'lchead' }, [el('b', { textContent: t('lc.progress', { n: fmtInt(done), of: fmtInt(own.length) }) }),
     el('div', { className: 'lcprog' }, [el('i', { style: `width:${own.length ? Math.round(done / own.length * 100) : 0}%` })])]),
@@ -1075,18 +1076,45 @@ async function aoAsset(id) {
     body.append(avHead, av, ph);
     phLoad([a.id]).then(async ps => {
       const cur = ps.find(p => p.id === a.avatar_photo_id);
-      if (cur) { try { const u = cur.source === 'link' ? cur.url : await phUrl(cur.storage_path); av.append(el('a', { href: u, target: '_blank', rel: 'noopener' }, el('img', { src: u, alt: t('reg.avatar') })), el('small', { className: 'dim', textContent: `⭐ ${t('reg.avatar')} · ${t('ph.k.' + cur.kind)} · ${fmtDate(String(cur.taken_at).slice(0, 10))}` })); } catch {} }
+      if (cur) { try { const u = cur.source === 'link' ? cur.url : await phUrl(cur.storage_path); av.append(el('a', { href: u, target: '_blank', rel: 'noopener' }, el('img', { src: u, alt: t('reg.avatar') })), el('small', { className: 'dim', textContent: `⭐ ${t('reg.avatar')} · ${t('ph.k.' + cur.kind)} · ${fmtDateTime(cur.taken_at)}${cur.taken_name ? ' · ' + cur.taken_name : ''}` })); } catch {} }
       if (!ps.length) { ph.append(el('div', { className: 'dim', textContent: t('ao.a.noPhoto') })); return; }
-      for (const p of ps.slice(0, 16)) {
-        const box = el('a', { className: 'aophoto' + (p.id === a.avatar_photo_id ? ' isav' : ''), target: '_blank', rel: 'noopener', title: `${t('ph.k.' + p.kind)} · ${p.taken_name || ''} · ${fmtDateTime(p.taken_at)}` });
-        if (p.source === 'link') { box.href = p.url; box.textContent = '🔗 ' + t('ph.k.' + p.kind); }
-        else { try { const u = await phUrl(p.thumb_path || p.storage_path); box.href = u; box.append(el('img', { src: u, alt: p.kind }));
-                     if (p.thumb_path) phUrl(p.storage_path).then(full => { box.href = full; }).catch(() => {}); } catch { box.textContent = p.kind; } }
-        const cell = el('div', { className: 'aophotocell' }, [box]);
-        if (mayAv && p.source === 'storage' && p.id !== a.avatar_photo_id && 'avatar_photo_id' in a)
-          cell.append(el('button', { className: 'btn tiny', type: 'button', title: t('ao.a.avatarMake'), textContent: '⭐', onclick: async () => {
+      /* Photo history (user 28/09/2026): nothing is overwritten. The newest stock-take photo becomes the
+         avatar; every older photo stays here with its date, who took it and — for a stock-take — which round.
+         ⭐ puts an older one back as the avatar. */
+      const counts = new Map();
+      const lineIds = [...new Set(ps.map(p => p.count_line_id).filter(Boolean))];
+      if (lineIds.length) {
+        try {
+          const ls = await SB.select('am_count_line', `select=id,count_id&id=in.(${lineIds.join(',')})`);
+          const cs = await SB.select('am_count', `select=id,code&id=in.(${[...new Set(ls.map(l => l.count_id))].join(',') || 0})`);
+          for (const l of ls) counts.set(l.id, (cs.find(c => c.id === l.count_id) || {}).code || '');
+        } catch {}
+      }
+      ph.append(el('div', { className: 'dim', style: 'font-size:12px;margin:2px 0 6px', textContent: t('ao.a.photoHist', { n: ps.length }) }));
+      const list = el('div', { className: 'aophlist' });
+      const drawRow = async p => {
+        const isAv = p.id === a.avatar_photo_id;
+        const thumb = el('a', { className: 'aophoto' + (isAv ? ' isav' : ''), target: '_blank', rel: 'noopener' });
+        if (p.source === 'link') { thumb.href = p.url; thumb.append(el('img', { src: p.url, alt: '🔗', onerror: e => { e.target.replaceWith('🔗'); } })); }
+        else { try { const u = await phUrl(p.thumb_path || p.storage_path); thumb.href = u; thumb.append(el('img', { src: u, alt: p.kind }));
+                     if (p.thumb_path) phUrl(p.storage_path).then(full => { thumb.href = full; }).catch(() => {}); } catch { thumb.textContent = p.kind; } }
+        const what = t('ph.k.' + p.kind) + (counts.get(p.count_line_id) ? ' · ' + counts.get(p.count_line_id) : '');
+        const info = el('div', { className: 'aophinfo' }, [el('b', { textContent: fmtDateTime(p.taken_at) }),
+          el('span', { textContent: what }), el('small', { className: 'dim', textContent: p.taken_name || '' })]);
+        const act = el('div', {});
+        if (isAv) act.append(el('span', { className: 'aost done', textContent: '⭐ ' + t('ao.a.isAvatar') }));
+        else if (mayAv && 'avatar_photo_id' in a && (p.source === 'storage' || p.kind === 'avatar'))
+          act.append(el('button', { className: 'btn tiny', type: 'button', textContent: '⭐ ' + t('ao.a.avatarMake'), onclick: async () => {
             try { await SB.rpc('am_asset_set_avatar', { p_asset: a.id, p_photo: p.id }); msg(out, 'ok', t('ao.a.avatarSet')); aoAsset(a.id); } catch (e) { msg(out, 'err', e.message); } } }));
-        ph.append(cell);
+        return el('div', { className: 'aophrow' + (isAv ? ' isav' : '') }, [thumb, info, act]);
+      };
+      const shown = 12;
+      for (const p of ps.slice(0, shown)) list.append(await drawRow(p));
+      ph.append(list);
+      if (ps.length > shown) {
+        const more = el('button', { className: 'btn tiny', type: 'button', textContent: t('ao.a.photoMore', { n: ps.length - shown }) });
+        more.onclick = async () => { more.remove(); for (const p of ps.slice(shown)) list.append(await drawRow(p)); };
+        ph.append(more);
       }
     }).catch(() => ph.append(el('div', { className: 'dim', textContent: t('ao.a.noPhoto') })));
     // Open incidents & transfers
@@ -1115,7 +1143,7 @@ function aoEvText(e) {
     case 'created': return [d.asset_code, d.dept_code, d.location_code, d.status_code && amStatusLabel(d.status_code)].filter(Boolean).join(' · ');
     case 'change': return Object.entries(d).map(([k, x]) => `${t(lbl[k] || k)}: ${v(k, x.o)} → ${v(k, x.n)}`).join(' · ');
     case 'intake': return [d.project_code, d.po && 'PO ' + d.po, d.supplier].filter(Boolean).join(' · ');
-    case 'photo': return d.photo_kind || '';
+    case 'photo': return d.photo_kind ? t('ph.k.' + d.photo_kind) : '';
     case 'transfer': return `${d.from} → ${d.to}${d.loc ? ' · ' + d.loc : ''} · ${t('ao.tf.st.' + d.status)}${d.new_code && d.new_code !== d.old_code ? ` · ${d.old_code} → ${d.new_code}` : ''}${d.qty != null ? ` · SL ${fmtNum(d.qty)}` : ''}`;
     case 'incident': return `${t('ao.inc.k.' + d.type)} · ${t('ao.inc.st.' + d.status)}${d.outcome ? ' · ' + t('ao.inc.o.' + d.outcome) : ''}${d.cost != null ? ' · ' + lqN(d.cost) : ''}${d.text ? ' — ' + d.text : ''}`;
     case 'count': return `${d.found ? t('lc.found') : t('lc.missing')}${d.qty != null ? ' · ' + t('col.qty') + ' ' + fmtNum(d.qty) : ''}${d.loc ? ' · ' + d.loc : ''}${d.cond ? ' · ' + t('ao.kk.cond.' + d.cond) : ''}${d.note ? ' — ' + d.note : ''}`;

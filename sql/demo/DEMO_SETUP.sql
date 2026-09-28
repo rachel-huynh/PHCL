@@ -7,8 +7,8 @@
 -- khác, hoặc có tài sản không mang nhãn [DEMO]).
 --
 -- Tạo:
---   · 13 tài khoản demo theo vai trò (mật khẩu chung — đổi ở cuối file trước khi
---     chạy), đuôi e-mail @plaza-demo.test.
+--   · 15 tài khoản demo theo vai trò: một mật khẩu chung cho người dùng thử và một mật khẩu RIÊNG
+--     cho demo.admin — đổi cả hai ở cuối file (trong SQL Editor) trước khi chạy; đuôi e-mail @plaza-demo.test.
 --   · Dữ liệu giả có tính chất như dữ liệu thật, dùng danh mục thật đã có sẵn
 --     (phòng ban, vị trí, danh mục, sản phẩm, đơn vị, xuất xứ, từ vựng giá):
 --     nhà cung cấp, ~1.200 tài sản, ngân sách 2025–2026, dự án, hoá đơn và
@@ -81,19 +81,23 @@ $$;
 -- Tạo tài khoản đăng nhập (auth.users + auth.identities) nếu chưa có, rồi gán vai trò.
 -- Nếu Supabase không cho tạo tài khoản bằng SQL, tạo tay ở Authentication → Users → Add user
 -- (đúng các e-mail trên, bỏ chọn "send invitation", tích "auto confirm") rồi chạy lại hàm này để gán vai trò.
-create or replace function am_demo_accounts(p_password text)
+-- p_password: mọi tài khoản người dùng thử; p_admin_password: riêng demo.admin (SYS_ADMIN). null = giữ mật khẩu đang có
+-- (tài khoản mới tạo mà không có mật khẩu riêng thì dùng p_password).
+drop function if exists am_demo_accounts(text);
+create or replace function am_demo_accounts(p_password text, p_admin_password text default null)
 returns text language plpgsql security definer set search_path = public, extensions as $$
-declare r record; v_id uuid; n_new int := 0; n_role int := 0; n_fail int := 0;
+declare r record; v_id uuid; v_pw text; n_new int := 0; n_role int := 0; n_fail int := 0;
 begin
   perform am_demo_guard();
   for r in select * from am_demo_people() loop
+    v_pw := case when r.role_code = 'SYS_ADMIN' then p_admin_password else p_password end;
     select id into v_id from auth.users where lower(email) = r.email;
     if v_id is null then
       begin
         v_id := gen_random_uuid();
         insert into auth.users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data,
                                 created_at, updated_at, confirmation_token, recovery_token, email_change_token_new, email_change)
-        values ('00000000-0000-0000-0000-000000000000', v_id, 'authenticated', 'authenticated', r.email, crypt(p_password, gen_salt('bf')), now(),
+        values ('00000000-0000-0000-0000-000000000000', v_id, 'authenticated', 'authenticated', r.email, crypt(coalesce(v_pw, p_password), gen_salt('bf')), now(),
                 '{"provider": "email", "providers": ["email"]}'::jsonb, jsonb_build_object('full_name', r.full_name), now(), now(), '', '', '', '');
         insert into auth.identities (id, user_id, provider_id, identity_data, provider, last_sign_in_at, created_at, updated_at)
         values (gen_random_uuid(), v_id, v_id::text, jsonb_build_object('sub', v_id::text, 'email', r.email, 'email_verified', true), 'email', now(), now(), now());
@@ -103,9 +107,10 @@ begin
         n_fail := n_fail + 1; v_id := null;
       end;
     else
-      -- Tài khoản đã có (chạy lại / đổi mật khẩu): đặt lại mật khẩu, xác nhận e-mail.
-      update auth.users set encrypted_password = crypt(p_password, gen_salt('bf')), email_confirmed_at = coalesce(email_confirmed_at, now()),
-                            updated_at = now()
+      -- Tài khoản đã có (chạy lại / đổi mật khẩu): đặt lại mật khẩu nếu có truyền (quản trị: chỉ khi có
+      -- p_admin_password, để đổi mật khẩu người dùng thử không đụng tới quản trị), xác nhận e-mail.
+      update auth.users set encrypted_password = case when v_pw is not null then crypt(v_pw, gen_salt('bf')) else encrypted_password end,
+                            email_confirmed_at = coalesce(email_confirmed_at, now()), updated_at = now()
       where id = v_id;
     end if;
     if v_id is not null then
@@ -758,7 +763,7 @@ begin
   return am_demo_seed(1200);
 end $$;
 
-revoke execute on function am_demo_on(), am_demo_guard(), am_demo_people(), am_demo_accounts(text), am_demo_uid(text), am_demo_nm(text), am_demo_wipe(),
+revoke execute on function am_demo_on(), am_demo_guard(), am_demo_people(), am_demo_accounts(text, text), am_demo_uid(text), am_demo_nm(text), am_demo_wipe(),
   am_demo_pick(text[]), am_demo_eng(), am_demo_seed(int), am_demo_reset() from public, anon;
 grant execute on function am_demo_on(), am_demo_reset() to authenticated;
 
@@ -767,6 +772,7 @@ grant execute on function am_demo_on(), am_demo_reset() to authenticated;
 -- 4. CHẠY — ĐỔI MẬT KHẨU DEMO TRƯỚC KHI CHẠY
 -- =====================================================================
 
-select am_demo_accounts('Demo@2026');
+-- Mật khẩu người dùng thử, rồi mật khẩu RIÊNG của demo.admin (null = giữ mật khẩu quản trị đang có).
+select am_demo_accounts('Demo@2026', 'Admin@2026');
 select am_demo_seed(1200) as "Dữ liệu thử đã tạo";
 select app_lock_anon();

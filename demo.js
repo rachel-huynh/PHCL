@@ -206,7 +206,9 @@ async function dmInvite(pw) {
       DM.people = await SB.select('app_user', 'select=email,full_name,active,app_user_role(role_code)&email=like.*%40plaza-demo.test&active=is.true&order=email');
     } catch { DM.people = []; }
   }
-  const lines = DM.people.map(p => `  • ${p.email} — ${p.full_name || ''}`
+  // The demo administrator has its own password and is not handed to testers.
+  const testers = DM.people.filter(p => !(p.app_user_role || []).some(r => r.role_code === 'SYS_ADMIN'));
+  const lines = testers.map(p => `  • ${p.email} — ${p.full_name || ''}`
     + ((p.app_user_role || []).length ? ` (${p.app_user_role.map(r => r.role_code).join(', ')})` : ''));
   const text = t('dm.invite.text', { link: dmCfgLink(CFG), accounts: lines.join('\n') || '  —', pw: pw || t('dm.invite.pwAsk') });
   dmCopy(text, t('dm.inviteCopied'));

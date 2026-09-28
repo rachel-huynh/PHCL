@@ -1950,6 +1950,12 @@
   .aoavatar img{max-width:220px;max-height:180px;border-radius:8px;border:2px solid var(--gold);object-fit:cover;display:block}
   .aophotocell{display:flex;flex-direction:column;align-items:center;gap:3px}
   .aophoto.isav{outline:2px solid var(--gold);outline-offset:1px}
+  /* Photo history in the asset panel: one dated row per photo, newest first (user 28/09/2026). */
+  .aophotos{flex-direction:column;flex-wrap:nowrap}
+  .aophlist{display:flex;flex-direction:column;gap:2px;width:100%}
+  .aophrow{display:grid;grid-template-columns:110px 1fr auto;align-items:center;gap:12px;padding:6px;border-radius:8px;border:1px solid transparent}
+  .aophrow.isav{border-color:var(--gold);background:var(--head)}
+  .aophinfo{display:flex;flex-direction:column;gap:2px;font-size:12.5px} .aophinfo b{color:var(--navy)}
   .kkstwrap{max-height:360px;margin-top:8px}
   table.kkst td{vertical-align:middle}
   .kkbar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;min-width:120px;margin-bottom:2px}
@@ -3139,14 +3145,14 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260928a"></script>
-<script src="flows.js?v=20260928a"></script>
-<script src="app.js?v=20260928a"></script>
-<script src="assetops.js?v=20260928a"></script>
-<script src="pricedb.js?v=20260928a"></script>
-<script src="meetings.js?v=20260928a"></script>
-<script src="contracts.js?v=20260928a"></script>
-<script src="demo.js?v=20260928a"></script>
-<script src="eng.js?v=20260928a"></script>
+<script src="i18n.js?v=20260928c"></script>
+<script src="flows.js?v=20260928c"></script>
+<script src="app.js?v=20260928c"></script>
+<script src="assetops.js?v=20260928c"></script>
+<script src="pricedb.js?v=20260928c"></script>
+<script src="meetings.js?v=20260928c"></script>
+<script src="contracts.js?v=20260928c"></script>
+<script src="demo.js?v=20260928c"></script>
+<script src="eng.js?v=20260928c"></script>
 </body>
 </html>
