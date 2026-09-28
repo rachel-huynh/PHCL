@@ -1996,6 +1996,8 @@
   main h3,.drawer h3{font-size:12px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;margin:14px 0 6px}
   main .card > h3:first-child,.drawer .dbody > h3:first-child{margin-top:0}
   .role{font-size:11px} .kt{font-size:10.5px}
+  /* Project forms done outside the app (38_project_offline_avatar.sql): the step boxes step back. */
+  .wfoffline{margin:4px 0 8px} .wfstrip.offline{opacity:.55}
   /* Building systems & shift checklists (eng.js). Tablet first: big touch targets on the checklist. */
   .enhead{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
   .enshifts button{display:flex;flex-direction:column;align-items:center;padding:7px 16px;gap:2px}
@@ -2714,6 +2716,26 @@
         </div>
         <div id="vdOut"></div>
       </div>
+      <!-- Asset avatars in bulk: photos named by barcode / asset code, or an Excel list (assetops.js, 38_project_offline_avatar.sql) -->
+      <div class="card" id="avbCard">
+        <h2 data-i18n="avb.h"></h2>
+        <p data-i18n-html="avb.p_html"></p>
+        <div class="row" style="align-items:flex-end;flex-wrap:wrap">
+          <div class="fld" style="max-width:320px"><label data-i18n="avb.files"></label>
+            <input type="file" id="avbFiles" accept="image/*,.heic" multiple></div>
+          <div class="fld"><label data-i18n="avb.dir"></label>
+            <div class="row" style="gap:6px;align-items:center">
+              <button class="btn" id="btnAvbDir" type="button" data-i18n="avb.dirPick"></button>
+              <span class="dim" id="avbDirName"></span></div>
+            <input type="file" id="avbDir" webkitdirectory multiple hidden></div>
+          <div class="fld" style="max-width:300px"><label data-i18n="avb.xls"></label>
+            <input type="file" id="avbXls" accept=".xlsx,.xls,.csv"></div>
+          <label class="chk" style="align-self:center"><input type="checkbox" id="avbOnlyEmpty" checked><span data-i18n="avb.only"></span></label>
+          <button class="btn" id="btnAvbRead" data-i18n="pm.imp.read"></button>
+          <button class="btn pri" id="btnAvbGo" disabled data-perm="assets:edit" data-i18n="avb.go"></button>
+        </div>
+        <div id="avbOut"></div>
+      </div>
       <div class="card" id="piPayCard">
         <h2 data-i18n="pay.imp.h"></h2>
         <p data-i18n-html="pay.lead_html"></p>
@@ -3117,14 +3139,14 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260927d"></script>
-<script src="flows.js?v=20260927d"></script>
-<script src="app.js?v=20260927d"></script>
-<script src="assetops.js?v=20260927d"></script>
-<script src="pricedb.js?v=20260927d"></script>
-<script src="meetings.js?v=20260927d"></script>
-<script src="contracts.js?v=20260927d"></script>
-<script src="demo.js?v=20260927d"></script>
-<script src="eng.js?v=20260927d"></script>
+<script src="i18n.js?v=20260928a"></script>
+<script src="flows.js?v=20260928a"></script>
+<script src="app.js?v=20260928a"></script>
+<script src="assetops.js?v=20260928a"></script>
+<script src="pricedb.js?v=20260928a"></script>
+<script src="meetings.js?v=20260928a"></script>
+<script src="contracts.js?v=20260928a"></script>
+<script src="demo.js?v=20260928a"></script>
+<script src="eng.js?v=20260928a"></script>
 </body>
 </html>

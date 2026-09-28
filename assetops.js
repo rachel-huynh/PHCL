@@ -1075,7 +1075,7 @@ async function aoAsset(id) {
     body.append(avHead, av, ph);
     phLoad([a.id]).then(async ps => {
       const cur = ps.find(p => p.id === a.avatar_photo_id);
-      if (cur && cur.source === 'storage') { try { const u = await phUrl(cur.storage_path); av.append(el('a', { href: u, target: '_blank', rel: 'noopener' }, el('img', { src: u, alt: t('reg.avatar') })), el('small', { className: 'dim', textContent: `⭐ ${t('reg.avatar')} · ${t('ph.k.' + cur.kind)} · ${fmtDate(String(cur.taken_at).slice(0, 10))}` })); } catch {} }
+      if (cur) { try { const u = cur.source === 'link' ? cur.url : await phUrl(cur.storage_path); av.append(el('a', { href: u, target: '_blank', rel: 'noopener' }, el('img', { src: u, alt: t('reg.avatar') })), el('small', { className: 'dim', textContent: `⭐ ${t('reg.avatar')} · ${t('ph.k.' + cur.kind)} · ${fmtDate(String(cur.taken_at).slice(0, 10))}` })); } catch {} }
       if (!ps.length) { ph.append(el('div', { className: 'dim', textContent: t('ao.a.noPhoto') })); return; }
       for (const p of ps.slice(0, 16)) {
         const box = el('a', { className: 'aophoto' + (p.id === a.avatar_photo_id ? ' isav' : ''), target: '_blank', rel: 'noopener', title: `${t('ph.k.' + p.kind)} · ${p.taken_name || ''} · ${fmtDateTime(p.taken_at)}` });
@@ -1134,3 +1134,145 @@ function aoShow(view) {
   else if (view === 'amrep') repLoad();
 }
 window.aoShow = aoShow;
+
+/* ============================================================ AVATARS IN BULK
+   (Import page, user 28/09/2026.) Two ways, one screen:
+     · pick the photos (or a whole folder): each file is matched by the BARCODE
+       (JVC.123456789, or just its 9 digits) or the ASSET CODE in its name —
+       "JVC.000123456.jpg", "000123456 (2).jpg", "KIT.C2112.KME.2020.00012.png";
+     · or an Excel list: a barcode / asset-code column and a photo column holding
+       a file name (matched against the photos picked) or an https link. A link
+       the browser can download is stored like any photo; one it cannot (no
+       CORS) is kept as a LINK avatar (38_project_offline_avatar.sql).
+   The newest bulk photo becomes the avatar; earlier photos stay in the asset's
+   history. "Only assets without an avatar" leaves existing ones alone. */
+const AVB = { rows: null, busy: false };
+const AVB_IMG = /\.(jpe?g|png|webp|gif|bmp|heic|heif)$/i;
+function avbKey(s) {
+  const u = String(s || '').toUpperCase();
+  let m = /\b([A-Z]{2,4}\.[A-Z0-9]{2,6}\.[A-Z0-9]{2,6}\.(?:19|20)\d{2}\.\d{5})\b/.exec(u);
+  if (m) return { code: m[1] };
+  m = /JVC[.\-_ ]?(\d{9})(?!\d)/.exec(u) || /(?:^|\D)(\d{9})(?!\d)/.exec(u);
+  return m ? { bar: 'JVC.' + m[1] } : null;
+}
+const avbBase = n => String(n || '').split(/[\\/]/).pop().toLowerCase();
+const avbStem = n => avbBase(n).replace(/\.[a-z0-9]{2,5}$/, '');
+// Google Drive "file/d/ID/view" links do not show as an image; the thumbnail address does.
+const avbUrl = u => { const m = /drive\.google\.com\/(?:file\/d\/|open\?id=)([\w-]+)/.exec(u); return m ? `https://drive.google.com/thumbnail?id=${m[1]}&sz=w1600` : u; };
+
+async function avbRead() {
+  const out = $('#avbOut');
+  AVB.rows = null; $('#btnAvbGo').disabled = true;
+  const files = [...($('#avbFiles').files || []), ...($('#avbDir').files || [])].filter(f => AVB_IMG.test(f.name) || /^image\//.test(f.type));
+  const xls = $('#avbXls').files[0];
+  if (!files.length && !xls) return msg(out, 'err', t('avb.pick'));
+  msg(out, 'info', t('table.loading'));
+  try {
+    const byName = new Map();
+    for (const f of files) { byName.set(avbBase(f.name), f); if (!byName.has(avbStem(f.name))) byName.set(avbStem(f.name), f); }
+    const ent = [];
+    if (xls) {
+      const wb = XLSX.read(await xls.arrayBuffer());
+      const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: false });
+      const isKey = x => /^(mavach|barcode|mataisan|assetcode)/.test(x);
+      const h = aoa.findIndex(r => r.some(c => isKey(hnorm(c))));
+      if (h < 0) throw new Error(t('avb.noCols'));
+      const head = aoa[h].map(hnorm);
+      const cBar = head.findIndex(x => /^(mavach|barcode)/.test(x)), cCode = head.findIndex(x => /^(mataisan|assetcode)/.test(x));
+      const cImg = head.findIndex(x => !isKey(x) && /anh|hinh|image|photo|picture|link|url|file|duongdan/.test(x));
+      if (cImg < 0) throw new Error(t('avb.noImgCol'));
+      for (const r of aoa.slice(h + 1)) {
+        const raw = String(r[cImg] || '').trim();
+        const code = cCode >= 0 ? String(r[cCode] || '').trim().toUpperCase() : '';
+        const key = (cBar >= 0 && avbKey(r[cBar])) || (code ? { code } : null);
+        if (!key && !raw) continue;
+        const e = { label: raw || '—', key };
+        if (/^https?:\/\//i.test(raw)) e.url = avbUrl(raw);
+        else if (raw) { e.file = byName.get(avbBase(raw)) || byName.get(avbStem(raw)); if (!e.file) e.st = 'noFile'; }
+        else e.st = 'noFile';
+        if (!key) e.st = 'noKey';
+        ent.push(e);
+      }
+    } else {
+      for (const f of files) { const key = avbKey(f.name); ent.push({ label: f.webkitRelativePath || f.name, key, file: f, st: key ? null : 'noKey' }); }
+    }
+    // The assets, by barcode and by code.
+    const bars = [...new Set(ent.map(e => e.key && e.key.bar).filter(Boolean))], codes = [...new Set(ent.map(e => e.key && e.key.code).filter(Boolean))];
+    const found = [];
+    const cols = 'select=id,asset_code,barcode,name_vi,dept_code,avatar_photo_id';
+    const q = list => list.map(b => `"${b}"`).join(',');
+    for (let k = 0; k < bars.length; k += 100) found.push(...await SB.select('am_asset', `${cols}&barcode=in.(${q(bars.slice(k, k + 100))})`));
+    for (let k = 0; k < codes.length; k += 100) found.push(...await SB.select('am_asset', `${cols}&asset_code=in.(${q(codes.slice(k, k + 100))})`));
+    const only = $('#avbOnlyEmpty').checked, used = new Set();
+    for (const e of ent) {
+      if (e.st) continue;
+      e.asset = found.find(a => (e.key.bar && a.barcode === e.key.bar) || (e.key.code && a.asset_code === e.key.code));
+      if (!e.asset) e.st = 'notFound';
+      else if (used.has(e.asset.id)) e.st = 'dup';
+      else if (only && e.asset.avatar_photo_id) e.st = 'has';
+      else { e.st = 'ok'; used.add(e.asset.id); }
+    }
+    AVB.rows = ent;
+    avbRender();
+    $('#btnAvbGo').disabled = !ent.some(e => e.st === 'ok') || !can('assets', 'edit');
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
+function avbRender(progress) {
+  const out = $('#avbOut'), ent = AVB.rows || [];
+  const n = s => ent.filter(e => e.st === s).length;
+  out.innerHTML = '';
+  out.append(el('div', { className: 'msg ' + (progress ? 'info' : n('err') ? 'warn' : n('ok') ? 'info' : n('done') + n('linked') ? 'ok' : 'warn'),
+    textContent: (progress ? progress + ' · ' : '') + t('avb.sum', { ok: n('ok'), has: n('has'), nf: n('notFound'), nk: n('noKey'), nfile: n('noFile'), dup: n('dup'),
+      done: n('done') + n('linked'), err: n('err') }) }));
+  const tb = el('table', { className: 'adtbl' });
+  tb.append(el('tr', {}, ['avb.c.src', 'avb.c.key', 'avb.c.asset', 'avb.c.name', 'avb.c.st'].map(k => el('th', { textContent: t(k) }))));
+  const order = ['err', 'ok', 'done', 'linked', 'has', 'dup', 'notFound', 'noFile', 'noKey'];
+  const cls = { ok: 'pending', done: 'done', linked: 'done', err: 'returned', notFound: 'open', noFile: 'open', noKey: 'open' };
+  for (const e of ent.slice().sort((a, b) => order.indexOf(a.st) - order.indexOf(b.st)).slice(0, 400)) {
+    tb.append(el('tr', {}, [el('td', { className: 'dim', textContent: e.label }), el('td', {}, el('code', { textContent: e.key ? e.key.bar || e.key.code : '' })),
+      el('td', {}, e.asset ? el('code', { textContent: e.asset.asset_code }) : ''), el('td', { textContent: e.asset ? e.asset.name_vi || '' : '' }),
+      el('td', {}, el('span', { className: 'aost ' + (cls[e.st] || ''), textContent: t('avb.st.' + e.st) + (e.err ? ' — ' + e.err : ''), title: e.err || '' }))]));
+  }
+  out.append(el('div', { className: 'wrap', style: 'margin-top:8px;max-height:420px;overflow:auto' }, tb));
+  if (ent.length > 400) out.append(el('div', { className: 'dim', textContent: t('avb.more', { n: ent.length - 400 }) }));
+}
+
+async function avbOne(e) {
+  if (e.file) { await phUpload(e.asset, 'avatar', e.file); return 'done'; }
+  if (!/^https:\/\//i.test(e.url)) throw new Error(t('ph.badLink'));
+  try {   // a link the browser may download: stored like a photo taken in the app (thumbnail included)
+    const r = await fetch(e.url, { mode: 'cors' });
+    const b = r.ok ? await r.blob() : null;
+    if (b && /^image\//.test(b.type)) { await phUpload(e.asset, 'avatar', new File([b], 'avatar.jpg', { type: b.type })); return 'done'; }
+  } catch {}
+  await SB.insert('am_asset_photo', [{ asset_id: e.asset.id, kind: 'avatar', source: 'link', url: e.url, taken_name: (ME && (ME.full_name || ME.email)) || null }]);
+  return 'linked';
+}
+
+async function avbGo() {
+  if (AVB.busy || !AVB.rows) return;
+  const todo = AVB.rows.filter(e => e.st === 'ok');
+  if (!todo.length || !confirm(t('avb.confirm', { n: todo.length }))) return;
+  AVB.busy = true; $('#btnAvbGo').disabled = true; $('#btnAvbRead').disabled = true;
+  let k = 0, fin = 0;
+  const work = async () => {
+    while (k < todo.length) {
+      const e = todo[k++];
+      try { e.st = await avbOne(e); } catch (er) { e.st = 'err'; e.err = er.message; }
+      fin++;
+      if (fin % 5 === 0 || fin === todo.length) avbRender(t('avb.progress', { n: fin, of: todo.length }));
+    }
+  };
+  await Promise.all([work(), work(), work()]);   // three at a time: quick, without choking the hotel Wi-Fi
+  AVB.busy = false; $('#btnAvbRead').disabled = false;
+  avbRender();
+}
+(function avbWire() {
+  const r = document.getElementById('btnAvbRead'), g = document.getElementById('btnAvbGo'), d = document.getElementById('btnAvbDir');
+  if (r) r.onclick = avbRead;
+  if (g) g.onclick = avbGo;
+  const dir = document.getElementById('avbDir');
+  if (d && dir) d.onclick = () => dir.click();
+  if (dir) dir.onchange = () => { const s = document.getElementById('avbDirName'); if (s) s.textContent = dir.files.length ? t('avb.dirN', { n: dir.files.length }) : ''; };
+})();

@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260927d';
+const APP_VERSION = '20260928a';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -3486,8 +3486,9 @@ async function regAvatars() {
   try {
     const ps = await SB.select('am_asset_photo', `select=id,storage_path,thumb_path,source,url&id=in.(${ids.join(',')})`);
     for (const p of ps) {
-      if (p.source !== 'storage') continue;
-      let u; try { u = await phUrl(p.thumb_path || p.storage_path); } catch { continue; }
+      let u;
+      if (p.source === 'link') u = p.url;   // avatar kept as a link (bulk import, 38_project_offline_avatar.sql)
+      else { try { u = await phUrl(p.thumb_path || p.storage_path); } catch { continue; } }
       for (const i of imgs.filter(x => x.dataset.photo === String(p.id))) i.src = u;
     }
   } catch {}
@@ -7129,12 +7130,16 @@ function ppPaid(p) {
    next package to draw up. Empty until 19_pm_workflow.sql exists. */
 function ppStage(p) {
   if (!PM.prj.docs) return null;
+  // Old project whose forms were done outside the app (38_project_offline_avatar.sql).
+  if (p.wf_offline) return { type: '', state: 'done', band: 'ok', offline: true, no: p.wf_offline_note || '' };
   const docs = (PM.prj.docs.get(p.code) || []).filter(d => !['cancelled', 'rejected'].includes(d.status));
   const pkgs = (PM.prj.pkgs.get(p.code) || []).filter(k => k.status !== 'cancelled');
   const types = k => docs.filter(d => d.pkg_id === k.id).map(d => d.doc_type).sort((a, b) => wfSeq(a) - wfSeq(b)).join(' + ') || wfLead(k.grp);
   const nos = k => docs.filter(d => d.pkg_id === k.id).map(d => d.doc_no).join(' + ');
   const k = pkgs.slice().sort((a, b) => wfSeq(wfLead(b.grp)) - wfSeq(wfLead(a.grp)) || b.id - a.id)[0];
-  if (!k) return { type: 'PR', state: 'none', band: 'op' };
+  // Nothing drawn up yet: only a project IN PROGRESS shows "PR · not created yet" (user 28/09/2026) —
+  // on a pending, completed or cancelled project that line is noise.
+  if (!k) return p.status === 'in_progress' ? { type: 'PR', state: 'none', band: 'op' } : null;
   if (k.status === 'in_review') {
     const s = k.step || {}, owners = wfPkgTypes(k.grp).filter(ty => wfSide(ty) === 'owner').join('/');
     return { type: types(k), state: 'review', who: s.role_code ? wfRoleName(s.role_code) : '', no: nos(k), band: wfBand(s.role_code),
@@ -7152,7 +7157,8 @@ function ppStage(p) {
 const ppStageVerb = s => s.state !== 'review' ? t('pm.stage.' + s.state)
   : t(['check', 'checkPrep', 'redo'].includes(s.kind) ? 'pm.stage.' + s.kind : 'pm.stage.review', { who: s.who || '?', pair: s.pair || '' });
 const ppStageType = s => s.type;
-const ppStageText = s => !s ? '' : s.state === 'done' ? t('pm.stage.done') : `${ppStageType(s)} · ${ppStageVerb(s)}`;
+const ppStageDone = s => t(s.offline ? 'pm.stage.offline' : 'pm.stage.done');
+const ppStageText = s => !s ? '' : s.state === 'done' ? ppStageDone(s) : `${ppStageType(s)} · ${ppStageVerb(s)}`;
 
 /* Filter text per column, like the Đối chiếu hoá đơn grid: words match
    anywhere; on figures ">100000000", "<0", "1..5" or "=0" compare the value. */
@@ -7183,7 +7189,7 @@ function ppCols() {
     ...(PM.prj.docs ? [{ k: 'stage', lbl: 'pm.col.stage', val: p => ppStageText(ppStage(p)), txt: p => ppStageText(ppStage(p)),
       td: p => { const s = ppStage(p); return el('td', { className: 'nw' }, s ? el('span', { className: 'stg band-' + s.band, title: s.no || '' }, [
         ...(s.state === 'done' ? [] : [el('b', { textContent: ppStageType(s) })]),
-        document.createTextNode(s.state === 'done' ? t('pm.stage.done') : ' ' + ppStageVerb(s))]) : ''); } }] : []),
+        document.createTextNode(s.state === 'done' ? ppStageDone(s) : ' ' + ppStageVerb(s))]) : ''); } }] : []),
     { k: 'code', lbl: 'pm.col.code', val: p => p.code, txt: p => p.code, td: p => {
       const flags = ppFlags(p), td = el('td', { className: 'nw' }, el('code', { textContent: p.code }));
       if (flags.length) td.append(el('span', { className: 'flag', textContent: '⚠', title: flags.join('\n') }));
@@ -7260,11 +7266,73 @@ function ppRender() {
   // Tools ride in the message line's slot, above the grid.
   const tools = [];
   if (can('project', 'create')) tools.push(['pm.prj.new', () => ppNew()]);
+  // Old projects whose forms were done on paper: mark the filtered ones at once (38_project_offline_avatar.sql).
+  if (can('project', 'edit') && PM.prj.docs) tools.push(['pm.off.bulk', () => ppOfflineAsk(ppRows(cols).filter(p => !p.virtual && !p.wf_offline))]);
   tools.push(['reg.xlsx', ppExport]);
   let tb = $('#ppTools');
   if (!tb) { tb = el('div', { id: 'ppTools', className: 'row', style: 'margin:10px 0 0;justify-content:flex-end' }); $('#ppMsg').before(tb); }
   tb.innerHTML = '';
   for (const [k, fn] of tools) { const b = el('button', { className: 'btn' + (k === 'pm.prj.new' ? ' pri' : ''), textContent: t(k) }); b.onclick = fn; tb.append(b); }
+}
+
+/* "Forms completed outside the app" for old projects (user 28/09/2026). One project from its
+   panel, or the filtered list from the toolbar: tick the ones to mark, a note (where the paper
+   file is), and optionally set the project status to Completed at the same time. */
+async function ppOffline(codes, on, out, note, complete) {
+  try {
+    const n = await SB.rpc('pm_project_wf_offline', { p_codes: codes, p_on: on, p_note: note || null, p_complete: !!complete });
+    const open = codes.length === 1 && !$('#ppDrawer').hidden ? codes[0] : null;
+    await ppLoad();
+    msg('#ppMsg', 'ok', t(on ? 'pm.off.done' : 'pm.off.undone', { n: fmtInt(n || 0) }));
+    const p = open && PM.prj.rows.find(x => x.code === open);
+    if (p) ppDetail(p);
+  } catch (e) { msg(out || '#ppMsg', 'err', /pm_project_wf_offline|wf_offline|PGRST202/.test(e.message) ? t('pm.off.notInstalled') : e.message); }
+}
+
+function ppOfflineAsk(list) {
+  if (!list.length) return msg('#ppMsg', 'info', t('pm.off.none'));
+  const old = $('#ppOffModal');
+  if (old) old.remove();
+  const hasForms = p => (PM.prj.docs.get(p.code) || []).some(d => !['cancelled', 'rejected'].includes(d.status));
+  const ticks = list.map(p => {
+    const cb = el('input', { type: 'checkbox', checked: list.length === 1 || (p.status === 'completed' && !hasForms(p)) });
+    cb.dataset.code = p.code;
+    return { p, cb };
+  });
+  const all = el('input', { type: 'checkbox' });
+  const sync = () => { all.checked = ticks.every(x => x.cb.checked); go.textContent = t('pm.off.go', { n: ticks.filter(x => x.cb.checked).length }); };
+  all.onchange = () => { ticks.forEach(x => { x.cb.checked = all.checked; }); sync(); };
+  const tb = el('table', { className: 'adtbl' });
+  tb.append(el('tr', {}, [el('th', { className: 'tick' }, all), el('th', { textContent: t('pm.col.code') }), el('th', { textContent: t('pm.col.name') }),
+    el('th', { textContent: t('pm.col.status') }), el('th', { textContent: t('pm.off.forms') })]));
+  for (const { p, cb } of ticks) {
+    cb.onchange = sync;
+    tb.append(el('tr', {}, [el('td', { className: 'tick' }, cb), el('td', {}, el('code', { textContent: p.code })), el('td', { textContent: p.name || '' }),
+      el('td', {}, pmStatusChip(p.status)), el('td', { className: 'dim', textContent: hasForms(p) ? t('pm.off.hasForms') : '—' })]));
+  }
+  const note = el('input', { placeholder: t('pm.off.notePh'), style: 'width:100%' });
+  const comp = el('input', { type: 'checkbox', checked: true });
+  const out = el('div');
+  const close = () => modal.remove();
+  const go = el('button', { type: 'button', className: 'btn pri' });
+  go.onclick = async () => {
+    const codes = ticks.filter(x => x.cb.checked).map(x => x.p.code);
+    if (!codes.length) return msg(out, 'err', t('pm.off.pick'));
+    go.disabled = true;
+    out.innerHTML = '';   // an error from a previous try must not keep the box open
+    await ppOffline(codes, true, out, note.value, comp.checked);
+    if (!out.textContent) close(); else go.disabled = false;
+  };
+  const modal = el('div', { className: 'login sigmodal', id: 'ppOffModal' }, el('div', { className: 'sigbox', style: 'width:min(820px,calc(100vw - 32px))' }, [
+    el('h2', { textContent: t('pm.off.h') }), el('p', { className: 'siglead', textContent: t('pm.off.lead') }),
+    el('div', { className: 'wrap', style: 'max-height:46vh;overflow:auto' }, tb),
+    el('div', { className: 'fld', style: 'margin-top:10px' }, [el('label', { textContent: t('pm.off.note') }), note]),
+    el('label', { className: 'chk', style: 'margin-top:8px' }, [comp, el('span', { textContent: t('pm.off.complete') })]), out,
+    el('div', { className: 'row', style: 'justify-content:flex-end;margin-top:10px' }, [
+      el('button', { type: 'button', className: 'btn', textContent: t('auth.cancel'), onclick: close }), go])]));
+  modal.onclick = e => { if (e.target === modal) close(); };
+  document.body.append(modal);
+  sync();
 }
 
 // Rows only, so typing in a column filter keeps the cursor where it is.
@@ -8566,7 +8634,20 @@ async function wfProjectPanel(p, host) {
   card.append(el('div', { className: 'row', style: 'align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px' }, [
     el('h2', { textContent: t('wf.docs') }),
     docs.some(d => !['cancelled', 'rejected'].includes(d.status)) ? el('div', { className: 'row', style: 'gap:6px' }, wfCapButtons(p.code, capOut)) : '']), capOut);
-  const strip = el('div', { className: 'wfstrip' });
+  // Forms done outside the app (old projects, 38_project_offline_avatar.sql): say so, offer to undo.
+  const offOut = el('div');
+  if (p.wf_offline) {
+    const box = el('div', { className: 'msg ok wfoffline' }, [el('b', { textContent: t('pm.off.is') }),
+      document.createTextNode(' ' + t('pm.off.by', { who: p.wf_offline_by || '?', at: fmtDate(String(p.wf_offline_at || '').slice(0, 10)) })
+                              + (p.wf_offline_note ? ' — ' + p.wf_offline_note : ''))]);
+    if (can('project', 'edit')) box.append(document.createTextNode(' '), el('button', { type: 'button', className: 'btn tiny', textContent: t('pm.off.undo'),
+      onclick: () => ppOffline([p.code], false, offOut) }));
+    card.append(box, offOut);
+  } else if (can('project', 'edit')) {
+    card.append(el('div', { className: 'row', style: 'margin:4px 0 8px' }, el('button', { type: 'button', className: 'btn tiny', textContent: t('pm.off.mark'),
+      title: t('pm.off.markHint'), onclick: () => ppOfflineAsk([p]) })), offOut);
+  }
+  const strip = el('div', { className: 'wfstrip' + (p.wf_offline ? ' offline' : '') });
   // Where the documentation is at: its box(es) outlined (user 25/09/2026).
   const stage = PM.prj.docs ? ppStage(p) : null;
   const here = stage && stage.state !== 'done' ? String(stage.type).split(' + ') : [];
@@ -8582,7 +8663,7 @@ async function wfProjectPanel(p, host) {
       a.onclick = ev => { ev.preventDefault(); wfOpen(d.id); };
       box.append(a);
     }
-    const st = wfCreateState(p, type, docs, pkgs);
+    const st = p.wf_offline ? { ok: false } : wfCreateState(p, type, docs, pkgs);   // done outside the app: nothing to draw up
     if (st.ok) {
       const b = el('button', { className: 'btn tiny pri', textContent: t('wf.create') });
       b.onclick = async () => {
