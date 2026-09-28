@@ -7,7 +7,7 @@
 -- khác, hoặc có tài sản không mang nhãn [DEMO]).
 --
 -- Tạo:
---   · 15 tài khoản demo theo vai trò: một mật khẩu chung cho người dùng thử và một mật khẩu RIÊNG
+--   · 17 tài khoản demo theo vai trò: một mật khẩu chung cho người dùng thử và một mật khẩu RIÊNG
 --     cho demo.admin — đổi cả hai ở cuối file (trong SQL Editor) trước khi chạy; đuôi e-mail @plaza-demo.test.
 --   · Dữ liệu giả có tính chất như dữ liệu thật, dùng danh mục thật đã có sẵn
 --     (phòng ban, vị trí, danh mục, sản phẩm, đơn vị, xuất xứ, từ vựng giá):
@@ -75,6 +75,8 @@ language sql immutable as $$
          ('demo.chiefacc@plaza-demo.test', 'Đặng Thị Ngân (Kế toán trưởng)',  'CHIEF_ACC',  'PHCL'),
          ('demo.jvcgm@plaza-demo.test',   'Mai Văn Phúc (JVC GM)',            'JVC_GM',     'PHCL'),
          ('demo.legal@plaza-demo.test',   'Trịnh Bảo Quyên (Pháp chế)',       'LEGAL',      'PHCL'),
+         ('demo.hotelam@plaza-demo.test', 'Vũ Hoài Nam (Hotel Asset Manager)', 'HOTEL_AM',  'SOF'),
+         ('demo.accountant@plaza-demo.test', 'Lâm Thị Oanh (Kế toán)',        'ACCOUNTANT', 'PHCL'),
          ('demo.admin@plaza-demo.test',   'Quản trị Demo',                    'SYS_ADMIN',  'PHCL')
 $$;
 
@@ -89,7 +91,8 @@ returns text language plpgsql security definer set search_path = public, extensi
 declare r record; v_id uuid; v_pw text; n_new int := 0; n_role int := 0; n_fail int := 0;
 begin
   perform am_demo_guard();
-  for r in select * from am_demo_people() loop
+  -- Vai trò chưa có (vd ACCOUNTANT trước khi chạy 42) thì bỏ qua tài khoản đó.
+  for r in select * from am_demo_people() x where exists (select 1 from app_role where code = x.role_code) loop
     v_pw := case when r.role_code = 'SYS_ADMIN' then p_admin_password else p_password end;
     select id into v_id from auth.users where lower(email) = r.email;
     if v_id is null then
@@ -149,6 +152,7 @@ begin
   -- Dữ liệu nghiệp vụ. Danh mục (am_org, am_location, am_category…, am_product, am_unit, am_origin,
   -- pr_term, pr_unit), tài khoản, quyền, chuỗi duyệt, cài đặt và GÓP Ý (app_feedback) giữ nguyên.
   foreach t in array array[
+    'pm_payreq', 'am_recv', 'pm_po_send', 'pm_tender_qa', 'pm_tender_survey',
     'am_chk_val', 'am_chk_run', 'am_cond', 'am_chk_point', 'am_chk', 'am_sys_item', 'am_sys',
     'pm_notice', 'pm_mt_action', 'pm_mt_entry', 'pm_mt_meeting', 'pm_mt_topic',
     'pm_contract_file', 'pm_contract', 'pr_line', 'pr_source', 'pr_import', 'pr_alias',

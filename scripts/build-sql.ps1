@@ -15,7 +15,7 @@ $order = @('01_schema.sql', '02_seed_settings.sql',
            '10_legacy_assets.sql', '11_suggest.sql', '13_suggest_terms.sql',
            '14_undo_intake.sql', '15_bulk_edit.sql', '16_reset_counters.sql',
            '17_auth.sql', '18_pm_budget.sql', '19_pm_workflow.sql',
-           '20_pm_notify.sql', '21_pm_payment.sql', '22_admin_tools.sql', '23_pm_pkg_merge.sql', '24_ui_feedback.sql', '25_pm_tender.sql', '26_alr_project.sql', '27_liquidation.sql', '28_liquidation_batch.sql', '29_liquidation_bid.sql', '30_acc_reconcile.sql', '31_asset_ops.sql', '32_price_db.sql', '33_meetings.sql', '34_contracts.sql', '35_vendor_photo_count.sql', '36_demo_mode.sql', '37_eng_checklist.sql', '38_project_offline_avatar.sql', '39_count_photo_avatar.sql')
+           '20_pm_notify.sql', '21_pm_payment.sql', '22_admin_tools.sql', '23_pm_pkg_merge.sql', '24_ui_feedback.sql', '25_pm_tender.sql', '26_alr_project.sql', '27_liquidation.sql', '28_liquidation_batch.sql', '29_liquidation_bid.sql', '30_acc_reconcile.sql', '31_asset_ops.sql', '32_price_db.sql', '33_meetings.sql', '34_contracts.sql', '35_vendor_photo_count.sql', '36_demo_mode.sql', '37_eng_checklist.sql', '38_project_offline_avatar.sql', '39_count_photo_avatar.sql', '40_asset_dashboard.sql', '41_tendering.sql', '42_payment_request.sql')
 
 # Nâng cấp một database ĐANG CHẠY lên đăng nhập bắt buộc. Chỉ gồm các file
 # không có seed — ALL_IN_ONE thì có, và chạy lại seed trên dữ liệu thật sẽ ghi

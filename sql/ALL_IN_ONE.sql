@@ -15241,3 +15241,1852 @@ select 'Tài sản có ảnh đại diện là ảnh kiểm kê cũ hơn ảnh k
 from   am_asset a join am_asset_photo cur on cur.id = a.avatar_photo_id and cur.kind = 'count'
 where  exists (select 1 from am_asset_photo p where p.asset_id = a.id and p.kind = 'count' and p.source = 'storage' and p.taken_at > cur.taken_at);
 
+
+-- ####################################################################
+-- ##  40_asset_dashboard.sql
+-- ####################################################################
+
+-- =====================================================================
+-- 40_asset_dashboard.sql — BẢNG ĐIỀU KHIỂN TÀI SẢN (28/09/2026)
+--
+-- Chạy SAU 39_count_photo_avatar.sql. Chạy lại nhiều lần vô hại. Không tạo bảng.
+--
+-- Menu Tổng quan → Bảng điều khiển → Tài sản (user 28/09/2026). Một hàm tổng hợp
+-- sẵn ở server (sổ có ~16.000 tài sản — không kéo từng dòng về trình duyệt):
+--   · sổ tài sản còn trên sổ: số tài sản, số lượng, giá trị (đơn giá × SL), theo
+--     tình trạng, bộ phận, nhóm tài sản, tuổi; tài sản đã mất / thanh lý / huỷ
+--   · chất lượng dữ liệu: có ảnh đại diện, đã in tem, cần rà soát, thiếu vị trí /
+--     tình trạng; mới thêm 30 ngày
+--   · vận hành: sự cố đang mở, 12 tháng qua theo tháng (mở / đóng / chi phí), tài
+--     sản sửa nhiều nhất; điều chuyển đang chờ; kiểm kê đang mở + tiến độ; chờ
+--     thanh lý; sắp hết bảo hành (90 ngày)
+--   · hệ thống kỹ thuật (37): phân bố điểm hiện trạng mới nhất
+-- Lọc: p_depts (null = mọi bộ phận trong phạm vi), p_kind ('unique' / 'low' / null).
+-- Phạm vi người dùng như sổ tài sản: chỉ bộ phận nằm trong phạm vi của người gọi.
+-- =====================================================================
+
+create or replace function am_dashboard(p_depts text[] default null, p_kind text default null)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  v_out jsonb; v_root boolean; v_scope text[]; v_y int := extract(year from current_date)::int; v_cond jsonb := null;
+begin
+  perform app_require('assets', 'view');
+  v_root := app_scope_root();
+  v_scope := array(select app_scope_orgs());
+  with a as (
+    select x.id, x.asset_code, x.name_vi, x.name_en, x.asset_kind, x.dept_code, x.group_code, x.location_code, x.status_code,
+           coalesce(x.qty, 1) as qty, coalesce(x.unit_price, 0) * coalesce(x.qty, 1) as val,
+           x.avatar_photo_id, x.label_printed, x.no_label, x.needs_review, x.created_at, x.warranty_until,
+           nullif(coalesce(extract(year from x.in_use_date)::int, extract(year from x.purchase_date)::int,
+                           case when x.purchase_year >= 1950 then x.purchase_year end), 0) as yr
+    from   am_asset x
+    where  (v_root or x.dept_code = any (v_scope))
+      and  (p_depts is null or x.dept_code = any (p_depts))
+      and  (p_kind is null or x.asset_kind = p_kind)),
+  live as (select * from a where am_alive(status_code)),
+  inc as (
+    select i.* from am_incident i join a on a.id = i.asset_id where i.status <> 'cancelled'),
+  months as (select generate_series(date_trunc('month', current_date) - interval '11 months', date_trunc('month', current_date), interval '1 month')::date as m)
+  select jsonb_build_object(
+    'as_of', now(),
+    'n', (select count(*) from live),
+    'units', (select coalesce(sum(qty), 0) from live),
+    'value', (select coalesce(sum(val), 0) from live),
+    'unique_n', (select count(*) from live where asset_kind = 'unique'),
+    'low_n', (select count(*) from live where asset_kind = 'low'),
+    'gone_n', (select count(*) from a where not am_alive(status_code)),
+    'gone_value', (select coalesce(sum(val), 0) from a where not am_alive(status_code)),
+    'new30', (select count(*) from live where created_at >= now() - interval '30 days'),
+    'photo_n', (select count(*) from live where avatar_photo_id is not null),
+    'label_n', (select count(*) from live where label_printed),
+    'label_due', (select count(*) from live where not coalesce(label_printed, false) and not coalesce(no_label, false)),
+    'review_n', (select count(*) from live where jsonb_typeof(needs_review) = 'array' and jsonb_array_length(needs_review) > 0),
+    'noloc_n', (select count(*) from live where location_code is null or location_code = ''),
+    'nostatus_n', (select count(*) from live where status_code is null or status_code = ''),
+    'by_status', coalesce((select jsonb_agg(jsonb_build_object('code', s, 'n', n, 'v', v) order by n desc)
+                           from (select coalesce(status_code, '') s, count(*) n, sum(val) v from a group by 1) q), '[]'),
+    'by_dept', coalesce((select jsonb_agg(jsonb_build_object('dept', d, 'n', n, 'units', u, 'v', v, 'photo', ph, 'label', lb) order by n desc)
+                         from (select dept_code d, count(*) n, sum(qty) u, sum(val) v, count(avatar_photo_id) ph,
+                                      count(*) filter (where label_printed) lb
+                               from live group by 1) q), '[]'),
+    'by_group', coalesce((select jsonb_agg(jsonb_build_object('code', g, 'name_vi', gv, 'name_en', ge, 'n', n, 'v', v) order by v desc)
+                          from (select l.group_code g, cg.name_vi gv, cg.name_en ge, count(*) n, sum(l.val) v
+                                from live l left join am_category_group cg on cg.code = l.group_code group by 1, 2, 3) q), '[]'),
+    'age', coalesce((select jsonb_object_agg(b, jsonb_build_object('n', n, 'v', v))
+                     from (select case when yr is null then 'unk' when v_y - yr <= 5 then 'a' when v_y - yr <= 10 then 'b'
+                                       when v_y - yr <= 20 then 'c' else 'd' end b, count(*) n, sum(val) v
+                           from live group by 1) q), '{}'),
+    'liq_wait', (select count(*) from live where status_code in ('8', '24')),
+    'repair_now', (select count(*) from live where status_code in ('3', '5', '6', '25')),
+    'warranty90', (select count(*) from live where warranty_until between current_date and current_date + 90),
+    'warranty_list', coalesce((select jsonb_agg(w order by w ->> 'until') from (
+                        select jsonb_build_object('id', id, 'code', asset_code, 'name', coalesce(name_vi, name_en), 'dept', dept_code, 'until', warranty_until) w
+                        from live where warranty_until between current_date and current_date + 90 order by warranty_until limit 12) q), '[]'),
+    'inc_open', (select count(*) from inc where status = 'open'),
+    'inc_prog', (select count(*) from inc where status = 'in_progress'),
+    'inc_cost12', (select coalesce(sum(cost), 0) from inc where status = 'closed' and closed_at >= now() - interval '12 months'),
+    'inc_months', (select jsonb_agg(jsonb_build_object('m', to_char(m, 'YYYY-MM'),
+                            'opened', (select count(*) from inc where date_trunc('month', reported_at) = m),
+                            'closed', (select count(*) from inc where status = 'closed' and date_trunc('month', closed_at) = m),
+                            'cost', (select coalesce(sum(cost), 0) from inc where status = 'closed' and date_trunc('month', closed_at) = m)) order by m)
+                   from months),
+    'inc_top', coalesce((select jsonb_agg(r order by (r ->> 'n')::int desc, (r ->> 'cost')::numeric desc) from (
+                  select jsonb_build_object('id', a.id, 'code', a.asset_code, 'name', coalesce(a.name_vi, a.name_en), 'dept', a.dept_code,
+                                            'n', count(*), 'cost', coalesce(sum(i.cost), 0)) r
+                  from inc i join a on a.id = i.asset_id
+                  where i.kind in ('repair', 'breakage') and i.reported_at >= current_date - 365
+                  group by a.id, a.asset_code, a.name_vi, a.name_en, a.dept_code
+                  order by count(*) desc, coalesce(sum(i.cost), 0) desc limit 10) q), '[]'),
+    'tf_pending', (select count(*) from am_transfer t where t.status = 'pending'
+                     and (v_root or t.from_dept = any (v_scope) or t.to_dept = any (v_scope))
+                     and (p_depts is null or t.from_dept = any (p_depts) or t.to_dept = any (p_depts))),
+    'counts_open', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'code', c.code, 'title', c.title, 'date', c.count_date,
+                                'total', (select count(*) from am_count_line l where l.count_id = c.id and not l.extra),
+                                'done', (select count(*) from am_count_line l where l.count_id = c.id and not l.extra and l.found is not null),
+                                'photos', (select count(*) from am_count_line l where l.count_id = c.id and l.photo_id is not null)) order by c.count_date desc)
+                             from am_count c where c.status = 'open'
+                               and (v_root or c.depts && v_scope) and (p_depts is null or c.depts && p_depts)), '[]'),
+    'count_last', (select max(coalesce(c.closed_at, c.count_date::timestamptz)) from am_count c where c.status = 'closed'
+                     and (v_root or c.depts && v_scope) and (p_depts is null or c.depts && p_depts))
+  ) into v_out
+  from (select 1) one;
+
+  -- Hệ thống kỹ thuật (37_eng_checklist.sql): điểm hiện trạng mới nhất của từng hạng mục.
+  if to_regclass('public.am_cond') is not null and app_can('eng', 'view') then
+    execute $q$
+      select jsonb_build_object('items', (select count(*) from am_sys_item where active),
+             'assessed', count(*), 'low', count(*) filter (where score <= 2),
+             'dist', jsonb_build_object('1', count(*) filter (where score = 1), '2', count(*) filter (where score = 2), '3', count(*) filter (where score = 3),
+                                        '4', count(*) filter (where score = 4), '5', count(*) filter (where score = 5)),
+             'plan5', coalesce(sum(est_cost) filter (where action in ('repair', 'overhaul', 'replace')
+                                                     and (target_year is null or target_year <= extract(year from current_date)::int + 5)), 0))
+      from (select distinct on (c.item_id) c.* from am_cond c join am_sys_item i on i.id = c.item_id and i.active
+            order by c.item_id, c.assessed_on desc, c.id desc) z $q$ into v_cond;
+  end if;
+  return v_out || jsonb_build_object('cond', v_cond);
+end $$;
+
+revoke execute on function am_dashboard(text[], text) from public, anon;
+grant execute on function am_dashboard(text[], text) to authenticated;
+
+select app_lock_anon();
+
+select 'Hàm bảng điều khiển tài sản' as "Mục", count(*)::text as "Thực tế", '1' as "Mong đợi", case when count(*) = 1 then '✔' else '✘ HỎNG' end as "Đạt"
+from   pg_proc where proname = 'am_dashboard';
+
+
+-- ####################################################################
+-- ##  41_tendering.sql
+-- ####################################################################
+
+-- =====================================================================
+-- 41_tendering.sql — GỌI BÁO GIÁ (TENDERING), GỬI PO, NHẬN TEM TRÊN MÁY TÍNH BẢNG (28/09/2026)
+--
+-- Chạy SAU 40_asset_dashboard.sql (cần 25_pm_tender, 26_alr_project, 27_liquidation,
+-- 35_vendor_photo_count). Chạy lại nhiều lần vô hại. KHÔNG chạy ALL_IN_ONE trên CSDL thật.
+--
+-- Quy trình mới (quyết định của người dùng 28/09/2026):
+--
+--   1. GỌI BÁO GIÁ nằm dưới Dự án (màn Tendering), không còn nằm trong QC:
+--      bộ PR (+RR +PA) duyệt xong → Thu mua được báo "gọi báo giá" → Thu mua mở
+--      đợt gọi báo giá TỪ DỰ ÁN (hạng mục lấy từ PR), đính kèm hồ sơ mời thầu cho
+--      nhà thầu tải về, mời nhà thầu → theo dõi số báo giá đã nộp; tới hạn mà chưa
+--      đủ 3 báo giá thì GIA HẠN → ba người đồng ý mở (như 25) → "Đưa vào QC": QC
+--      được lập (hoặc mở lại) với toàn bộ nội dung nhà thầu đã nhập.
+--   2. Cổng nhà thầu thêm: đơn vị tính + số lượng chào (cả dòng chi phí khác),
+--      lịch thanh toán theo đợt (% + thời điểm: đặt cọc / giao hàng / nghiệm thu…),
+--      in thư báo giá để ký đóng dấu rồi tải lên, hướng dẫn nộp hợp lệ và hướng
+--      dẫn nhập liệu, YÊU CẦU KHẢO SÁT HIỆN TRƯỜNG (ngày giờ đề xuất, người đến +
+--      CCCD + SĐT, email liên hệ) và HỎI ĐÁP LÀM RÕ (trả lời hiện trên cổng; email
+--      soạn sẵn bằng mailto — app chưa có máy gửi thư).
+--   3. PO duyệt xong → Thu mua GỬI PO cho nhà cung cấp (PO hiện trên cổng của nhà
+--      thầu, nhà thầu xác nhận đã nhận) → dự án "chờ hợp đồng (CT)". Đồng thời AM
+--      Coordinator được báo "sinh mã tài sản" → lập ALR (AM Coordinator → AM
+--      Executive → Kế toán trưởng). ALR duyệt xong → báo Thu mua và Hotel Asset
+--      Manager. Hotel AM dán tem, quét mã, chụp ảnh, nhập SỐ LƯỢNG THỰC NHẬN trên
+--      điện thoại / máy tính bảng và chọn đưa vào AH đợt này hay để đợt sau → AH
+--      nháp được cập nhật → Hotel AM kiểm tra trên web rồi gửi duyệt.
+--   (Hợp đồng và đề nghị thanh toán: 42_payment_request.sql.)
+--
+-- Thay pm_notify_trg của 27_liquidation.sql (thêm báo sau PO / sau ALR): chạy lại 27
+-- về sau thì phải chạy lại file này.
+--
+-- Chỉ đụng vào bảng / hàm có tên của app này (am_*, app_*, pm_*, vp_*); chính sách
+-- Storage chỉ áp cho bucket "pm-tender". Cuối file gọi app_lock_anon().
+-- =====================================================================
+
+
+-- =====================================================================
+-- 1. CÀI ĐẶT, CỘT MỚI
+-- =====================================================================
+
+insert into am_setting (key, value, note) values
+  ('td_min_bids', '3'::jsonb,
+   'Gọi báo giá: số báo giá tối thiểu trước khi mở (chưa đủ thì Thu mua được nhắc gia hạn)'),
+  ('td_hotel_info', '{"company": "PLAZA HOTEL COMPANY LIMITED", "address": "17 Lê Duẩn, Phường Sài Gòn, TP.HCM", "dept": "Phòng Thu mua / Purchasing Department", "email": "", "phone": ""}'::jsonb,
+   'Gọi báo giá: thông tin bên mời thầu in trên cổng nhà thầu và thư báo giá (nơi nộp bản gốc có đóng dấu)')
+on conflict (key) do nothing;
+
+alter table pm_tender add column if not exists pr_doc_id bigint references pm_doc(id) on delete set null;
+alter table pm_tender add column if not exists doc_key   uuid not null default gen_random_uuid();
+alter table pm_tender add column if not exists files     jsonb not null default '[]';   -- hồ sơ mời thầu cho nhà thầu tải: [{path, name, size}]
+alter table pm_tender add column if not exists address   text;                          -- nơi nộp bản gốc thư báo giá
+alter table pm_tender add column if not exists min_bids  int not null default 3;
+comment on column pm_tender.doc_key is
+  'Thư mục ngẫu nhiên của hồ sơ mời thầu trong bucket pm-tender (doc/<doc_key>/…): nhà thầu được mời tải về qua cổng.';
+
+-- Thông báo: kind mới + tham chiếu chung (đợt gọi báo giá, đề nghị thanh toán…).
+alter table pm_notice add column if not exists ref_id bigint;
+alter table pm_notice drop constraint if exists pm_notice_kind_check;
+alter table pm_notice add constraint pm_notice_kind_check
+  check (kind in ('todo', 'approved', 'returned', 'rejected', 'cancelled', 'next', 'tender', 'info', 'pay'));
+
+
+-- =====================================================================
+-- 2. BẢNG MỚI (RLS bật; hỏi đáp / khảo sát / gửi PO chỉ đọc ghi qua hàm)
+-- =====================================================================
+
+-- Hỏi đáp làm rõ hồ sơ mời thầu. invitee_id null = thông báo của khách sạn gửi mọi nhà thầu.
+create table if not exists pm_tender_qa (
+  id            bigserial primary key,
+  tender_id     bigint not null references pm_tender(id) on delete cascade,
+  invitee_id    bigint references pm_tender_invitee(id) on delete cascade,
+  question      text,
+  asked_at      timestamptz not null default now(),
+  answer        text,
+  shared        boolean not null default false,      -- câu trả lời gửi mọi nhà thầu được mời (không nêu tên người hỏi)
+  answered_by   uuid,
+  answered_name text,
+  answered_at   timestamptz
+);
+create index if not exists pm_tender_qa_idx on pm_tender_qa (tender_id);
+
+-- Yêu cầu khảo sát hiện trường của nhà thầu.
+create table if not exists pm_tender_survey (
+  id            bigserial primary key,
+  tender_id     bigint not null references pm_tender(id) on delete cascade,
+  invitee_id    bigint not null references pm_tender_invitee(id) on delete cascade,
+  proposed      jsonb not null default '[]',          -- 1–3 thời điểm đề xuất (ISO)
+  people        jsonb not null default '[]',          -- [{name, id_no, phone}] — CCCD để khách sạn đăng ký ra vào
+  contact_name  text,
+  contact_phone text,
+  contact_email text,
+  note          text,
+  status        text not null default 'requested' check (status in ('requested', 'scheduled', 'done', 'cancelled')),
+  scheduled_at  timestamptz,
+  reply         text,
+  handled_by    uuid,
+  handled_name  text,
+  handled_at    timestamptz,
+  created_at    timestamptz not null default now()
+);
+create index if not exists pm_tender_survey_idx on pm_tender_survey (tender_id);
+
+-- PO đã gửi cho nhà cung cấp (hiện trên cổng của nhà thầu nếu gắn với link mời).
+create table if not exists pm_po_send (
+  id          bigserial primary key,
+  doc_id      bigint not null references pm_doc(id) on delete cascade,
+  project_code text,
+  invitee_id  bigint references pm_tender_invitee(id) on delete set null,
+  vendor_name text,
+  email       text,
+  note        text,
+  sent_by     uuid,
+  sent_name   text,
+  sent_at     timestamptz not null default now(),
+  ack_at      timestamptz
+);
+create index if not exists pm_po_send_doc_idx on pm_po_send (doc_id);
+
+alter table pm_tender_qa     enable row level security;
+alter table pm_tender_survey enable row level security;
+alter table pm_po_send       enable row level security;
+revoke all on pm_tender_qa, pm_tender_survey, pm_po_send from authenticated, anon;
+
+-- Nhận hàng theo ALR trên máy tính bảng: mỗi lần nhận một dòng (tài sản CCDC theo lô
+-- có thể nhận nhiều đợt). pick: 'now' = đưa vào AH đợt này, 'next' = để đợt sau.
+-- ah_doc_id: AH đã lấy dòng này (AH bị huỷ / từ chối thì dòng lại được lấy lần sau).
+create table if not exists am_recv (
+  id          bigserial primary key,
+  asset_id    bigint not null references am_asset(id) on delete cascade,
+  al_doc_id   bigint references pm_doc(id) on delete set null,
+  project_code text,
+  qty         numeric(14, 3) not null check (qty > 0),
+  pick        text not null default 'now' check (pick in ('now', 'next')),
+  note        text,
+  ah_doc_id   bigint references pm_doc(id) on delete set null,
+  scanned_at  timestamptz,
+  by_user     uuid default auth.uid(),
+  by_name     text,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists am_recv_asset_idx on am_recv (asset_id);
+create index if not exists am_recv_project_idx on am_recv (project_code);
+comment on table am_recv is
+  'Số lượng thực nhận theo ALR (Hotel Asset Manager, trên máy tính bảng) và AH đã lấy dòng đó. Ghi qua am_recv_set / am_recv_link.';
+
+alter table am_recv enable row level security;
+revoke all on am_recv from anon;
+revoke insert, update, delete on am_recv from authenticated;
+grant select on am_recv to authenticated;
+drop policy if exists am_recv_read on am_recv;
+create policy am_recv_read on am_recv for select to authenticated
+  using ((select app_can('assets', 'view')) or (select app_can('project', 'view')));
+
+do $$ begin
+  if exists (select 1 from pg_proc where proname = 'app_audit_row') then
+    execute 'drop trigger if exists app_audit on am_recv';
+    execute 'create trigger app_audit after insert or update or delete on am_recv for each row execute function app_audit_row()';
+  end if;
+end $$;
+
+
+-- =====================================================================
+-- 3. HÀM NỘI BỘ
+-- =====================================================================
+
+-- Thông báo cho người quản lý đợt gọi báo giá: người mở đợt + người lập QC của bộ phận.
+create or replace function pm_tender_notify(p_tender bigint, p_text text)
+returns void language plpgsql security definer set search_path = public as $$
+declare t pm_tender; p pm_project;
+begin
+  select * into t from pm_tender where id = p_tender;
+  select * into p from pm_project where code = t.project_code;
+  insert into pm_notice (user_id, kind, doc_no, doc_type, project_code, comment, ref_id)
+  select distinct u.id, 'tender', coalesce(t.title, p.name, t.project_code), 'TD', t.project_code, left(p_text, 300), t.id
+  from   app_user u
+  where  u.active and (u.id = t.created_by
+          or exists (select 1 from pm_chain c where c.entity = pm_entity(p.dept_code) and c.doc_type = 'QC' and c.step = 0
+                                                and app_user_role_covers(u.id, c.role_code, p.dept_code)));
+end $$;
+
+create or replace function pm_tender_actor()
+returns text language sql stable security definer set search_path = public as $$
+  select coalesce(pm_user_name(auth.uid()), app_claims() ->> 'email', 'sql:' || session_user)
+$$;
+
+-- Người trả lời câu hỏi làm rõ: Thu mua (quản lý đợt) hoặc BỘ PHẬN đề xuất — người lập PR của bộ phận
+-- (nhân viên bộ phận) hoặc Trưởng bộ phận. AM team, Hotel AM… không trả lời thay.
+create or replace function pm_tender_can_answer(p_project text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select pm_tender_can_manage(p_project)
+      or coalesce((select pm_can_prepare('PR', p.dept_code) or app_user_role_covers(auth.uid(), 'DEPT_HEAD', p.dept_code)
+                   from pm_project p where p.code = p_project), false)
+$$;
+
+-- Storage: hồ sơ mời thầu (doc/<doc_key>/…). Ghi: người quản lý đợt; đọc: người xem dự án.
+create or replace function pm_tender_doc_ok(p_name text, p_write boolean)
+returns boolean language sql stable security definer set search_path = public as $$
+  select split_part(coalesce(p_name, ''), '/', 1) = 'doc' and exists (
+    select 1 from pm_tender t
+    where t.doc_key::text = split_part(p_name, '/', 2)
+      and case when p_write then pm_tender_can_manage(t.project_code) else app_can('project', 'view') end)
+$$;
+
+-- Storage (khách): tải hồ sơ mời thầu của một đợt chưa huỷ. Thư mục là mã ngẫu nhiên chỉ
+-- lấy được qua vp_session (đúng link mời), như thư mục tải lên của hồ sơ nhà thầu.
+create or replace function vp_doc_ok(p_name text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select split_part(coalesce(p_name, ''), '/', 1) = 'doc' and exists (
+    select 1 from pm_tender t
+    where t.doc_key::text = split_part(p_name, '/', 2) and t.status <> 'cancelled'
+      and exists (select 1 from pm_tender_invite i join pm_tender_invitee v on v.id = i.invitee_id
+                  where i.tender_id = t.id and not v.revoked and v.expires_at >= now()))
+$$;
+
+
+-- =====================================================================
+-- 4. MỞ ĐỢT TỪ DỰ ÁN, SỬA, HỒ SƠ MỜI THẦU, GẮN QC
+-- =====================================================================
+
+-- p = {title, scope, terms, deadline, items: [{item, qty, unit, spec}], crit: [{label, grp}], address, min_bids}
+create or replace function pm_tender_create_prj(p_project text, p jsonb)
+returns bigint language plpgsql security definer set search_path = public as $$
+declare pr pm_doc; n bigint; v_dl timestamptz := nullif(p ->> 'deadline', '')::timestamptz; v_items jsonb;
+begin
+  if not pm_tender_can_manage(p_project) then raise exception 'Bạn không có quyền gọi báo giá cho dự án này.' using errcode = '42501'; end if;
+  select * into pr from pm_doc where project_code = p_project and doc_type = 'PR' and status = 'approved' order by id desc limit 1;
+  if pr.id is null and not (app_trusted() or app_can('project', 'admin')) then
+    raise exception 'Bộ PR của dự án % chưa được duyệt xong — chưa gọi báo giá được.', p_project;
+  end if;
+  if v_dl is null or v_dl <= now() then raise exception 'Hạn nộp phải ở tương lai.'; end if;
+  select coalesce(jsonb_agg(jsonb_strip_nulls(jsonb_build_object('item', trim(i ->> 'item'), 'qty', nullif(i ->> 'qty', '')::numeric,
+                                               'unit', nullif(trim(i ->> 'unit'), ''), 'spec', nullif(trim(i ->> 'spec'), '')))), '[]')
+    into v_items from jsonb_array_elements(coalesce(p -> 'items', '[]')) i where coalesce(trim(i ->> 'item'), '') <> '';
+  if jsonb_array_length(v_items) = 0 then raise exception 'Chưa có hạng mục nào để chào giá.'; end if;
+  insert into pm_tender (project_code, pr_doc_id, title, scope, terms, items, crit, deadline, address, min_bids, created_by)
+  values (p_project, pr.id, nullif(trim(p ->> 'title'), ''), p ->> 'scope', p ->> 'terms', v_items,
+          coalesce(p -> 'crit', '[]'), v_dl, nullif(trim(p ->> 'address'), ''),
+          greatest(1, coalesce(nullif(p ->> 'min_bids', '')::int, (select value::text::int from am_setting where key = 'td_min_bids'), 3)), auth.uid())
+  returning id into n;
+  -- QC đã có (lập trước khi có màn Tendering): gắn luôn.
+  update pm_tender set qc_doc_id = (select id from pm_doc where project_code = p_project and doc_type = 'QC' and status not in ('cancelled', 'rejected') order by id desc limit 1)
+   where id = n;
+  perform pm_tender_log(n, pm_tender_actor(), 'create', to_char(v_dl, 'YYYY-MM-DD HH24:MI'));
+  return n;
+end $$;
+
+-- Sửa đợt. Hạng mục / tiêu chí chỉ đổi được khi chưa nhà thầu nào nộp ở vòng hiện tại.
+create or replace function pm_tender_set(p_id bigint, p jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+declare t pm_tender;
+begin
+  select * into t from pm_tender where id = p_id for update;
+  if t.id is null then raise exception 'Không có đợt gọi báo giá %.', p_id; end if;
+  if not pm_tender_can_manage(t.project_code) then raise exception 'Bạn không có quyền sửa đợt này.' using errcode = '42501'; end if;
+  if t.status = 'cancelled' then raise exception 'Đợt đã huỷ.'; end if;
+  if (p ? 'items' or p ? 'crit') and exists (select 1 from pm_tender_bid b where b.tender_id = t.id and b.round = t.round and b.status = 'submitted') then
+    raise exception 'Đã có nhà thầu nộp báo giá — không đổi hạng mục / tiêu chí được nữa. Muốn đổi: mở vòng mới.';
+  end if;
+  update pm_tender set
+    title    = case when p ? 'title' then nullif(trim(p ->> 'title'), '') else title end,
+    scope    = case when p ? 'scope' then p ->> 'scope' else scope end,
+    terms    = case when p ? 'terms' then p ->> 'terms' else terms end,
+    address  = case when p ? 'address' then nullif(trim(p ->> 'address'), '') else address end,
+    min_bids = case when p ? 'min_bids' then greatest(1, coalesce(nullif(p ->> 'min_bids', '')::int, min_bids)) else min_bids end,
+    items    = case when p ? 'items' then coalesce((select jsonb_agg(jsonb_strip_nulls(jsonb_build_object('item', trim(i ->> 'item'),
+                         'qty', nullif(i ->> 'qty', '')::numeric, 'unit', nullif(trim(i ->> 'unit'), ''), 'spec', nullif(trim(i ->> 'spec'), ''))))
+                         from jsonb_array_elements(p -> 'items') i where coalesce(trim(i ->> 'item'), '') <> ''), items) else items end,
+    crit     = case when p ? 'crit' then coalesce(p -> 'crit', crit) else crit end,
+    updated_at = now()
+  where id = p_id;
+  perform pm_tender_log(p_id, pm_tender_actor(), 'edit', null);
+end $$;
+
+create or replace function pm_tender_file_add(p_id bigint, p_path text, p_name text, p_size bigint)
+returns void language plpgsql security definer set search_path = public as $$
+declare t pm_tender;
+begin
+  select * into t from pm_tender where id = p_id for update;
+  if t.id is null then raise exception 'Không có đợt gọi báo giá %.', p_id; end if;
+  if not pm_tender_can_manage(t.project_code) then raise exception 'Bạn không có quyền với đợt này.' using errcode = '42501'; end if;
+  if p_path is null or p_path not like 'doc/' || t.doc_key::text || '/%' or length(p_path) > 300 then raise exception 'Đường dẫn tệp không hợp lệ.'; end if;
+  if jsonb_array_length(t.files) >= 20 then raise exception 'Tối đa 20 tệp.'; end if;
+  update pm_tender set files = files || jsonb_build_array(jsonb_build_object('path', p_path, 'name', left(coalesce(p_name, ''), 200), 'size', p_size, 'at', now())),
+                       updated_at = now()
+   where id = p_id;
+  perform pm_tender_log(p_id, pm_tender_actor(), 'file', left(coalesce(p_name, ''), 200));
+end $$;
+
+create or replace function pm_tender_file_del(p_id bigint, p_path text)
+returns void language plpgsql security definer set search_path = public as $$
+declare t pm_tender;
+begin
+  select * into t from pm_tender where id = p_id for update;
+  if t.id is null or not pm_tender_can_manage(t.project_code) then raise exception 'Bạn không có quyền với đợt này.' using errcode = '42501'; end if;
+  update pm_tender set files = coalesce((select jsonb_agg(f) from jsonb_array_elements(files) f where f ->> 'path' <> p_path), '[]'), updated_at = now()
+   where id = p_id;
+end $$;
+
+-- QC lập từ màn Tendering ("Đưa vào QC"): gắn đợt với QC.
+create or replace function pm_tender_link_qc(p_tender bigint, p_qc bigint)
+returns void language plpgsql security definer set search_path = public as $$
+declare t pm_tender;
+begin
+  select * into t from pm_tender where id = p_tender for update;
+  if t.id is null or not pm_tender_can_manage(t.project_code) then raise exception 'Bạn không có quyền với đợt này.' using errcode = '42501'; end if;
+  if not exists (select 1 from pm_doc where id = p_qc and doc_type = 'QC' and project_code = t.project_code) then
+    raise exception 'QC % không thuộc dự án %.', p_qc, t.project_code;
+  end if;
+  update pm_tender set qc_doc_id = p_qc, updated_at = now() where id = p_tender;
+end $$;
+
+
+-- =====================================================================
+-- 5. HỎI ĐÁP, KHẢO SÁT HIỆN TRƯỜNG (phía khách sạn)
+-- =====================================================================
+
+-- Trả lời một câu hỏi; p_shared = gửi câu trả lời cho mọi nhà thầu (không nêu tên người hỏi).
+-- Trả về người nhận để app soạn email (mailto).
+create or replace function pm_tender_answer(p_qa bigint, p_answer text, p_shared boolean)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare q pm_tender_qa; t pm_tender;
+begin
+  select * into q from pm_tender_qa where id = p_qa for update;
+  if q.id is null then raise exception 'Không có câu hỏi %.', p_qa; end if;
+  select * into t from pm_tender where id = q.tender_id;
+  if not pm_tender_can_answer(t.project_code) then raise exception 'Bạn không có quyền trả lời.' using errcode = '42501'; end if;
+  if coalesce(trim(p_answer), '') = '' then raise exception 'Nhập câu trả lời.'; end if;
+  update pm_tender_qa set answer = trim(p_answer), shared = coalesce(p_shared, false), answered_by = auth.uid(),
+                          answered_name = pm_tender_actor(), answered_at = now()
+   where id = q.id;
+  perform pm_tender_log(t.id, pm_tender_actor(), 'answer', case when p_shared then 'shared' end);
+  return jsonb_build_object('to', (select jsonb_agg(distinct v.email) from pm_tender_invitee v
+                                    join pm_tender_invite i on i.invitee_id = v.id and i.tender_id = t.id
+                                   where v.email is not null and (p_shared or v.id = q.invitee_id) and not v.revoked),
+                            'question', q.question, 'answer', trim(p_answer), 'title', coalesce(t.title, t.project_code));
+end $$;
+
+-- Thông báo làm rõ / bổ sung hồ sơ của khách sạn gửi mọi nhà thầu được mời.
+create or replace function pm_tender_announce(p_tender bigint, p_text text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare t pm_tender;
+begin
+  select * into t from pm_tender where id = p_tender;
+  if t.id is null or not pm_tender_can_answer(t.project_code) then raise exception 'Bạn không có quyền với đợt này.' using errcode = '42501'; end if;
+  if coalesce(trim(p_text), '') = '' then raise exception 'Nhập nội dung thông báo.'; end if;
+  insert into pm_tender_qa (tender_id, invitee_id, question, answer, shared, answered_by, answered_name, answered_at)
+  values (t.id, null, null, trim(p_text), true, auth.uid(), pm_tender_actor(), now());
+  perform pm_tender_log(t.id, pm_tender_actor(), 'announce', left(trim(p_text), 120));
+  return jsonb_build_object('to', (select jsonb_agg(distinct v.email) from pm_tender_invitee v
+                                    join pm_tender_invite i on i.invitee_id = v.id and i.tender_id = t.id
+                                   where v.email is not null and not v.revoked),
+                            'answer', trim(p_text), 'title', coalesce(t.title, t.project_code));
+end $$;
+
+-- Xếp lịch / trả lời yêu cầu khảo sát. Trả về email người liên hệ để soạn thư.
+create or replace function pm_tender_survey_set(p_id bigint, p_status text, p_at timestamptz, p_reply text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare s pm_tender_survey; t pm_tender;
+begin
+  select * into s from pm_tender_survey where id = p_id for update;
+  if s.id is null then raise exception 'Không có yêu cầu khảo sát %.', p_id; end if;
+  select * into t from pm_tender where id = s.tender_id;
+  if not pm_tender_can_answer(t.project_code) then raise exception 'Bạn không có quyền với yêu cầu này.' using errcode = '42501'; end if;
+  if p_status not in ('requested', 'scheduled', 'done', 'cancelled') then raise exception 'Trạng thái không hợp lệ.'; end if;
+  if p_status = 'scheduled' and p_at is null then raise exception 'Chọn ngày giờ khảo sát.'; end if;
+  update pm_tender_survey set status = p_status, scheduled_at = coalesce(p_at, scheduled_at), reply = nullif(trim(p_reply), ''),
+                              handled_by = auth.uid(), handled_name = pm_tender_actor(), handled_at = now()
+   where id = s.id;
+  perform pm_tender_log(t.id, pm_tender_actor(), 'survey', p_status || coalesce(' ' || to_char(p_at, 'YYYY-MM-DD HH24:MI'), ''));
+  return jsonb_build_object('to', coalesce(s.contact_email, (select email from pm_tender_invitee where id = s.invitee_id)),
+                            'vendor', (select vendor_name from pm_tender_invitee where id = s.invitee_id),
+                            'title', coalesce(t.title, t.project_code));
+end $$;
+
+
+-- =====================================================================
+-- 6. DANH SÁCH CHO MÀN TENDERING
+-- =====================================================================
+
+-- Mọi đợt của một dự án (thay 25): thêm hồ sơ mời thầu, hỏi đáp, khảo sát, PO đã gửi.
+-- Nội dung hồ sơ nhà thầu chưa mở vẫn KHÔNG có ở đây.
+create or replace function pm_tender_list(p_project text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare r jsonb; v_mng boolean := pm_tender_can_manage(p_project);
+begin
+  if not (app_trusted() or app_can('project', 'view')) then raise exception 'Bạn không có quyền xem dự án.' using errcode = '42501'; end if;
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', t.id, 'qc_doc_id', t.qc_doc_id, 'pr_doc_id', t.pr_doc_id, 'title', t.title, 'scope', t.scope, 'terms', t.terms,
+    'items', t.items, 'crit', t.crit, 'deadline', t.deadline, 'status', t.status, 'round', t.round, 'open_seq', t.open_seq,
+    'created_at', t.created_at, 'doc_key', t.doc_key, 'files', t.files, 'address', t.address, 'min_bids', t.min_bids,
+    'can_manage', v_mng, 'can_answer', pm_tender_can_answer(t.project_code),
+    'open_roles', to_jsonb(pm_tender_open_roles(t.project_code)),
+    'consents', (select coalesce(jsonb_agg(jsonb_build_object('role', c.role_code, 'user', c.user_name, 'at', c.at)), '[]')
+                 from pm_tender_consent c where c.tender_id = t.id and c.seq = t.open_seq),
+    'invitees', (select coalesce(jsonb_agg(jsonb_build_object(
+                   'id', v.id, 'vendor_code', v.vendor_code, 'name', v.vendor_name, 'email', v.email, 'expires_at', v.expires_at,
+                   'revoked', v.revoked, 'last_seen_at', v.last_seen_at,
+                   'bids', (select coalesce(jsonb_agg(jsonb_build_object('id', b.id, 'round', b.round, 'version', b.version, 'status', b.status,
+                              'submitted_at', b.submitted_at, 'opened_at', b.opened_at, 'note', case when b.opened_at is not null then b.note end,
+                              'data', case when b.opened_at is not null then b.data end,
+                              'files', case when b.opened_at is not null then b.files end) order by b.round, b.version), '[]')
+                            from pm_tender_bid b where b.tender_id = t.id and b.invitee_id = v.id)) order by v.id), '[]')
+                 from pm_tender_invite i join pm_tender_invitee v on v.id = i.invitee_id where i.tender_id = t.id),
+    'qa', (select coalesce(jsonb_agg(jsonb_build_object('id', q.id, 'vendor', v.vendor_name, 'email', v.email, 'question', q.question,
+                   'asked_at', q.asked_at, 'answer', q.answer, 'shared', q.shared, 'answered_name', q.answered_name, 'answered_at', q.answered_at)
+                   order by q.asked_at), '[]')
+           from pm_tender_qa q left join pm_tender_invitee v on v.id = q.invitee_id where q.tender_id = t.id),
+    -- CCCD / SĐT người đến khảo sát: chỉ người quản lý đợt / người trả lời thấy.
+    'surveys', case when pm_tender_can_answer(t.project_code) then (select coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'vendor', v.vendor_name,
+                   'proposed', s.proposed, 'people', s.people, 'contact_name', s.contact_name, 'contact_phone', s.contact_phone,
+                   'contact_email', coalesce(s.contact_email, v.email), 'note', s.note, 'status', s.status, 'scheduled_at', s.scheduled_at,
+                   'reply', s.reply, 'handled_name', s.handled_name, 'created_at', s.created_at) order by s.created_at), '[]')
+                 from pm_tender_survey s join pm_tender_invitee v on v.id = s.invitee_id where s.tender_id = t.id) else '[]'::jsonb end,
+    'events', (select coalesce(jsonb_agg(jsonb_build_object('at', e.at, 'actor', e.actor, 'action', e.action, 'detail', e.detail) order by e.at), '[]')
+               from pm_tender_event e where e.tender_id = t.id)
+  ) order by t.id), '[]') into r
+  from pm_tender t where t.project_code = p_project;
+  return r;
+end $$;
+
+-- Màn Tendering: các dự án đã duyệt bộ PR mà QC chưa duyệt xong (cần gọi báo giá / đang gọi),
+-- và các dự án có đợt gọi báo giá mà QC mới duyệt trong 90 ngày (đã xong). Theo phạm vi người xem.
+create or replace function pm_tender_board()
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare r jsonb; v_min int := coalesce((select value::text::int from am_setting where key = 'td_min_bids'), 3);
+begin
+  if not (app_trusted() or app_can('project', 'view')) then raise exception 'Bạn không có quyền xem dự án.' using errcode = '42501'; end if;
+  with pr as (
+    select distinct on (d.project_code) d.project_code, d.id, d.doc_no, d.decided_at
+    from pm_doc d where d.doc_type = 'PR' and d.status = 'approved' order by d.project_code, d.id desc),
+  qc as (
+    select distinct on (d.project_code) d.project_code, d.id, d.doc_no, d.status, d.decided_at
+    from pm_doc d where d.doc_type = 'QC' and d.status not in ('cancelled', 'rejected') order by d.project_code, d.id desc),
+  pp as (
+    select p.*, pr.id pr_id, pr.doc_no pr_no, pr.decided_at pr_at, qc.id qc_id, qc.doc_no qc_no, qc.status qc_status, qc.decided_at qc_at
+    from pm_project p join pr on pr.project_code = p.code left join qc on qc.project_code = p.code
+    where not coalesce(p.wf_offline, false) and p.status not in ('cancelled')
+      and (app_trusted() or app_scope_root() or p.dept_code in (select app_scope_orgs()))
+      and (coalesce(qc.status, '') <> 'approved'
+           or (qc.decided_at >= now() - interval '90 days' and exists (select 1 from pm_tender t where t.project_code = p.code))))
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'code', pp.code, 'name', pp.name, 'dept_code', pp.dept_code, 'year', pp.year, 'estimated_value', pp.estimated_value,
+    'pr', jsonb_build_object('id', pp.pr_id, 'doc_no', pp.pr_no, 'at', pp.pr_at),
+    'qc', case when pp.qc_id is not null then jsonb_build_object('id', pp.qc_id, 'doc_no', pp.qc_no, 'status', pp.qc_status) end,
+    'can_manage', pm_tender_can_manage(pp.code),
+    'tenders', (select coalesce(jsonb_agg(jsonb_build_object(
+        'id', t.id, 'title', t.title, 'deadline', t.deadline, 'status', t.status, 'round', t.round, 'min_bids', t.min_bids,
+        'invited', (select count(*) from pm_tender_invite i join pm_tender_invitee v on v.id = i.invitee_id where i.tender_id = t.id and not v.revoked),
+        'started', (select count(distinct b.invitee_id) from pm_tender_bid b where b.tender_id = t.id and b.round = t.round),
+        'submitted', (select count(distinct b.invitee_id) from pm_tender_bid b where b.tender_id = t.id and b.round = t.round and b.status = 'submitted'),
+        'sealed', (select count(*) from pm_tender_bid b where b.tender_id = t.id and b.submitted_at is not null and b.opened_at is null and b.status <> 'draft'),
+        'opened', (select count(distinct b.invitee_id) from pm_tender_bid b where b.tender_id = t.id and b.opened_at is not null),
+        'consents', (select count(*) from pm_tender_consent c where c.tender_id = t.id and c.seq = t.open_seq),
+        'roles', coalesce(array_length(pm_tender_open_roles(t.project_code), 1), 3),
+        'q_open', (select count(*) from pm_tender_qa q where q.tender_id = t.id and q.answer is null),
+        's_open', (select count(*) from pm_tender_survey s where s.tender_id = t.id and s.status = 'requested'),
+        'files', jsonb_array_length(t.files)) order by t.id), '[]')
+      from pm_tender t where t.project_code = pp.code and t.status <> 'cancelled')
+  ) order by pp.pr_at desc nulls last), '[]') into r
+  from pp;
+  return jsonb_build_object('min_bids', v_min, 'rows', r);
+end $$;
+
+
+-- =====================================================================
+-- 7. CỔNG NHÀ THẦU (anon, qua link) — thay vp_session / vp_submit của 25, thêm hỏi đáp,
+--    khảo sát, xác nhận PO
+-- =====================================================================
+
+create or replace function vp_session(p_token text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v pm_tender_invitee; r jsonb;
+begin
+  v := vp_invitee(p_token);
+  select jsonb_build_object(
+    'vendor', v.vendor_name, 'email', v.email, 'expires_at', v.expires_at,
+    'hotel', coalesce((select value from am_setting where key = 'td_hotel_info'), '{}'::jsonb),
+    'units', (select coalesce(jsonb_agg(jsonb_build_object('code', u.code, 'vi', u.name_vi, 'en', u.name_en) order by u.sort_order, u.code), '[]') from am_unit u),
+    'tenders', coalesce(jsonb_agg(jsonb_build_object(
+      'id', t.id, 'title', t.title, 'project_code', t.project_code, 'project_name', p.name,
+      'scope', t.scope, 'terms', t.terms, 'items', t.items, 'crit', t.crit, 'address', t.address, 'min_bids', t.min_bids,
+      'deadline', t.deadline, 'status', t.status, 'round', t.round, 'doc_key', t.doc_key, 'files', t.files,
+      'accepting', t.status = 'open' and t.deadline >= now(),
+      'bids', (select coalesce(jsonb_agg(jsonb_build_object(
+                  'id', b.id, 'round', b.round, 'version', b.version, 'status', b.status,
+                  'data', b.data, 'files', b.files, 'note', b.note, 'submitted_at', b.submitted_at)
+                  order by b.round, b.version), '[]')
+               from pm_tender_bid b where b.tender_id = t.id and b.invitee_id = v.id),
+      -- Câu hỏi của chính mình + câu trả lời / thông báo gửi mọi nhà thầu (không nêu tên người hỏi).
+      'qa', (select coalesce(jsonb_agg(jsonb_build_object('id', q.id, 'mine', q.invitee_id = v.id, 'question', q.question, 'asked_at', q.asked_at,
+                     'answer', q.answer, 'answered_at', q.answered_at) order by q.asked_at), '[]')
+             from pm_tender_qa q where q.tender_id = t.id and (q.invitee_id = v.id or (q.shared and q.answer is not null))),
+      'surveys', (select coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'proposed', s.proposed, 'people', s.people, 'contact_name', s.contact_name,
+                     'contact_phone', s.contact_phone, 'contact_email', s.contact_email, 'note', s.note, 'status', s.status,
+                     'scheduled_at', s.scheduled_at, 'reply', s.reply, 'created_at', s.created_at) order by s.created_at), '[]')
+                  from pm_tender_survey s where s.tender_id = t.id and s.invitee_id = v.id)
+    ) order by t.deadline), '[]'),
+    -- Đơn đặt hàng khách sạn đã gửi cho nhà thầu này.
+    'orders', (select coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'doc_no', d.doc_no, 'project_code', d.project_code,
+                   'project_name', (select name from pm_project where code = d.project_code),
+                   'sent_at', s.sent_at, 'ack_at', s.ack_at, 'note', s.note, 'total', d.total_value,
+                   'data', d.data - 'hide_cols' - 'evidence') order by s.sent_at desc), '[]')
+               from pm_po_send s join pm_doc d on d.id = s.doc_id where s.invitee_id = v.id and d.status = 'approved'))
+  into r
+  -- Hàm gộp không GROUP BY luôn trả một dòng, kể cả khi nhà thầu không còn gói nào.
+  from pm_tender_invite i join pm_tender t on t.id = i.tender_id join pm_project p on p.code = t.project_code
+  where i.invitee_id = v.id and t.status <> 'cancelled';
+  return r;
+end $$;
+
+-- Nộp (thay 25): thêm kiểm tra lịch thanh toán (nếu có thì cộng đủ 100%) và số lượng chào.
+create or replace function vp_submit(p_token text, p_tender bigint)
+returns void language plpgsql security definer set search_path = public as $$
+declare v pm_tender_invitee; t pm_tender; b pm_tender_bid; n int; i int; v_sum numeric;
+begin
+  v := vp_invitee(p_token);
+  t := vp_tender_for(v.id, p_tender, true);
+  select * into b from pm_tender_bid where tender_id = t.id and invitee_id = v.id and round = t.round and status = 'draft'
+   order by version desc limit 1;
+  if b.id is null then raise exception 'Chưa có bản nháp để nộp. / There is no draft to submit.'; end if;
+  n := jsonb_array_length(t.items);
+  for i in 0 .. n - 1 loop
+    if coalesce(nullif(b.data -> 'prices' ->> i::text, ''), '0')::numeric <= 0 then
+      raise exception 'Thiếu đơn giá hạng mục %. / Unit price missing for item %.', i + 1, i + 1;
+    end if;
+    if nullif(b.data -> 'qtys' ->> i::text, '') is not null and (b.data -> 'qtys' ->> i::text)::numeric <= 0 then
+      raise exception 'Số lượng hạng mục % phải lớn hơn 0. / Quantity of item % must be above 0.', i + 1, i + 1;
+    end if;
+  end loop;
+  if jsonb_typeof(b.data -> 'pay_sched') = 'array' and jsonb_array_length(b.data -> 'pay_sched') > 0 then
+    select coalesce(sum(nullif(x ->> 'pct', '')::numeric), 0) into v_sum from jsonb_array_elements(b.data -> 'pay_sched') x;
+    if abs(v_sum - 100) > 0.01 then
+      raise exception 'Các đợt thanh toán phải cộng đủ 100%% (hiện là % / 100). / Payment instalments must add up to 100%% (now % / 100).', v_sum, v_sum;
+    end if;
+  end if;
+  if not exists (select 1 from jsonb_array_elements(b.files) f where f ->> 'kind' = 'quotation') then
+    raise exception 'Tải lên thư báo giá có ký tên, đóng dấu trước khi nộp. / Upload the signed and stamped quotation letter before submitting.';
+  end if;
+  update pm_tender_bid set status = 'submitted', submitted_at = now(), updated_at = now() where id = b.id;
+  update pm_tender_bid set status = 'superseded', updated_at = now()
+   where tender_id = t.id and invitee_id = v.id and round = t.round and status = 'submitted' and id <> b.id;
+  perform pm_tender_log(t.id, v.vendor_name, 'submit', 'v' || b.version);
+  perform pm_tender_notify(t.id, v.vendor_name || ': đã nộp báo giá (v' || b.version || ') / bid submitted');
+end $$;
+
+-- Câu hỏi làm rõ (trước hạn nộp, đợt còn mở).
+create or replace function vp_ask(p_token text, p_tender bigint, p_question text)
+returns void language plpgsql security definer set search_path = public as $$
+declare v pm_tender_invitee; t pm_tender;
+begin
+  v := vp_invitee(p_token);
+  t := vp_tender_for(v.id, p_tender, true);
+  if coalesce(trim(p_question), '') = '' then raise exception 'Nhập câu hỏi. / Type your question.'; end if;
+  if length(p_question) > 4000 then raise exception 'Câu hỏi quá dài (tối đa 4.000 ký tự). / Question too long (4,000 characters at most).'; end if;
+  if (select count(*) from pm_tender_qa where tender_id = t.id and invitee_id = v.id) >= 30 then
+    raise exception 'Tối đa 30 câu hỏi cho một gói. / 30 questions at most per tender.';
+  end if;
+  insert into pm_tender_qa (tender_id, invitee_id, question) values (t.id, v.id, trim(p_question));
+  perform pm_tender_log(t.id, v.vendor_name, 'question', left(trim(p_question), 120));
+  perform pm_tender_notify(t.id, v.vendor_name || ' hỏi / asks: ' || left(trim(p_question), 200));
+end $$;
+
+-- Yêu cầu khảo sát hiện trường: p = {proposed: [iso…], people: [{name, id_no, phone}], contact_name, contact_phone, contact_email, note}
+create or replace function vp_survey(p_token text, p_tender bigint, p jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+declare v pm_tender_invitee; t pm_tender; v_prop jsonb; v_people jsonb;
+begin
+  v := vp_invitee(p_token);
+  t := vp_tender_for(v.id, p_tender, true);
+  select coalesce(jsonb_agg(to_jsonb(x::timestamptz)), '[]') into v_prop
+    from jsonb_array_elements_text(case when jsonb_typeof(p -> 'proposed') = 'array' then p -> 'proposed' else '[]' end) x where x <> '';
+  if jsonb_array_length(v_prop) = 0 or jsonb_array_length(v_prop) > 3 then
+    raise exception 'Đề xuất từ 1 đến 3 thời điểm khảo sát. / Propose 1 to 3 times for the visit.';
+  end if;
+  if exists (select 1 from jsonb_array_elements_text(v_prop) x where x::timestamptz < now()) then
+    raise exception 'Thời điểm đề xuất phải ở tương lai. / Proposed times must be in the future.';
+  end if;
+  select coalesce(jsonb_agg(jsonb_build_object('name', left(trim(x ->> 'name'), 120), 'id_no', left(trim(coalesce(x ->> 'id_no', '')), 20),
+                                               'phone', left(trim(coalesce(x ->> 'phone', '')), 30))), '[]')
+    into v_people from jsonb_array_elements(case when jsonb_typeof(p -> 'people') = 'array' then p -> 'people' else '[]' end) x
+   where coalesce(trim(x ->> 'name'), '') <> '';
+  if jsonb_array_length(v_people) = 0 then raise exception 'Nhập ít nhất một người đến khảo sát. / List at least one visitor.'; end if;
+  if jsonb_array_length(v_people) > 10 then raise exception 'Tối đa 10 người. / 10 visitors at most.'; end if;
+  if exists (select 1 from jsonb_array_elements(v_people) x where x ->> 'id_no' = '' or x ->> 'phone' = '') then
+    raise exception 'Mỗi người đến cần số CCCD và số điện thoại. / Each visitor needs an ID number and a phone number.';
+  end if;
+  if coalesce(trim(p ->> 'contact_email'), '') !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
+    raise exception 'Nhập email liên hệ hợp lệ. / Give a valid contact e-mail.';
+  end if;
+  if (select count(*) from pm_tender_survey where tender_id = t.id and invitee_id = v.id and status = 'requested') >= 3 then
+    raise exception 'Đã có yêu cầu đang chờ xếp lịch. / A request is already waiting to be scheduled.';
+  end if;
+  insert into pm_tender_survey (tender_id, invitee_id, proposed, people, contact_name, contact_phone, contact_email, note)
+  values (t.id, v.id, v_prop, v_people, left(trim(coalesce(p ->> 'contact_name', '')), 120), left(trim(coalesce(p ->> 'contact_phone', '')), 30),
+          lower(trim(p ->> 'contact_email')), left(coalesce(p ->> 'note', ''), 2000));
+  perform pm_tender_log(t.id, v.vendor_name, 'survey_req', jsonb_array_length(v_people) || ' người');
+  perform pm_tender_notify(t.id, v.vendor_name || ': xin khảo sát hiện trường / requests a site visit');
+end $$;
+
+-- Nhà thầu xác nhận đã nhận PO.
+create or replace function vp_po_ack(p_token text, p_send bigint)
+returns void language plpgsql security definer set search_path = public as $$
+declare v pm_tender_invitee; s pm_po_send;
+begin
+  v := vp_invitee(p_token);
+  select * into s from pm_po_send where id = p_send and invitee_id = v.id;
+  if s.id is null then raise exception 'Không có đơn hàng này. / No such order.'; end if;
+  update pm_po_send set ack_at = coalesce(ack_at, now()) where id = s.id;
+  insert into pm_notice (user_id, kind, doc_id, doc_no, doc_type, project_code, comment)
+  select s.sent_by, 'info', s.doc_id, (select doc_no from pm_doc where id = s.doc_id), 'PO', s.project_code, 'po_ack: ' || v.vendor_name
+  where  exists (select 1 from app_user where id = s.sent_by);
+end $$;
+
+
+-- =====================================================================
+-- 8. GỬI PO CHO NHÀ CUNG CẤP
+-- =====================================================================
+
+-- PO đã duyệt → gửi: nếu nhà cung cấp là nhà thầu đã chào qua cổng (p_invitee), PO hiện trên cổng
+-- của họ (link được gia hạn ít nhất 60 ngày). Email do app soạn sẵn (mailto) kèm PDF người gửi đính.
+create or replace function pm_po_send_do(p_doc bigint, p_invitee bigint, p_email text, p_note text)
+returns bigint language plpgsql security definer set search_path = public as $$
+declare d pm_doc; p pm_project; n bigint; v pm_tender_invitee;
+begin
+  select * into d from pm_doc where id = p_doc and doc_type = 'PO';
+  if d.id is null then raise exception 'Không có PO %.', p_doc; end if;
+  if d.status <> 'approved' then raise exception 'PO % chưa được duyệt xong.', d.doc_no; end if;
+  select * into p from pm_project where code = d.project_code;
+  if not (app_trusted() or app_can('project', 'admin') or pm_can_prepare('PO', p.dept_code)) then
+    raise exception 'Chỉ người lập PO (Thu mua) gửi được PO.' using errcode = '42501';
+  end if;
+  if p_invitee is not null then
+    select * into v from pm_tender_invitee where id = p_invitee;
+    if v.id is null or not exists (select 1 from pm_tender_invite i join pm_tender t on t.id = i.tender_id
+                                    where i.invitee_id = v.id and t.project_code = d.project_code) then
+      raise exception 'Link mời không thuộc dự án này.';
+    end if;
+    update pm_tender_invitee set expires_at = greatest(expires_at, now() + interval '60 days'), revoked = false where id = v.id;
+  end if;
+  insert into pm_po_send (doc_id, project_code, invitee_id, vendor_name, email, note, sent_by, sent_name)
+  values (d.id, d.project_code, v.id, coalesce(v.vendor_name, nullif(d.data ->> 'supplier', '')), nullif(trim(coalesce(p_email, v.email)), ''),
+          nullif(trim(p_note), ''), auth.uid(), pm_tender_actor())
+  returning id into n;
+  perform pm_doc_log(d.id, 'po_sent', d.status, d.status, null, coalesce(v.vendor_name, d.data ->> 'supplier'));
+  return n;
+end $$;
+
+create or replace function pm_po_sends(p_project text)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  if not (app_trusted() or app_can('project', 'view')) then raise exception 'Bạn không có quyền xem dự án.' using errcode = '42501'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'doc_id', s.doc_id, 'vendor', s.vendor_name, 'email', s.email, 'note', s.note,
+                   'sent_name', s.sent_name, 'sent_at', s.sent_at, 'ack_at', s.ack_at, 'portal', s.invitee_id is not null) order by s.sent_at), '[]')
+          from pm_po_send s where s.project_code = p_project);
+end $$;
+
+
+-- =====================================================================
+-- 9. NHẬN TEM, SỐ LƯỢNG THỰC NHẬN (máy tính bảng) → AH NHÁP
+-- =====================================================================
+
+-- Người nhận: người lập AH của bộ phận (Hotel Asset Manager) hoặc người sửa được tài sản.
+create or replace function am_recv_can(p_project text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select app_trusted() or app_can('assets', 'edit')
+      or coalesce((select pm_can_prepare('AH', p.dept_code) from pm_project p where p.code = p_project), false)
+$$;
+
+-- Ghi / sửa dòng nhận ĐANG CHỜ (chưa vào AH còn hiệu lực) của một tài sản. p_qty null hoặc 0 = xoá dòng chờ.
+create or replace function am_recv_set(p_asset bigint, p_qty numeric, p_pick text, p_note text, p_scanned boolean default false)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare a am_asset; v_al bigint; v_prj text; v_done numeric; v_row am_recv;
+begin
+  select * into a from am_asset where id = p_asset;
+  if a.id is null then raise exception 'Không có tài sản %.', p_asset; end if;
+  -- ALR đã duyệt chứa tài sản này.
+  select d.id, d.project_code into v_al, v_prj from pm_doc d
+   where d.doc_type = 'AL' and d.status = 'approved' and d.data -> 'asset_ids' @> to_jsonb(a.id)
+   order by d.id desc limit 1;
+  if v_al is null then raise exception 'Tài sản % chưa nằm trong ALR nào đã duyệt.', a.asset_code; end if;
+  if not am_recv_can(v_prj) then raise exception 'Bạn không phải người nhận tài sản của dự án này.' using errcode = '42501'; end if;
+  if p_pick is not null and p_pick not in ('now', 'next') then raise exception 'Lựa chọn không hợp lệ.'; end if;
+  -- Đã nhận ở các AH còn hiệu lực.
+  select coalesce(sum(r.qty), 0) into v_done from am_recv r join pm_doc h on h.id = r.ah_doc_id
+   where r.asset_id = a.id and h.status not in ('cancelled', 'rejected', 'draft', 'returned');
+  select r.* into v_row from am_recv r left join pm_doc h on h.id = r.ah_doc_id
+   where r.asset_id = a.id and (r.ah_doc_id is null or h.status in ('cancelled', 'rejected', 'draft', 'returned'))
+   order by r.id desc limit 1;
+  if coalesce(p_qty, 0) <= 0 then
+    delete from am_recv where id = v_row.id;
+    return jsonb_build_object('asset_id', a.id, 'qty', 0, 'done', v_done, 'ordered', coalesce(a.qty, 1));
+  end if;
+  if a.asset_kind = 'unique' and p_qty <> 1 then raise exception 'Tài sản mã vạch riêng nhận đúng 1.'; end if;
+  if v_done + p_qty > coalesce(a.qty, 1) then
+    raise exception 'Nhận % + % vượt số lượng đặt % của %.', v_done, p_qty, coalesce(a.qty, 1), a.asset_code;
+  end if;
+  if v_row.id is null then
+    insert into am_recv (asset_id, al_doc_id, project_code, qty, pick, note, scanned_at, by_name)
+    values (a.id, v_al, v_prj, p_qty, coalesce(p_pick, 'now'), nullif(trim(p_note), ''), case when p_scanned then now() end, pm_tender_actor())
+    returning * into v_row;
+  else
+    update am_recv set qty = p_qty, pick = coalesce(p_pick, pick), note = coalesce(nullif(trim(p_note), ''), note), ah_doc_id = case when p_pick = 'next' then null
+                                                                                                            when (select status from pm_doc where id = v_row.ah_doc_id) in ('draft', 'returned') then ah_doc_id end,
+                       scanned_at = case when p_scanned then now() else scanned_at end, by_user = auth.uid(), by_name = pm_tender_actor(), updated_at = now()
+     where id = v_row.id returning * into v_row;
+  end if;
+  return jsonb_build_object('asset_id', a.id, 'id', v_row.id, 'qty', v_row.qty, 'pick', v_row.pick, 'done', v_done, 'ordered', coalesce(a.qty, 1));
+end $$;
+
+-- Chọn đợt cho nhiều dòng một lúc ("đưa tất cả vào AH đợt này" / "để đợt sau").
+create or replace function am_recv_pick(p_ids bigint[], p_pick text)
+returns int language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  if p_pick not in ('now', 'next') then raise exception 'Lựa chọn không hợp lệ.'; end if;
+  if exists (select 1 from am_recv r where r.id = any(p_ids) and not am_recv_can(r.project_code)) then
+    raise exception 'Bạn không phải người nhận tài sản của dự án này.' using errcode = '42501';
+  end if;
+  -- "Để đợt sau" gỡ dòng khỏi AH nháp đang lấy nó; AH đã gửi duyệt thì không đổi.
+  update am_recv set pick = p_pick, updated_at = now(), ah_doc_id = case when p_pick = 'next' then null else ah_doc_id end
+   where id = any(p_ids)
+     and (ah_doc_id is null or ah_doc_id in (select id from pm_doc where status in ('draft', 'returned', 'cancelled', 'rejected')));
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- AH nháp đã lấy các dòng nhận này (app lập / cập nhật AH rồi gọi hàm này).
+create or replace function am_recv_link(p_ah bigint, p_ids bigint[])
+returns int language plpgsql security definer set search_path = public as $$
+declare h pm_doc; n int;
+begin
+  select * into h from pm_doc where id = p_ah and doc_type = 'AH';
+  if h.id is null then raise exception 'Không có AH %.', p_ah; end if;
+  if h.status not in ('draft', 'returned') then raise exception 'AH % đã gửi duyệt — không thêm dòng nhận được.', h.doc_no; end if;
+  if not am_recv_can(h.project_code) then raise exception 'Bạn không phải người lập AH của dự án này.' using errcode = '42501'; end if;
+  -- Các dòng AH này từng lấy mà nay không còn trong danh sách: về lại hàng chờ.
+  update am_recv set ah_doc_id = null, updated_at = now() where ah_doc_id = h.id and not (id = any(p_ids));
+  update am_recv set ah_doc_id = h.id, pick = 'now', updated_at = now()
+   where id = any(p_ids) and project_code = h.project_code
+     and (ah_doc_id is null or ah_doc_id = h.id or ah_doc_id in (select id from pm_doc where status in ('cancelled', 'rejected')));
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- AH cuối cùng duyệt xong: CCDC theo lô nhận thiếu → số lượng trên sổ = tổng thực nhận.
+create or replace function am_recv_on_ah()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.doc_type <> 'AH' or new.status <> 'approved' or old.status = 'approved'
+     or not coalesce((new.data ->> 'final')::boolean, false) then return new; end if;
+  update am_asset a set qty = x.got
+    from (select r.asset_id, sum(r.qty) got from am_recv r join pm_doc h on h.id = r.ah_doc_id
+          where r.project_code = new.project_code and h.status = 'approved' group by r.asset_id) x
+   where a.id = x.asset_id and a.asset_kind = 'low' and x.got > 0 and x.got < coalesce(a.qty, 1);
+  return new;
+end $$;
+drop trigger if exists am_recv_on_ah on pm_doc;
+create trigger am_recv_on_ah after update of status on pm_doc for each row execute function am_recv_on_ah();
+
+
+-- =====================================================================
+-- 10. ALR: AM Coordinator → AM Executive → Kế toán trưởng (bỏ bước "nhận" cuối —
+--     Hotel AM nhận bằng cách quét tem trên máy tính bảng). Chỉ bỏ khi vẫn là mặc định.
+-- =====================================================================
+
+delete from pm_chain where doc_type = 'AL' and step = 3 and role_code in ('HOTEL_AM', 'CP_ADMIN', 'JVC_ADMIN')
+   and not exists (select 1 from pm_chain c2 where c2.doc_type = 'AL' and c2.step > 3);
+
+
+-- =====================================================================
+-- 11. THÔNG BÁO (thay pm_notify_trg của 27_liquidation.sql)
+--     PO duyệt → AM Coordinator "sinh mã tài sản / lập ALR" (thay vì AH).
+--     ALR duyệt → Hotel AM "nhận tem, quét, chụp ảnh" (doc_type RV) + Thu mua "đã có ALR".
+--     Bộ PR duyệt → Thu mua "gọi báo giá" (như cũ: next QC — app mở màn Tendering).
+-- =====================================================================
+
+create or replace function pm_notify_trg()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare k pm_pkg; p pm_project; s pm_pkg_step; v_dept text; v_nos text; v_lead text; v_first bigint; v_next text;
+begin
+  select * into k from pm_pkg where id = new.pkg_id;
+  if k.id is null then return null; end if;
+  select * into p from pm_project where code = k.project_code;
+  v_dept := coalesce(p.dept_code, k.dept_code);
+  select string_agg(x.doc_no, ' + ' order by t.seq), (array_agg(x.id order by t.seq))[1]
+    into v_nos, v_first
+    from pm_doc x join pm_doc_type t on t.code = x.doc_type
+   where x.pkg_id = k.id and x.status not in ('cancelled');
+  v_lead := pm_grp_lead(k.grp);
+
+  update pm_notice set read_at = now()
+   where pkg_id = k.id and kind = 'todo' and read_at is null;
+
+  if k.status = 'in_review' then
+    select * into s from pm_pkg_step where pkg_id = k.id and step = k.current_step;
+    insert into pm_notice (user_id, doc_id, pkg_id, kind, doc_no, doc_type, project_code, actor_email, comment)
+    select u.id, v_first, k.id, 'todo', v_nos, v_lead, k.project_code, new.actor_email,
+           case when new.action = 'return_am' then new.comment end
+    from   app_user u
+    where  u.active and (u.id is distinct from k.created_by or pm_self_ok())
+      and  app_user_role_covers(u.id, s.role_code, v_dept)
+      and  exists (select 1 from app_user_role ur
+                   join app_permission ap on ap.role_code = ur.role_code
+                   where ur.user_id = u.id and ap.module_code = 'approval' and ap.can_approve);
+  end if;
+
+  if k.status in ('approved', 'returned', 'rejected', 'cancelled') and new.to_status = k.status
+     and k.created_by is not null and k.created_by is distinct from new.actor
+     and exists (select 1 from app_user where id = k.created_by) then
+    insert into pm_notice (user_id, doc_id, pkg_id, kind, doc_no, doc_type, project_code, actor_email, comment)
+    values (k.created_by, v_first, k.id, k.status, v_nos, v_lead, k.project_code, new.actor_email, new.comment);
+  end if;
+
+  if k.status = 'approved' and new.to_status = 'approved' and k.project_code is not null then
+    if v_lead = 'PO' and exists (select 1 from pm_doc_type where code = 'AL') then
+      v_next := 'AL';
+    elsif v_lead = 'AL' then
+      v_next := null;
+    else
+      select t.code into v_next from pm_doc_type t
+       where t.required and t.side = 'operator'
+         and t.seq > (select max(x.seq) from pm_doc_type x where x.code = v_lead or x.grp = k.grp)
+       order by t.seq limit 1;
+    end if;
+    if v_next is not null then
+      insert into pm_notice (user_id, doc_id, pkg_id, kind, doc_no, doc_type, project_code, actor_email)
+      select distinct u.id, v_first, k.id, 'next', v_nos, v_next, k.project_code, new.actor_email
+      from   app_user u
+      join   pm_chain c on c.entity = pm_entity(v_dept) and c.doc_type = v_next and c.step = 0
+      where  u.active and app_user_role_covers(u.id, c.role_code, v_dept);
+    end if;
+    if v_lead = 'AL' then
+      -- Hotel AM (người lập AH): nhận tem, dán, quét, chụp ảnh, nhập số lượng thực nhận.
+      insert into pm_notice (user_id, doc_id, pkg_id, kind, doc_no, doc_type, project_code, actor_email)
+      select distinct u.id, v_first, k.id, 'next', v_nos, 'RV', k.project_code, new.actor_email
+      from   app_user u
+      join   pm_chain c on c.entity = pm_entity(v_dept) and c.doc_type = 'AH' and c.step = 0
+      where  u.active and app_user_role_covers(u.id, c.role_code, v_dept);
+      -- Thu mua (người lập PO): đã có ALR.
+      insert into pm_notice (user_id, doc_id, pkg_id, kind, doc_no, doc_type, project_code, actor_email, comment)
+      select distinct u.id, v_first, k.id, 'info', v_nos, 'AL', k.project_code, new.actor_email, 'alr_ready'
+      from   app_user u
+      join   pm_chain c on c.entity = pm_entity(v_dept) and c.doc_type = 'PO' and c.step = 0
+      where  u.active and app_user_role_covers(u.id, c.role_code, v_dept);
+    end if;
+  end if;
+  return null;
+end $$;
+revoke execute on function pm_notify_trg() from public, anon, authenticated;
+
+
+-- =====================================================================
+-- 11b. VIỆC CẦN LÀM (To-do list) của quy trình mới, theo người đang đăng nhập
+--   td_new    Thu mua: bộ PR duyệt xong — gọi báo giá
+--   td_q      câu hỏi làm rõ chưa trả lời          td_sv   yêu cầu khảo sát chờ xếp lịch
+--   td_due    quá hạn mà chưa đủ số báo giá (gia hạn?)
+--   td_open   có hồ sơ niêm phong chờ tôi đồng ý mở
+--   po_send   PO duyệt xong chưa gửi nhà cung cấp  ct_upload PO duyệt, chưa có hợp đồng
+--   codes     AM Coordinator: PO duyệt, chưa sinh mã tài sản / lập ALR
+--   recv      Hotel AM: ALR duyệt, còn tài sản chưa nhận / chưa vào AH
+-- =====================================================================
+
+create or replace function pm_todo_proc()
+returns table (kind text, project_code text, project_name text, dept_code text, ref_id bigint, ref_no text, at timestamptz, n int, detail text)
+language sql stable security definer set search_path = public as $$
+  with prj as (
+    select p.* from pm_project p
+    where  p.status not in ('completed', 'cancelled') and not coalesce(p.wf_offline, false)
+      and  (app_trusted() or app_scope_root() or p.dept_code in (select app_scope_orgs()))),
+  pr as (select distinct on (d.project_code) d.* from pm_doc d where d.doc_type = 'PR' and d.status = 'approved' order by d.project_code, d.id desc),
+  po as (select distinct on (d.project_code) d.* from pm_doc d where d.doc_type = 'PO' and d.status = 'approved' order by d.project_code, d.id desc),
+  fin as (select distinct d.project_code from pm_doc d where d.doc_type = 'AH' and d.status = 'approved' and coalesce((d.data ->> 'final')::boolean, false))
+  select 'td_new'::text, p.code, p.name, p.dept_code, pr.id, pr.doc_no, pr.decided_at, null::int, null::text
+  from   prj p join pr on pr.project_code = p.code
+  where  pm_tender_can_manage(p.code)
+    and  not exists (select 1 from pm_tender t where t.project_code = p.code and t.status <> 'cancelled')
+    and  not exists (select 1 from pm_doc q where q.project_code = p.code and q.doc_type = 'QC' and q.status not in ('cancelled', 'rejected'))
+  union all
+  select 'td_q', p.code, p.name, p.dept_code, t.id, coalesce(t.title, p.name), min(q.asked_at), count(*)::int, null
+  from   prj p join pm_tender t on t.project_code = p.code and t.status <> 'cancelled'
+  join   pm_tender_qa q on q.tender_id = t.id and q.answer is null and q.invitee_id is not null
+  where  pm_tender_can_answer(p.code)
+  group  by p.code, p.name, p.dept_code, t.id, t.title
+  union all
+  select 'td_sv', p.code, p.name, p.dept_code, t.id, coalesce(t.title, p.name), min(s.created_at), count(*)::int, null
+  from   prj p join pm_tender t on t.project_code = p.code and t.status <> 'cancelled'
+  join   pm_tender_survey s on s.tender_id = t.id and s.status = 'requested'
+  where  pm_tender_can_answer(p.code)
+  group  by p.code, p.name, p.dept_code, t.id, t.title
+  union all
+  select 'td_due', p.code, p.name, p.dept_code, t.id, coalesce(t.title, p.name), t.deadline, x.n, t.min_bids::text
+  from   prj p join pm_tender t on t.project_code = p.code and t.status = 'open' and t.deadline < now()
+  cross  join lateral (select count(distinct b.invitee_id)::int n from pm_tender_bid b
+                       where b.tender_id = t.id and b.round = t.round and b.status = 'submitted') x
+  where  pm_tender_can_manage(p.code) and x.n < t.min_bids
+    and  not exists (select 1 from pm_tender_bid b where b.tender_id = t.id and b.round = t.round and b.opened_at is not null)
+  union all
+  select 'td_open', p.code, p.name, p.dept_code, t.id, coalesce(t.title, p.name), t.deadline, x.n, null
+  from   prj p join pm_tender t on t.project_code = p.code and t.status <> 'cancelled'
+  cross  join lateral (select count(*)::int n from pm_tender_bid b
+                       where b.tender_id = t.id and b.status in ('submitted', 'superseded') and b.opened_at is null) x
+  where  x.n > 0
+    and  (t.deadline <= now() or not exists (select 1 from pm_tender_invite i join pm_tender_invitee v on v.id = i.invitee_id
+                                             where i.tender_id = t.id and not v.revoked
+                                               and not exists (select 1 from pm_tender_bid b where b.tender_id = t.id and b.invitee_id = v.id
+                                                                                               and b.round = t.round and b.status = 'submitted')))
+    and  exists (select 1 from unnest(pm_tender_open_roles(p.code)) r(role)
+                 where app_user_role_covers(auth.uid(), r.role, p.dept_code)
+                   and not exists (select 1 from pm_tender_consent c where c.tender_id = t.id and c.seq = t.open_seq and c.role_code = r.role))
+    and  (pm_self_ok() or not exists (select 1 from pm_tender_consent c where c.tender_id = t.id and c.seq = t.open_seq and c.user_id = auth.uid()))
+  union all
+  select 'po_send', p.code, p.name, p.dept_code, po.id, po.doc_no, po.decided_at, null, po.data ->> 'supplier'
+  from   prj p join po on po.project_code = p.code
+  where  pm_can_prepare('PO', p.dept_code) and not exists (select 1 from pm_po_send s where s.doc_id = po.id)
+  union all
+  select 'ct_upload', p.code, p.name, p.dept_code, po.id, po.doc_no, po.decided_at, null, po.data ->> 'supplier'
+  from   prj p join po on po.project_code = p.code
+  where  pm_can_prepare('PO', p.dept_code) and app_can('contract', 'create')
+    and  not exists (select 1 from pm_contract c where c.project_code = p.code and c.status not in ('cancelled', 'rejected'))
+    and  not exists (select 1 from pm_doc c where c.project_code = p.code and c.doc_type = 'CT' and c.status not in ('cancelled', 'rejected'))
+  union all
+  select 'codes', p.code, p.name, p.dept_code, po.id, po.doc_no, po.decided_at, jsonb_array_length(coalesce(po.data -> 'lines', '[]'))::int, null
+  from   prj p join po on po.project_code = p.code
+  where  pm_can_prepare('AL', p.dept_code)
+    and  not exists (select 1 from am_asset a where a.purpose_code = p.code and a.status_code in ('119', '120'))
+    and  not exists (select 1 from pm_doc a where a.project_code = p.code and a.doc_type = 'AL' and a.status not in ('cancelled', 'rejected'))
+  union all
+  select 'recv', p.code, p.name, p.dept_code, al.id, al.doc_no, al.decided_at, x.n, null
+  from   prj p join pm_doc al on al.project_code = p.code and al.doc_type = 'AL' and al.status = 'approved'
+  cross  join lateral (select count(*)::int n from jsonb_array_elements_text(coalesce(al.data -> 'asset_ids', '[]')) e
+                       join am_asset a on a.id = e::bigint
+                       where coalesce((select sum(r.qty) from am_recv r join pm_doc h on h.id = r.ah_doc_id
+                                       where r.asset_id = a.id and h.status not in ('cancelled', 'rejected')), 0) < coalesce(a.qty, 1)) x
+  where  pm_can_prepare('AH', p.dept_code) and x.n > 0 and p.code not in (select project_code from fin)
+$$;
+revoke execute on function pm_todo_proc() from public, anon;
+grant execute on function pm_todo_proc() to authenticated;
+
+
+-- =====================================================================
+-- 12. STORAGE — hồ sơ mời thầu trong bucket "pm-tender" (thư mục doc/<doc_key>/)
+-- =====================================================================
+
+drop policy if exists pm_tender_doc_up on storage.objects;
+create policy pm_tender_doc_up on storage.objects for insert to authenticated
+  with check (bucket_id = 'pm-tender' and pm_tender_doc_ok(name, true));
+drop policy if exists pm_tender_doc_rd on storage.objects;
+create policy pm_tender_doc_rd on storage.objects for select to authenticated
+  using (bucket_id = 'pm-tender' and pm_tender_doc_ok(name, false));
+drop policy if exists pm_tender_doc_del on storage.objects;
+create policy pm_tender_doc_del on storage.objects for delete to authenticated
+  using (bucket_id = 'pm-tender' and pm_tender_doc_ok(name, true));
+drop policy if exists pm_tender_doc_anon on storage.objects;
+create policy pm_tender_doc_anon on storage.objects for select to anon
+  using (bucket_id = 'pm-tender' and vp_doc_ok(name));
+
+
+-- =====================================================================
+-- 13. QUYỀN GỌI HÀM
+-- =====================================================================
+
+revoke execute on function pm_tender_notify(bigint, text), pm_tender_actor(), am_recv_on_ah() from public, anon, authenticated;
+revoke execute on function pm_tender_can_answer(text), pm_tender_doc_ok(text, boolean), pm_tender_create_prj(text, jsonb),
+  pm_tender_set(bigint, jsonb), pm_tender_file_add(bigint, text, text, bigint), pm_tender_file_del(bigint, text),
+  pm_tender_link_qc(bigint, bigint), pm_tender_answer(bigint, text, boolean), pm_tender_announce(bigint, text),
+  pm_tender_survey_set(bigint, text, timestamptz, text), pm_tender_list(text), pm_tender_board(),
+  pm_po_send_do(bigint, bigint, text, text), pm_po_sends(text), am_recv_can(text),
+  am_recv_set(bigint, numeric, text, text, boolean), am_recv_pick(bigint[], text), am_recv_link(bigint, bigint[]) from public, anon;
+grant execute on function pm_tender_can_answer(text), pm_tender_doc_ok(text, boolean), pm_tender_create_prj(text, jsonb),
+  pm_tender_set(bigint, jsonb), pm_tender_file_add(bigint, text, text, bigint), pm_tender_file_del(bigint, text),
+  pm_tender_link_qc(bigint, bigint), pm_tender_answer(bigint, text, boolean), pm_tender_announce(bigint, text),
+  pm_tender_survey_set(bigint, text, timestamptz, text), pm_tender_list(text), pm_tender_board(),
+  pm_po_send_do(bigint, bigint, text, text), pm_po_sends(text), am_recv_can(text),
+  am_recv_set(bigint, numeric, text, text, boolean), am_recv_pick(bigint[], text), am_recv_link(bigint, bigint[]) to authenticated;
+-- Hàm vp_ cho nhà thầu (anon): mỗi hàm tự kiểm tra mã link.
+revoke execute on function vp_session(text), vp_submit(text, bigint), vp_ask(text, bigint, text), vp_survey(text, bigint, jsonb),
+  vp_po_ack(text, bigint), vp_doc_ok(text) from public;
+grant execute on function vp_session(text), vp_submit(text, bigint), vp_ask(text, bigint, text), vp_survey(text, bigint, jsonb),
+  vp_po_ack(text, bigint), vp_doc_ok(text) to anon, authenticated;
+
+-- Lưới an toàn cho project dùng chung (xem app_lock_anon trong 17_auth.sql).
+select app_lock_anon();
+
+
+-- =====================================================================
+-- 14. KIỂM CHỨNG
+-- =====================================================================
+
+select 'Bảng hỏi đáp / khảo sát / gửi PO / nhận hàng' as "Mục", count(*)::text as "Thực tế", '4' as "Mong đợi",
+       case when count(*) = 4 then '✔' else '✘ HỎNG' end as "Đạt"
+from   information_schema.tables where table_schema = 'public' and table_name in ('pm_tender_qa', 'pm_tender_survey', 'pm_po_send', 'am_recv')
+union all
+select 'RLS bật trên các bảng mới', count(*)::text, '4', case when count(*) = 4 then '✔' else '✘ HỎNG' end
+from   pg_class where relname in ('pm_tender_qa', 'pm_tender_survey', 'pm_po_send', 'am_recv') and relrowsecurity
+union all
+select 'Khách (anon) đọc / ghi thẳng bảng mới (phải = 0)', count(*)::text, '0', case when count(*) = 0 then '✔' else '✘ HỎNG' end
+from   information_schema.role_table_grants where grantee = 'anon' and table_name in ('pm_tender_qa', 'pm_tender_survey', 'pm_po_send', 'am_recv')
+union all
+select 'Chính sách đọc thẳng hỏi đáp / khảo sát / gửi PO (phải = 0)', count(*)::text, '0', case when count(*) = 0 then '✔' else '✘ HỎNG' end
+from   pg_policies where schemaname = 'public' and tablename in ('pm_tender_qa', 'pm_tender_survey', 'pm_po_send')
+union all
+select 'Hàm vp_ công khai cho nhà thầu (25 + 41)', count(*)::text, '12', case when count(*) = 12 then '✔' else '✘ HỎNG' end
+from   pg_proc where proname in ('vp_session', 'vp_save', 'vp_new_version', 'vp_submit', 'vp_file_add', 'vp_file_remove', 'vp_upload_key', 'vp_upload_ok',
+                                 'vp_ask', 'vp_survey', 'vp_po_ack', 'vp_doc_ok')
+  and  has_function_privilege('anon', oid, 'execute')
+union all
+select 'Khách gọi được hàm pm_ / am_ mới (phải = 0)', count(*)::text, '0', case when count(*) = 0 then '✔' else '✘ HỎNG' end
+from   pg_proc where proname in ('pm_tender_notify', 'pm_tender_create_prj', 'pm_tender_set', 'pm_tender_board', 'pm_tender_answer', 'pm_po_send_do',
+                                 'am_recv_set', 'am_recv_link', 'pm_tender_survey_set') and has_function_privilege('anon', oid, 'execute')
+union all
+select 'Chính sách Storage hồ sơ mời thầu', count(*)::text, '4', case when count(*) = 4 then '✔' else '✘ HỎNG' end
+from   pg_policies where schemaname = 'storage' and tablename = 'objects'
+  and  policyname in ('pm_tender_doc_up', 'pm_tender_doc_rd', 'pm_tender_doc_del', 'pm_tender_doc_anon')
+union all
+select 'Chuỗi ALR (bước cuối là Kế toán trưởng hoặc đã chỉnh)', coalesce(string_agg(role_code, ' → ' order by step), '—'), 'AM_COORD → AM_EXEC → CHIEF_ACC', '✔'
+from   pm_chain where entity = 'SSP' and doc_type = 'AL'
+union all
+select 'Trigger nhận hàng khi AH cuối duyệt', count(*)::text, '1', case when count(*) = 1 then '✔' else '✘ HỎNG' end
+from   pg_trigger where tgname = 'am_recv_on_ah' and not tgisinternal;
+
+
+-- ####################################################################
+-- ##  42_payment_request.sql
+-- ####################################################################
+
+-- =====================================================================
+-- 42_payment_request.sql — HỢP ĐỒNG TỪ PO VÀ ĐỀ NGHỊ THANH TOÁN THEO ĐỢT (28/09/2026)
+--
+-- Chạy SAU 41_tendering.sql (cần 34_contracts). Chạy lại nhiều lần vô hại.
+-- KHÔNG chạy ALL_IN_ONE trên CSDL thật.
+--
+-- Quy trình (quyết định của người dùng 28/09/2026):
+--   PO duyệt xong → Thu mua bấm "Tải hợp đồng": hợp đồng mới trong sổ Hợp đồng, điền sẵn
+--   từ PO và báo giá được chọn (nhà cung cấp, giá trị, lịch thanh toán, bảo hành, giao
+--   hàng) → tải bản scan, đọc điều khoản (34: Claude chat / OCR / Claude API) → "Xác nhận
+--   hợp đồng" (hợp đồng đã ký, các bước duyệt đã đi qua PR/QC/PO: đi thẳng "đang hiệu
+--   lực"; am_setting ct_po_direct = false thì phải gửi duyệt theo tuyến của 34).
+--   → "Đề nghị thanh toán lần 1": Thu mua đính kèm hồ sơ (số tiền theo lịch thanh toán của
+--   hợp đồng; Thu mua được điều chỉnh — khi đó ghi lý do và kèm thư đề nghị thanh toán của
+--   nhà thầu) → gửi: Kế toán trưởng DUYỆT, Kế toán được báo CÙNG LÚC để nắm thông tin
+--   (sửa 29/09/2026: bỏ bước Kế toán kiểm tra) → KTT duyệt (ký) → Kế toán nhận "đã duyệt,
+--   tiến hành thanh toán" → chi xong, Kế toán xác nhận đã thanh toán (chọn nhiều đề nghị
+--   một lúc được) → Thu mua thấy trạng thái. Các đợt giữa kỳ tương tự; đợt QUYẾT
+--   TOÁN chỉ mở khi AH cuối cùng đã duyệt. Quyết toán xong → dự án "Hoàn thành", hợp
+--   đồng "Hoàn thành". Hồ sơ dự án in / xuất ra mang dấu "Approved by CA – tên – giờ".
+--   Dự án chỉ có PO (không hợp đồng) vẫn đề nghị thanh toán được, căn cứ PO đã duyệt.
+--   Dự án có hợp đồng: AH cuối duyệt xong dự án vẫn "Đang thực hiện" tới khi quyết toán xong.
+--
+-- Tuyến duyệt đề nghị thanh toán ở am_setting pay_route (sửa trong Cài đặt).
+-- Vai trò mới: ACCOUNTANT (Kế toán — JVC).
+-- Chỉ đụng vào bảng / hàm có tên của app này; cuối file gọi app_lock_anon().
+-- =====================================================================
+
+
+-- =====================================================================
+-- 1. VAI TRÒ, QUYỀN, CÀI ĐẶT
+-- =====================================================================
+
+insert into app_role (code, entity, name_en, name_vi, prepares, default_scope, sort) values
+  ('ACCOUNTANT', 'JVC', 'Accountant', 'Kế toán', false, 'PHCL', 125)
+on conflict (code) do nothing;
+
+-- "do nothing": ô đã chỉnh ở màn Phân quyền giữ nguyên.
+insert into app_permission (role_code, module_code, can_view, can_create, can_edit, can_approve, can_admin)
+select 'ACCOUNTANT', m.code, true, m.code = 'payment', m.code = 'payment', m.code = 'payment', false
+from   app_module m where m.code in ('assets', 'master', 'budget', 'project', 'approval', 'payment', 'report', 'contract')
+on conflict (role_code, module_code) do nothing;
+-- Thu mua đề nghị thanh toán: xem + tạo ở khu Thanh toán (chỉ thêm quyền).
+update app_permission set can_view = true, can_create = true where role_code = 'PURCHASING' and module_code = 'payment';
+
+insert into am_setting (key, value, note) values
+  ('pay_route', '{"prep": ["PURCHASING"], "check": [], "approve": ["CHIEF_ACC"], "process": ["ACCOUNTANT"], "watch": ["ACCOUNTANT"]}'::jsonb,
+   'Đề nghị thanh toán: người lập (prep) → [kiểm tra (check), để trống = bỏ qua] → duyệt (approve) → xác nhận đã chi (process); watch = được báo khi gửi, theo mã vai trò'),
+  ('ct_po_direct', 'true'::jsonb,
+   'Hợp đồng tải lên từ PO đã duyệt: true = Thu mua xác nhận là có hiệu lực ngay; false = gửi duyệt theo tuyến hợp đồng (ct_route)')
+on conflict (key) do nothing;
+
+-- Bản đầu (28/09) có bước Kế toán kiểm tra: đổi sang tuyến mới nếu vẫn là mặc định cũ.
+update am_setting
+   set value = '{"prep": ["PURCHASING"], "check": [], "approve": ["CHIEF_ACC"], "process": ["ACCOUNTANT"], "watch": ["ACCOUNTANT"]}'::jsonb,
+       note = 'Đề nghị thanh toán: người lập (prep) → [kiểm tra (check), để trống = bỏ qua] → duyệt (approve) → xác nhận đã chi (process); watch = được báo khi gửi, theo mã vai trò'
+ where key = 'pay_route' and value = '{"prep": ["PURCHASING"], "check": ["ACCOUNTANT"], "approve": ["CHIEF_ACC"], "process": ["ACCOUNTANT"]}'::jsonb;
+
+alter table pm_contract drop constraint if exists pm_contract_source_check;
+alter table pm_contract add constraint pm_contract_source_check check (source in ('app', 'ct', 'import', 'po'));
+
+
+-- =====================================================================
+-- 2. HỢP ĐỒNG TỪ PO
+-- =====================================================================
+
+-- Tạo (hoặc trả về) hợp đồng nháp của dự án, điền sẵn từ PO đã duyệt và báo giá được chọn ở QC.
+create or replace function pm_ct_from_po(p_doc bigint)
+returns bigint language plpgsql security definer set search_path = public as $$
+declare d pm_doc; p pm_project; q jsonb; a jsonb; v_id bigint; v_terms jsonb; v_vcode text;
+        v_base date; v_n int; v_unit text; v_due date; v_wtxt text;
+begin
+  perform pm_ct_need('create');
+  select * into d from pm_doc where id = p_doc and doc_type = 'PO';
+  if d.id is null then raise exception 'Không có PO %.', p_doc; end if;
+  if d.status <> 'approved' then raise exception 'PO % chưa được duyệt xong.', d.doc_no; end if;
+  select * into p from pm_project where code = d.project_code;
+  if not (app_trusted() or app_can('contract', 'admin') or pm_can_prepare('PO', p.dept_code)) then
+    raise exception 'Chỉ người lập PO (Thu mua) tải hợp đồng của dự án được.' using errcode = '42501';
+  end if;
+  select data into q from pm_doc where project_code = p.code and doc_type = 'QC' and status = 'approved' order by id desc limit 1;
+  a := coalesce(q -> 'vendors' -> 0, '{}'::jsonb);                     -- nhà thầu A = nhà thầu được chọn
+  -- Lịch thanh toán nhà thầu khai trên cổng: [{pct, when, days, note}] → [{milestone, pct, amount, condition}]
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'milestone', case x ->> 'when' when 'deposit' then 'Đặt cọc / Deposit' when 'delivery' then 'Giao hàng / Delivery'
+                          when 'acceptance' then 'Nghiệm thu / Acceptance' when 'handover' then 'Bàn giao / Handover'
+                          when 'warranty' then 'Hết bảo hành / End of warranty' else coalesce(nullif(x ->> 'note', ''), 'Khác / Other') end,
+           'pct', nullif(x ->> 'pct', '')::numeric,
+           'amount', round(coalesce(d.total_value, 0) * coalesce(nullif(x ->> 'pct', '')::numeric, 0) / 100),
+           'condition', concat_ws(' · ', nullif(x ->> 'days', '') || ' ngày / days', nullif(x ->> 'note', ''))) order by n), '[]')
+    into v_terms
+    from jsonb_array_elements(case when jsonb_typeof(a -> 'pay_sched') = 'array' then a -> 'pay_sched' else '[]' end) with ordinality y(x, n);
+  if jsonb_array_length(v_terms) = 0 and coalesce(d.data ->> 'payment_term', '') <> '' then
+    v_terms := jsonb_build_array(jsonb_build_object('milestone', 'Theo PO / As per PO', 'condition', d.data ->> 'payment_term'));
+  end if;
+  v_vcode := coalesce(nullif(a ->> 'vendor_code', ''), (select code from pm_vendor where lower(name) = lower(d.data ->> 'supplier') limit 1));
+  if v_vcode is not null and not exists (select 1 from pm_vendor where code = v_vcode) then v_vcode := null; end if;
+  -- Hạn giao hàng: "4 tuần" / "30 ngày" / "2 tháng" (hoặc weeks / days / months) tính từ ngày đặt hàng của PO.
+  v_base := coalesce(nullif(d.data ->> 'order_date', '')::date, d.decided_at::date, current_date);
+  v_n := nullif(substring(lower(coalesce(d.data ->> 'delivery_term', '')) from '(\d+)\s*(?:tuần|tuan|week|ngày|ngay|day|tháng|thang|month)'), '')::int;
+  v_unit := substring(lower(coalesce(d.data ->> 'delivery_term', '')) from '\d+\s*(tuần|tuan|week|ngày|ngay|day|tháng|thang|month)');
+  if v_n is not null then
+    v_due := v_base + case when v_unit in ('tuần', 'tuan', 'week') then make_interval(days => v_n * 7)
+                           when v_unit in ('tháng', 'thang', 'month') then make_interval(months => v_n) else make_interval(days => v_n) end;
+  end if;
+  -- Bảo hành "24 tháng" / "24 months" → số tháng; "kể từ nghiệm thu / bàn giao / giao hàng" → mốc tính.
+  v_wtxt := lower(coalesce(a ->> 'warranty', '') || ' ' || coalesce(d.data ->> 'warranty_term', ''));
+  -- Hợp đồng nháp đã có (tải trước đó): chỉ điền các ô còn trống, không đè lên những gì đã nhập.
+  select id into v_id from pm_contract where project_code = p.code and status not in ('cancelled', 'rejected') order by id desc limit 1;
+  if v_id is not null then
+    update pm_contract c set
+      dept_code = coalesce(c.dept_code, p.dept_code), entity = coalesce(c.entity, pm_entity(p.dept_code)), po_no = coalesce(c.po_no, d.doc_no),
+      vendor_code = coalesce(c.vendor_code, v_vcode), supplier = coalesce(c.supplier, nullif(d.data ->> 'supplier', '')),
+      supplier_tax = coalesce(c.supplier_tax, (select tax_code from pm_vendor where code = v_vcode)),
+      value_pre_vat = coalesce(c.value_pre_vat, d.total_value),
+      pay_terms = case when jsonb_array_length(coalesce(c.pay_terms, '[]')) = 0 then v_terms else c.pay_terms end,
+      delivery_text = coalesce(c.delivery_text, nullif(d.data ->> 'delivery_term', '')), delivery_due = coalesce(c.delivery_due, v_due),
+      warranty_months = coalesce(c.warranty_months, nullif(substring(v_wtxt from '(\d+)\s*(tháng|thang|month)'), '')::int),
+      updated_at = now()
+     where c.id = v_id and c.status in ('draft', 'returned');
+    return v_id;
+  end if;
+  insert into pm_contract (no, title, kind, scope, entity, dept_code, project_code, po_no, vendor_code, supplier, supplier_tax, value_pre_vat,
+                           pay_terms, delivery_text, delivery_due, warranty_months, warranty_start, summary, status, source, created_by, created_name)
+  values (pm_ct_next_no(), coalesce(p.name, d.doc_no), 'supply', 'capex', pm_entity(p.dept_code), p.dept_code, p.code, d.doc_no, v_vcode,
+          nullif(d.data ->> 'supplier', ''), (select tax_code from pm_vendor where code = v_vcode), d.total_value, v_terms,
+          nullif(d.data ->> 'delivery_term', ''), v_due,
+          nullif(substring(v_wtxt from '(\d+)\s*(tháng|thang|month)'), '')::int,
+          case when v_wtxt ~ '(nghiệm thu|nghiem thu|accept)' then 'acceptance' when v_wtxt ~ '(bàn giao|ban giao|handover)' then 'handover'
+               when v_wtxt ~ '(giao hàng|giao hang|deliver)' then 'delivery' end,
+          nullif(concat_ws(E'\n', 'Bảo hành / Warranty: ' || nullif(coalesce(nullif(d.data ->> 'warranty_term', ''), a ->> 'warranty'), ''),
+                           nullif(d.data ->> 'note', '')), ''),
+          'draft', 'po', auth.uid(), am_me_name())
+  returning id into v_id;
+  return v_id;
+end $$;
+
+-- Xác nhận hợp đồng đã ký (tải từ PO): có ít nhất một văn bản → "đang hiệu lực".
+create or replace function pm_ct_confirm(p_id bigint)
+returns void language plpgsql security definer set search_path = public as $$
+declare c pm_contract;
+begin
+  perform pm_ct_need('edit');
+  select * into c from pm_contract where id = p_id for update;
+  if c.id is null then raise exception 'Không có hợp đồng %.', p_id; end if;
+  if c.source <> 'po' then raise exception 'Chỉ hợp đồng tải lên từ PO mới xác nhận trực tiếp — hợp đồng khác gửi duyệt theo tuyến.'; end if;
+  if c.status not in ('draft', 'returned') then raise exception 'Hợp đồng % đang "%".', c.no, c.status; end if;
+  if coalesce((select value::text from am_setting where key = 'ct_po_direct'), 'true') = 'false' then
+    raise exception 'Cài đặt yêu cầu gửi duyệt hợp đồng (ct_po_direct = false) — bấm "Gửi duyệt".';
+  end if;
+  if not exists (select 1 from pm_contract_file where contract_id = c.id) then
+    raise exception 'Tải bản scan hợp đồng đã ký trước khi xác nhận.';
+  end if;
+  if c.value_pre_vat is null and c.value_total is null then raise exception 'Nhập giá trị hợp đồng trước khi xác nhận.'; end if;
+  update pm_contract
+     set status = 'active', approved_at = now(), updated_at = now(),
+         route = coalesce(route, '[]'::jsonb) || jsonb_build_array(jsonb_build_object('key', 'confirm', 'by', auth.uid(), 'name', am_me_name(),
+                                                                                      'at', now(), 'action', 'approve', 'side', 'hotel'))
+   where id = c.id;
+  update pm_project set contract_value = coalesce(c.value_pre_vat, contract_value) where code = c.project_code;
+end $$;
+
+
+-- =====================================================================
+-- 3. ĐỀ NGHỊ THANH TOÁN
+-- =====================================================================
+
+create table if not exists pm_payreq (
+  id            bigserial primary key,
+  no            text not null unique,                    -- <mã dự án>/TT01
+  project_code  text not null references pm_project(code) on update cascade on delete cascade,
+  contract_id   bigint references pm_contract(id) on delete set null,
+  po_doc_id     bigint references pm_doc(id) on delete set null,
+  seq           int not null,
+  kind          text not null default 'interim' check (kind in ('first', 'interim', 'final')),
+  term_idx      int,                                     -- dòng lịch thanh toán của hợp đồng
+  milestone     text,
+  pct           numeric(7, 3),
+  amount        numeric(18, 2),                          -- trước VAT
+  vat_pct       numeric(5, 2),
+  amount_total  numeric(18, 2),                          -- gồm VAT
+  invoice_no    text,
+  note          text,
+  files         jsonb not null default '[]',             -- [{path, name, size, by, at}] bucket pm-payreq
+  links         jsonb not null default '[]',             -- [{url, label}]
+  status        text not null default 'draft'
+                check (status in ('draft', 'check', 'approve', 'process', 'paid', 'returned', 'rejected', 'cancelled')),
+  route         jsonb not null default '[]',             -- nhật ký các bước [{step, action, by, name, at, comment}]
+  paid_at       date,
+  paid_amount   numeric(18, 2),
+  voucher_no    text,
+  created_by    uuid default auth.uid(),
+  created_name  text,
+  created_at    timestamptz not null default now(),
+  submitted_at  timestamptz,
+  updated_at    timestamptz not null default now()
+);
+create index if not exists pm_payreq_project_idx on pm_payreq (project_code);
+create index if not exists pm_payreq_status_idx on pm_payreq (status);
+-- 29/09/2026: số tiền theo hợp đồng (lịch thanh toán) và số Thu mua điều chỉnh (amount) + lý do;
+-- người duyệt (Kế toán trưởng) với giờ duyệt và chữ ký — dấu "Approved by CA" trên hồ sơ in ra.
+alter table pm_payreq add column if not exists amount_contract numeric(18, 2);
+alter table pm_payreq add column if not exists adjust_note     text;
+alter table pm_payreq add column if not exists approved_by     uuid;
+alter table pm_payreq add column if not exists approved_name   text;
+alter table pm_payreq add column if not exists approved_at     timestamptz;
+alter table pm_payreq add column if not exists approved_sig    jsonb;
+comment on table pm_payreq is
+  'Đề nghị thanh toán theo đợt của dự án: Thu mua lập → Kế toán trưởng duyệt (Kế toán được báo cùng lúc) → Kế toán xác nhận đã chi. Ghi qua pm_payreq_*.';
+
+-- Người xem: quyền Thanh toán hoặc Dự án, trong phạm vi bộ phận.
+create or replace function pm_payreq_see(p_project text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select app_trusted() or coalesce((select (app_can('payment', 'view') or app_can('project', 'view'))
+                                           and (app_scope_root() or p.dept_code in (select app_scope_orgs()))
+                                    from pm_project p where p.code = p_project), false)
+$$;
+
+alter table pm_payreq enable row level security;
+revoke all on pm_payreq from anon;
+revoke insert, update, delete on pm_payreq from authenticated;
+grant select on pm_payreq to authenticated;
+drop policy if exists pm_payreq_read on pm_payreq;
+create policy pm_payreq_read on pm_payreq for select to authenticated using (pm_payreq_see(project_code));
+
+do $$ begin
+  if exists (select 1 from pg_proc where proname = 'app_audit_row') then
+    execute 'drop trigger if exists app_audit on pm_payreq';
+    execute 'create trigger app_audit after insert or update or delete on pm_payreq for each row execute function app_audit_row()';
+  end if;
+end $$;
+
+-- Vai trò của một bước (am_setting pay_route).
+create or replace function pm_pay_roles(p_step text)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce((select value -> p_step from am_setting where key = 'pay_route'),
+                  case p_step when 'prep' then '["PURCHASING"]' when 'check' then '[]' when 'watch' then '["ACCOUNTANT"]'
+                              when 'approve' then '["CHIEF_ACC"]' when 'process' then '["ACCOUNTANT"]' end::jsonb)
+$$;
+
+create or replace function pm_pay_can(p_step text, p_project text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select app_trusted() or coalesce((select am_is_actor(pm_pay_roles(p_step), p.dept_code)
+                                           or (p_step = 'prep' and pm_can_prepare('PO', p.dept_code))
+                                    from pm_project p where p.code = p_project), false)
+$$;
+
+-- Thông báo theo bước: người giữ vai trò của bước (không báo chính người bấm).
+create or replace function pm_pay_notify(r pm_payreq, p_kind text, p_step text, p_comment text default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_dept text := (select dept_code from pm_project where code = r.project_code);
+begin
+  if p_step is not null then
+    insert into pm_notice (user_id, kind, doc_no, doc_type, project_code, comment, ref_id)
+    select distinct u, p_kind, r.no, 'TT', r.project_code, coalesce(p_comment, r.status), r.id
+    from   am_actors(pm_pay_roles(p_step), v_dept) u
+    where  u is distinct from auth.uid() and (u is distinct from r.created_by or pm_self_ok() or p_step = 'prep');
+  end if;
+  if p_step is null and r.created_by is not null and r.created_by is distinct from auth.uid()
+     and exists (select 1 from app_user where id = r.created_by) then
+    insert into pm_notice (user_id, kind, doc_no, doc_type, project_code, comment, ref_id)
+    values (r.created_by, p_kind, r.no, 'TT', r.project_code, coalesce(p_comment, r.status), r.id);
+  end if;
+end $$;
+
+-- Tình hình thanh toán của dự án, cho màn đề nghị: hợp đồng, lịch, đã đề nghị / đã chi, AH cuối, loại được lập.
+create or replace function pm_payreq_state(p_project text)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare c pm_contract; v_po pm_doc; v_final boolean; v_ok boolean; v_why text; v_open int;
+begin
+  if not pm_payreq_see(p_project) then raise exception 'Bạn không có quyền xem dự án này.' using errcode = '42501'; end if;
+  select * into c from pm_contract where project_code = p_project and status not in ('cancelled', 'rejected') order by id desc limit 1;
+  select * into v_po from pm_doc where project_code = p_project and doc_type = 'PO' and status = 'approved' order by id desc limit 1;
+  v_final := exists (select 1 from pm_doc where project_code = p_project and doc_type = 'AH' and status = 'approved'
+                     and coalesce((data ->> 'final')::boolean, false));
+  select count(*) into v_open from pm_payreq where project_code = p_project and status in ('draft', 'check', 'approve', 'process', 'returned');
+  v_ok := true;
+  if c.id is not null and c.status not in ('approved', 'active', 'completed') then v_ok := false; v_why := 'contract'; end if;
+  if c.id is null and v_po.id is null then v_ok := false; v_why := 'po'; end if;
+  if v_open > 0 then v_ok := false; v_why := 'open'; end if;
+  if exists (select 1 from pm_payreq where project_code = p_project and kind = 'final' and status not in ('cancelled', 'rejected')) then v_ok := false; v_why := 'final_done'; end if;
+  return jsonb_build_object(
+    'contract', case when c.id is not null then jsonb_build_object('id', c.id, 'no', c.no, 'contract_no', c.contract_no, 'status', c.status,
+                   'supplier', c.supplier, 'value_pre_vat', c.value_pre_vat, 'vat_pct', c.vat_pct, 'value_total', c.value_total,
+                   'pay_terms', c.pay_terms, 'currency', c.currency) end,
+    'po', case when v_po.id is not null then jsonb_build_object('id', v_po.id, 'doc_no', v_po.doc_no, 'total', v_po.total_value,
+                   'supplier', v_po.data ->> 'supplier', 'payment_term', v_po.data ->> 'payment_term') end,
+    'final_ah', v_final, 'can_new', v_ok and pm_pay_can('prep', p_project), 'why', v_why,
+    'next_seq', (select count(*) + 1 from pm_payreq where project_code = p_project and status not in ('cancelled', 'rejected')),
+    'requested', (select coalesce(sum(amount), 0) from pm_payreq where project_code = p_project and status not in ('cancelled', 'rejected')),
+    'paid', (select coalesce(sum(coalesce(paid_amount, amount_total, amount)), 0) from pm_payreq where project_code = p_project and status = 'paid'),
+    'used_terms', (select coalesce(jsonb_agg(term_idx), '[]') from pm_payreq where project_code = p_project and term_idx is not null and status not in ('cancelled', 'rejected')));
+end $$;
+
+-- Lập / sửa (nháp, bị trả về). p = {id?, project_code, kind, term_idx, milestone, pct, amount, vat_pct, invoice_no, note, links}
+create or replace function pm_payreq_save(p jsonb)
+returns bigint language plpgsql security definer set search_path = public as $$
+declare r pm_payreq; v_id bigint := nullif(p ->> 'id', '')::bigint; v_prj text; st jsonb; c pm_contract; v_kind text; v_seq int; v_amt numeric; v_vat numeric;
+begin
+  if v_id is null then
+    v_prj := p ->> 'project_code';
+    if not pm_pay_can('prep', v_prj) then raise exception 'Chỉ Thu mua (người lập PO) lập đề nghị thanh toán.' using errcode = '42501'; end if;
+    st := pm_payreq_state(v_prj);
+    if not (st ->> 'can_new')::boolean then
+      raise exception '%', case st ->> 'why' when 'contract' then 'Hợp đồng chưa được xác nhận — xác nhận hợp đồng trước.'
+                                              when 'po' then 'Dự án chưa có PO đã duyệt.'
+                                              when 'open' then 'Đang có một đề nghị thanh toán chưa xong.'
+                                              when 'final_done' then 'Dự án đã có đề nghị quyết toán.' else 'Chưa lập được.' end;
+    end if;
+    v_kind := coalesce(nullif(p ->> 'kind', ''), 'interim');
+    if not exists (select 1 from pm_payreq where project_code = v_prj and status not in ('cancelled', 'rejected')) then v_kind := case when v_kind = 'final' then 'final' else 'first' end; end if;
+    if v_kind = 'final' and not (st ->> 'final_ah')::boolean then
+      raise exception 'Đề nghị quyết toán chỉ lập được sau khi AH cuối cùng đã duyệt.';
+    end if;
+    v_seq := (st ->> 'next_seq')::int;
+    insert into pm_payreq (no, project_code, contract_id, po_doc_id, seq, kind, created_name)
+    values (v_prj || '/TT' || lpad(v_seq::text, 2, '0'), v_prj, nullif(st -> 'contract' ->> 'id', '')::bigint,
+            nullif(st -> 'po' ->> 'id', '')::bigint, v_seq, v_kind, am_me_name())
+    returning id into v_id;
+  end if;
+  select * into r from pm_payreq where id = v_id for update;
+  if r.id is null then raise exception 'Không có đề nghị %.', v_id; end if;
+  if r.status not in ('draft', 'returned') then raise exception 'Đề nghị % đang "%" — không sửa được.', r.no, r.status; end if;
+  if not (r.created_by = auth.uid() or pm_pay_can('prep', r.project_code)) then raise exception 'Chỉ người lập sửa được.' using errcode = '42501'; end if;
+  if p ? 'kind' and p ->> 'kind' = 'final' and r.kind <> 'final'
+     and not exists (select 1 from pm_doc where project_code = r.project_code and doc_type = 'AH' and status = 'approved' and coalesce((data ->> 'final')::boolean, false)) then
+    raise exception 'Đề nghị quyết toán chỉ lập được sau khi AH cuối cùng đã duyệt.';
+  end if;
+  v_amt := nullif(p ->> 'amount', '')::numeric;
+  v_vat := nullif(p ->> 'vat_pct', '')::numeric;
+  update pm_payreq set
+    kind         = case when p ->> 'kind' in ('interim', 'final') and r.seq > 1 then p ->> 'kind'
+                        when p ->> 'kind' = 'final' then 'final' else kind end,
+    term_idx     = nullif(p ->> 'term_idx', '')::int,
+    milestone    = nullif(trim(p ->> 'milestone'), ''),
+    pct          = nullif(p ->> 'pct', '')::numeric,
+    amount       = v_amt,
+    amount_contract = case when p ? 'amount_contract' then nullif(p ->> 'amount_contract', '')::numeric else amount_contract end,
+    adjust_note  = case when p ? 'adjust_note' then nullif(trim(p ->> 'adjust_note'), '') else adjust_note end,
+    vat_pct      = v_vat,
+    amount_total = coalesce(nullif(p ->> 'amount_total', '')::numeric, case when v_amt is not null then round(v_amt * (1 + coalesce(v_vat, 0) / 100)) end),
+    invoice_no   = nullif(trim(p ->> 'invoice_no'), ''),
+    note         = nullif(trim(p ->> 'note'), ''),
+    links        = coalesce((select jsonb_agg(jsonb_build_object('url', l ->> 'url', 'label', left(coalesce(l ->> 'label', ''), 200)))
+                             from jsonb_array_elements(case when jsonb_typeof(p -> 'links') = 'array' then p -> 'links' else '[]' end) l
+                             where l ->> 'url' ~* '^https://'), links),
+    updated_at   = now()
+  where id = r.id;
+  return r.id;
+end $$;
+
+-- p_kind: vendor_letter (thư đề nghị thanh toán của nhà thầu) · invoice (hoá đơn) · other.
+drop function if exists pm_payreq_file_add(bigint, text, text, bigint);
+create or replace function pm_payreq_file_add(p_id bigint, p_path text, p_name text, p_size bigint, p_kind text default 'other')
+returns void language plpgsql security definer set search_path = public as $$
+declare r pm_payreq;
+begin
+  select * into r from pm_payreq where id = p_id for update;
+  if r.id is null then raise exception 'Không có đề nghị %.', p_id; end if;
+  if not (r.created_by = auth.uid() or pm_pay_can('prep', r.project_code) or pm_pay_can('check', r.project_code) or pm_pay_can('process', r.project_code)) then
+    raise exception 'Bạn không đính kèm được vào đề nghị này.' using errcode = '42501';
+  end if;
+  if r.status in ('paid', 'cancelled', 'rejected') then raise exception 'Đề nghị % đã đóng.', r.no; end if;
+  if p_path is null or split_part(p_path, '/', 1) <> r.id::text or length(p_path) > 300 then raise exception 'Đường dẫn tệp không hợp lệ.'; end if;
+  if jsonb_array_length(r.files) >= 40 then raise exception 'Tối đa 40 tệp.'; end if;
+  -- Thư đề nghị thanh toán của nhà thầu: bản scan có đóng dấu công ty (PDF hoặc ảnh), 29/09/2026.
+  if p_kind = 'vendor_letter' and lower(coalesce(p_name, p_path)) !~ '\.(pdf|png|jpe?g)$' then
+    raise exception 'Thư đề nghị thanh toán của nhà thầu: tải bản scan có đóng dấu (PDF, PNG, JPG).';
+  end if;
+  update pm_payreq set files = files || jsonb_build_array(jsonb_build_object('path', p_path, 'name', left(coalesce(p_name, ''), 200), 'size', p_size,
+                                                                             'kind', case when p_kind in ('vendor_letter', 'invoice') then p_kind else 'other' end,
+                                                                             'by', am_me_name(), 'at', now())), updated_at = now()
+   where id = r.id;
+end $$;
+
+create or replace function pm_payreq_file_del(p_id bigint, p_path text)
+returns void language plpgsql security definer set search_path = public as $$
+declare r pm_payreq;
+begin
+  select * into r from pm_payreq where id = p_id for update;
+  if r.id is null or not (r.created_by = auth.uid() or pm_pay_can('prep', r.project_code)) or r.status not in ('draft', 'returned') then
+    raise exception 'Chỉ người lập gỡ tệp được, khi đề nghị còn nháp.' using errcode = '42501';
+  end if;
+  update pm_payreq set files = coalesce((select jsonb_agg(f) from jsonb_array_elements(files) f where f ->> 'path' <> p_path), '[]'), updated_at = now()
+   where id = r.id;
+end $$;
+
+create or replace function pm_payreq_log(p_id bigint, p_step text, p_action text, p_comment text)
+returns void language sql security definer set search_path = public as $$
+  update pm_payreq set route = route || jsonb_build_array(jsonb_build_object('step', p_step, 'action', p_action, 'by', auth.uid(),
+                                                                             'name', am_me_name(), 'at', now(), 'comment', nullif(trim(p_comment), '')))
+   where id = p_id
+$$;
+
+-- Gửi: cần số tiền, hồ sơ đính kèm và thư đề nghị thanh toán của nhà thầu (bản scan có đóng dấu).
+create or replace function pm_payreq_submit(p_id bigint)
+returns void language plpgsql security definer set search_path = public as $$
+declare r pm_payreq; v_to text;
+begin
+  select * into r from pm_payreq where id = p_id for update;
+  if r.id is null then raise exception 'Không có đề nghị %.', p_id; end if;
+  if r.status not in ('draft', 'returned') then raise exception 'Đề nghị % đang "%".', r.no, r.status; end if;
+  if not (r.created_by = auth.uid() or pm_pay_can('prep', r.project_code)) then raise exception 'Chỉ người lập gửi được.' using errcode = '42501'; end if;
+  if coalesce(r.amount, r.amount_total, 0) <= 0 then raise exception 'Nhập số tiền đề nghị.'; end if;
+  if jsonb_array_length(r.files) + jsonb_array_length(r.links) = 0 then raise exception 'Đính kèm hồ sơ thanh toán (tệp hoặc link) trước khi gửi.'; end if;
+  -- Thư đề nghị thanh toán của nhà thầu (bản scan có đóng dấu công ty) luôn bắt buộc (29/09/2026).
+  if not exists (select 1 from jsonb_array_elements(r.files) f where f ->> 'kind' = 'vendor_letter') then
+    raise exception 'Đính kèm thư đề nghị thanh toán của nhà thầu (bản scan có đóng dấu công ty) trước khi gửi.';
+  end if;
+  -- Số tiền khác lịch thanh toán của hợp đồng: ghi lý do điều chỉnh.
+  if r.amount_contract is not null and abs(coalesce(r.amount, 0) - r.amount_contract) >= 1
+     and coalesce(trim(r.adjust_note), '') = '' then raise exception 'Số tiền khác hợp đồng: ghi lý do điều chỉnh.'; end if;
+  -- Có bước kiểm tra (pay_route.check) thì tới đó; không thì thẳng tới Kế toán trưởng duyệt.
+  v_to := case when jsonb_array_length(coalesce(pm_pay_roles('check'), '[]')) > 0 then 'check' else 'approve' end;
+  update pm_payreq set status = v_to, submitted_at = now(), updated_at = now() where id = r.id returning * into r;
+  perform pm_payreq_log(r.id, 'prep', case when r.route @> '[{"action": "return"}]' then 'resubmit' else 'submit' end, null);
+  perform pm_pay_notify(r, 'pay', v_to, v_to);
+  perform pm_pay_notify(r, 'info', 'watch', 'submitted');         -- Kế toán nắm thông tin cùng lúc
+end $$;
+
+-- Kiểm tra (check) · duyệt (approve) · chi (process). p_action: approve | return | reject | paid.
+-- p = {paid_at, paid_amount, voucher_no} khi chi.
+create or replace function pm_payreq_act(p_id bigint, p_action text, p_comment text default null, p jsonb default '{}'::jsonb)
+returns text language plpgsql security definer set search_path = public as $$
+declare r pm_payreq; v_step text; v_to text; v_sig jsonb;
+begin
+  select * into r from pm_payreq where id = p_id for update;
+  if r.id is null then raise exception 'Không có đề nghị %.', p_id; end if;
+  if r.status not in ('check', 'approve', 'process') then raise exception 'Đề nghị % không chờ xử lý.', r.no; end if;
+  v_step := r.status;
+  if not pm_pay_can(v_step, r.project_code) then
+    raise exception 'Bước này cần vai trò %.', (select string_agg(x, ' / ') from jsonb_array_elements_text(pm_pay_roles(v_step)) x) using errcode = '42501';
+  end if;
+  if r.created_by = auth.uid() and not pm_self_ok() and not app_trusted() then
+    raise exception 'Người lập không tự kiểm tra / duyệt đề nghị của mình.' using errcode = '42501';
+  end if;
+  if p_action in ('return', 'reject') and coalesce(trim(p_comment), '') = '' then raise exception 'Trả về hoặc từ chối phải ghi lý do.'; end if;
+  if p_action = 'reject' and v_step <> 'approve' then raise exception 'Chỉ bước duyệt mới từ chối được — bước này trả về.'; end if;
+  if p_action = 'paid' and v_step <> 'process' then raise exception 'Chỉ ghi đã chi ở bước thực hiện chi.'; end if;
+  if p_action = 'approve' and v_step = 'process' then p_action := 'paid'; end if;
+  if p_action not in ('approve', 'return', 'reject', 'paid') then raise exception 'Thao tác không hợp lệ: %', p_action; end if;
+
+  if p_action = 'return' then
+    update pm_payreq set status = 'returned', updated_at = now() where id = r.id returning * into r;
+    perform pm_payreq_log(r.id, v_step, 'return', p_comment);
+    perform pm_pay_notify(r, 'pay', null, 'returned: ' || trim(p_comment));
+    return 'returned';
+  elsif p_action = 'reject' then
+    update pm_payreq set status = 'rejected', updated_at = now() where id = r.id returning * into r;
+    perform pm_payreq_log(r.id, v_step, 'reject', p_comment);
+    perform pm_pay_notify(r, 'pay', null, 'rejected: ' || trim(p_comment));
+    return 'rejected';
+  elsif p_action = 'approve' then
+    v_to := case v_step when 'check' then 'approve' else 'process' end;
+    if v_step = 'approve' then
+      -- Kế toán trưởng duyệt (ký): tên, giờ và chữ ký thành dấu "Approved by CA" trên hồ sơ in ra.
+      v_sig := pm_sig_check(p -> 'sig');
+      update pm_payreq set approved_by = auth.uid(), approved_name = am_me_name(), approved_at = now(), approved_sig = v_sig where id = r.id;
+    end if;
+    update pm_payreq set status = v_to, updated_at = now() where id = r.id returning * into r;
+    perform pm_payreq_log(r.id, v_step, 'approve', p_comment);
+    perform pm_pay_notify(r, 'pay', v_to, v_to);
+    perform pm_pay_notify(r, 'info', null, v_to);                      -- Thu mua thấy hồ sơ đi tới đâu
+    return v_to;
+  end if;
+  -- Đã chi.
+  if nullif(p ->> 'paid_at', '') is null then raise exception 'Nhập ngày chi.'; end if;
+  update pm_payreq set status = 'paid', paid_at = (p ->> 'paid_at')::date,
+                       paid_amount = coalesce(nullif(p ->> 'paid_amount', '')::numeric, amount_total, amount),
+                       voucher_no = nullif(trim(p ->> 'voucher_no'), ''), updated_at = now()
+   where id = r.id returning * into r;
+  perform pm_payreq_log(r.id, 'process', 'paid', p_comment);
+  perform pm_pay_notify(r, 'pay', null, 'paid');
+  -- Dòng lịch thanh toán của hợp đồng: đã chi.
+  if r.contract_id is not null and r.term_idx is not null then
+    update pm_contract set pay_terms = jsonb_set(pay_terms, array[r.term_idx::text, 'paid'], 'true'::jsonb, true), updated_at = now()
+     where id = r.contract_id and jsonb_typeof(pay_terms) = 'array' and jsonb_array_length(pay_terms) > r.term_idx;
+  end if;
+  -- Quyết toán xong: dự án hoàn thành, hợp đồng hoàn thành (còn bảo hành).
+  if r.kind = 'final' then
+    update pm_project set status_override = 'completed'
+     where code = r.project_code and (status_override is null or status_override = 'in_progress');
+    update pm_contract set status = 'completed', updated_at = now() where id = r.contract_id and status in ('approved', 'active');
+  end if;
+  return 'paid';
+end $$;
+
+-- Kế toán xác nhận đã thanh toán NHIỀU đề nghị một lúc (cùng ngày chi; số tiền = số đã duyệt gồm VAT,
+-- số chứng từ chung nếu có). Trả về số đề nghị đã ghi.
+create or replace function pm_payreq_paid_many(p_ids bigint[], p jsonb)
+returns int language plpgsql security definer set search_path = public as $$
+declare v_id bigint; n int := 0;
+begin
+  if nullif(p ->> 'paid_at', '') is null then raise exception 'Nhập ngày chi.'; end if;
+  foreach v_id in array coalesce(p_ids, '{}') loop
+    perform pm_payreq_act(v_id, 'paid', nullif(trim(p ->> 'note'), ''),
+                          jsonb_build_object('paid_at', p ->> 'paid_at', 'voucher_no', p ->> 'voucher_no'));
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+-- Số AH (29/09/2026): AH không phải bản cuối mang đuôi -01, -02… theo thứ tự lập; AH cuối giữ số gốc
+-- (AH.KIT.05.2026). Đặt lại mỗi khi AH còn nháp / bị trả về / gửi duyệt; AH đã duyệt giữ nguyên số.
+create or replace function pm_ah_no_trg()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v_base text; v_n int; v_no text;
+begin
+  if new.doc_type <> 'AH' or new.status not in ('draft', 'returned', 'in_review') then return new; end if;
+  if tg_op = 'UPDATE' and old.status = 'approved' then return new; end if;
+  v_base := regexp_replace(new.doc_no, '(/\d+|-\d{2})$', '');
+  if coalesce((new.data ->> 'final')::boolean, false) then
+    v_no := v_base;
+  else
+    select count(*) + 1 into v_n from pm_doc x
+     where x.project_code = new.project_code and x.doc_type = 'AH' and x.id <> new.id and x.id < coalesce(new.id, 9223372036854775807)
+       and x.status not in ('cancelled', 'rejected') and not coalesce((x.data ->> 'final')::boolean, false);
+    v_no := v_base || '-' || lpad(v_n::text, 2, '0');
+  end if;
+  -- Số đã có ở chứng từ khác (vd AH cuối cũ bị huỷ): giữ số hiện tại.
+  if v_no <> new.doc_no and not exists (select 1 from pm_doc y where y.doc_no = v_no and y.id <> coalesce(new.id, -1)) then
+    new.doc_no := v_no;
+  end if;
+  return new;
+end $$;
+drop trigger if exists pm_ah_no on pm_doc;
+create trigger pm_ah_no before insert or update of data, status on pm_doc for each row execute function pm_ah_no_trg();
+
+create or replace function pm_payreq_cancel(p_id bigint, p_comment text)
+returns void language plpgsql security definer set search_path = public as $$
+declare r pm_payreq;
+begin
+  select * into r from pm_payreq where id = p_id for update;
+  if r.id is null then raise exception 'Không có đề nghị %.', p_id; end if;
+  if r.status in ('paid', 'cancelled') then raise exception 'Đề nghị % đã %.', r.no, r.status; end if;
+  if not (app_trusted() or app_can('payment', 'admin') or (r.created_by = auth.uid() and r.status in ('draft', 'returned'))) then
+    raise exception 'Chỉ người lập (khi còn nháp) hoặc quản trị huỷ được.' using errcode = '42501';
+  end if;
+  update pm_payreq set status = 'cancelled', updated_at = now() where id = r.id;
+  perform pm_payreq_log(r.id, r.status, 'cancel', p_comment);
+end $$;
+
+-- Việc của tôi ở đề nghị thanh toán + các đề nghị cần lập (cho To-do list):
+--   pay_check / pay_approve / pay_process   đang chờ bước của tôi
+--   pay_returned                            bị trả về tôi
+--   pay_first                               hợp đồng đã xác nhận (hoặc chỉ có PO) mà chưa đề nghị lần nào
+--   pay_final                               AH cuối đã duyệt mà chưa đề nghị quyết toán
+create or replace function pm_todo_pay()
+returns table (kind text, project_code text, project_name text, dept_code text, ref_id bigint, ref_no text, at timestamptz, amount numeric, detail text)
+language sql stable security definer set search_path = public as $$
+  select 'pay_' || r.status, r.project_code, p.name, p.dept_code, r.id, r.no, coalesce(r.submitted_at, r.created_at), coalesce(r.amount_total, r.amount), r.kind
+  from   pm_payreq r join pm_project p on p.code = r.project_code
+  where  r.status in ('check', 'approve', 'process') and pm_pay_can(r.status, r.project_code)
+    and  (r.created_by is distinct from auth.uid() or pm_self_ok())
+  union all
+  select 'pay_returned', r.project_code, p.name, p.dept_code, r.id, r.no, r.updated_at, coalesce(r.amount_total, r.amount), r.kind
+  from   pm_payreq r join pm_project p on p.code = r.project_code
+  where  r.status = 'returned' and r.created_by = auth.uid()
+  union all
+  select 'pay_first', p.code, p.name, p.dept_code, coalesce(c.id, po.id), coalesce(c.no, po.doc_no), coalesce(c.approved_at, po.decided_at),
+         coalesce(c.value_pre_vat, po.total_value), null
+  from   pm_project p
+  join   lateral (select * from pm_doc d where d.project_code = p.code and d.doc_type = 'PO' and d.status = 'approved' order by d.id desc limit 1) po on true
+  left   join lateral (select * from pm_contract x where x.project_code = p.code and x.status not in ('cancelled', 'rejected') order by x.id desc limit 1) c on true
+  where  p.status not in ('completed', 'cancelled') and not coalesce(p.wf_offline, false)
+    and  c.status in ('approved', 'active')                                -- chỉ có PO: không nhắc (có thể không cần đề nghị qua app)
+    and  not exists (select 1 from pm_payreq r where r.project_code = p.code and r.status <> 'cancelled')
+    and  pm_pay_can('prep', p.code)
+  union all
+  select 'pay_final', p.code, p.name, p.dept_code, ah.id, ah.doc_no, ah.decided_at, null, null
+  from   pm_project p
+  join   lateral (select * from pm_doc d where d.project_code = p.code and d.doc_type = 'AH' and d.status = 'approved'
+                  and coalesce((d.data ->> 'final')::boolean, false) order by d.id desc limit 1) ah on true
+  where  not coalesce(p.wf_offline, false) and p.status <> 'cancelled'
+    and  exists (select 1 from pm_payreq r where r.project_code = p.code and r.status not in ('cancelled', 'rejected'))
+    and  not exists (select 1 from pm_payreq r where r.project_code = p.code and r.kind = 'final' and r.status not in ('cancelled', 'rejected'))
+    and  not exists (select 1 from pm_payreq r where r.project_code = p.code and r.status in ('draft', 'check', 'approve', 'process', 'returned'))
+    and  pm_pay_can('prep', p.code)
+$$;
+
+-- Dự án có hợp đồng / đề nghị thanh toán: AH cuối duyệt xong thì vẫn "Đang thực hiện" tới khi quyết toán xong.
+create or replace function pm_pay_hold_trg()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.doc_type <> 'AH' or new.status <> 'approved' or old.status = 'approved'
+     or not coalesce((new.data ->> 'final')::boolean, false) then return new; end if;
+  if (exists (select 1 from pm_contract c where c.project_code = new.project_code and c.status not in ('cancelled', 'rejected'))
+      or exists (select 1 from pm_payreq r where r.project_code = new.project_code and r.status <> 'cancelled'))
+     and not exists (select 1 from pm_payreq r where r.project_code = new.project_code and r.kind = 'final' and r.status = 'paid') then
+    update pm_project set status_override = 'in_progress' where code = new.project_code and status_override is null;
+  end if;
+  return new;
+end $$;
+drop trigger if exists pm_pay_hold on pm_doc;
+create trigger pm_pay_hold after update of status on pm_doc for each row execute function pm_pay_hold_trg();
+
+
+-- =====================================================================
+-- 4. STORAGE — bucket riêng "pm-payreq" (<id đề nghị>/<tệp>)
+-- =====================================================================
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('pm-payreq', 'pm-payreq', false, 26214400,
+        array['application/pdf', 'image/png', 'image/jpeg',
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel',
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword',
+              'application/zip', 'application/x-zip-compressed', 'text/xml', 'application/xml'])
+on conflict (id) do update set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+
+create or replace function pm_payreq_path_ok(p_name text, p_write boolean)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from pm_payreq r where r.id::text = split_part(coalesce(p_name, ''), '/', 1)
+                 and case when p_write then r.status not in ('paid', 'cancelled', 'rejected')
+                                            and (r.created_by = auth.uid() or pm_pay_can('prep', r.project_code)
+                                                 or pm_pay_can('check', r.project_code) or pm_pay_can('process', r.project_code))
+                          else pm_payreq_see(r.project_code) end)
+$$;
+
+drop policy if exists pm_payreq_up on storage.objects;
+create policy pm_payreq_up on storage.objects for insert to authenticated
+  with check (bucket_id = 'pm-payreq' and pm_payreq_path_ok(name, true));
+drop policy if exists pm_payreq_rd on storage.objects;
+create policy pm_payreq_rd on storage.objects for select to authenticated
+  using (bucket_id = 'pm-payreq' and pm_payreq_path_ok(name, false));
+drop policy if exists pm_payreq_del on storage.objects;
+create policy pm_payreq_del on storage.objects for delete to authenticated
+  using (bucket_id = 'pm-payreq' and pm_payreq_path_ok(name, true));
+
+
+-- =====================================================================
+-- 5. QUYỀN GỌI HÀM
+-- =====================================================================
+
+revoke execute on function pm_pay_notify(pm_payreq, text, text, text), pm_payreq_log(bigint, text, text, text), pm_pay_hold_trg(), pm_ah_no_trg()
+  from public, anon, authenticated;
+revoke execute on function pm_ct_from_po(bigint), pm_ct_confirm(bigint), pm_payreq_see(text), pm_pay_roles(text), pm_pay_can(text, text),
+  pm_payreq_state(text), pm_payreq_save(jsonb), pm_payreq_file_add(bigint, text, text, bigint, text), pm_payreq_file_del(bigint, text), pm_payreq_paid_many(bigint[], jsonb),
+  pm_payreq_submit(bigint), pm_payreq_act(bigint, text, text, jsonb), pm_payreq_cancel(bigint, text), pm_todo_pay(),
+  pm_payreq_path_ok(text, boolean) from public, anon;
+grant execute on function pm_ct_from_po(bigint), pm_ct_confirm(bigint), pm_payreq_see(text), pm_pay_roles(text), pm_pay_can(text, text),
+  pm_payreq_state(text), pm_payreq_save(jsonb), pm_payreq_file_add(bigint, text, text, bigint, text), pm_payreq_file_del(bigint, text), pm_payreq_paid_many(bigint[], jsonb),
+  pm_payreq_submit(bigint), pm_payreq_act(bigint, text, text, jsonb), pm_payreq_cancel(bigint, text), pm_todo_pay(),
+  pm_payreq_path_ok(text, boolean) to authenticated;
+
+-- Lưới an toàn cho project dùng chung (xem app_lock_anon trong 17_auth.sql).
+select app_lock_anon();
+
+
+-- =====================================================================
+-- 6. KIỂM CHỨNG
+-- =====================================================================
+
+select 'Vai trò Kế toán (ACCOUNTANT)' as "Mục", count(*)::text as "Thực tế", '1' as "Mong đợi",
+       case when count(*) = 1 then '✔' else '✘ HỎNG' end as "Đạt"
+from   app_role where code = 'ACCOUNTANT'
+union all
+select 'Bảng đề nghị thanh toán có RLS', count(*)::text, '1', case when count(*) = 1 then '✔' else '✘ HỎNG' end
+from   pg_class where relname = 'pm_payreq' and relrowsecurity
+union all
+select 'Khách (anon) đọc bảng đề nghị (phải = 0)', count(*)::text, '0', case when count(*) = 0 then '✔' else '✘ HỎNG' end
+from   information_schema.role_table_grants where table_name = 'pm_payreq' and grantee = 'anon'
+union all
+select 'Tuyến đề nghị thanh toán (pay_route)', count(*)::text, '1', case when count(*) = 1 then '✔' else '✘ HỎNG' end
+from   am_setting where key = 'pay_route'
+union all
+select 'Bucket pm-payreq (riêng tư) + 3 chính sách', (select count(*) from storage.buckets where id = 'pm-payreq' and not public)::text || ' + ' || count(*)::text,
+       '1 + 3', case when count(*) = 3 and exists (select 1 from storage.buckets where id = 'pm-payreq' and not public) then '✔' else '✘ HỎNG' end
+from   pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname in ('pm_payreq_up', 'pm_payreq_rd', 'pm_payreq_del')
+union all
+select 'Hợp đồng nhận nguồn "po"', count(*)::text, '1', case when count(*) = 1 then '✔' else '✘ HỎNG' end
+from   pg_constraint where conname = 'pm_contract_source_check' and pg_get_constraintdef(oid) like '%po%'
+union all
+select 'Trigger giữ "Đang thực hiện" tới khi quyết toán', count(*)::text, '1', case when count(*) = 1 then '✔' else '✘ HỎNG' end
+from   pg_trigger where tgname = 'pm_pay_hold' and not tgisinternal
+union all
+select 'Số AH: AH chưa phải bản cuối mang đuôi -01, -02…', count(*)::text, '1', case when count(*) = 1 then '✔' else '✘ HỎNG' end
+from   pg_trigger where tgname = 'pm_ah_no' and not tgisinternal
+union all
+select 'Tuyến thanh toán: Thu mua → KTT duyệt → Kế toán xác nhận chi', coalesce((select value::text from am_setting where key = 'pay_route'), '—'), 'check = [] (hoặc đã chỉnh)', '✔';
+

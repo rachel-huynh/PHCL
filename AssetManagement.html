@@ -99,6 +99,9 @@
   .top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--panel);
        border-bottom:1px solid var(--line);padding:11px 20px;position:sticky;top:0;z-index:5}
   .top h1{margin:0;font-size:17px;font-weight:700;letter-spacing:-.01em}
+  /* Back to the previous screen (NAVH, user 29/09/2026) */
+  .top .navback{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--navy)}
+  .top .navback[hidden]{display:none}
   .tools{margin-left:auto;display:flex;gap:7px;flex-wrap:wrap;align-items:center}
   /* Công tắc ngôn ngữ EN/VI — English là ngôn ngữ chính thức */
   .seg{display:inline-flex;border:1px solid #cfd4da;border-radius:4px;overflow:hidden;flex:none}
@@ -136,6 +139,10 @@
   /* The bulk bar is a gold-edged strip rather than a plain card, so it is
      obviously a temporary state of the register and not part of its furniture. */
   .card.bulk{border-left:3px solid var(--gold);margin:10px 0}
+  /* Actions on the ticked assets, above the register table on the right (29/09/2026) */
+  .regops{justify-content:flex-end;align-items:center;gap:8px;margin:8px 0 6px}
+  .regops .tdnote{margin:0 auto 0 0}
+  .regops .btn[hidden]{display:none}
   .card.bulk > .row{margin:0}
   /* Actions pushed to the right end of a row of fields. */
   .acts{margin-left:auto;display:flex;gap:7px;flex:none}
@@ -1462,7 +1469,10 @@
   .fspecgrid label.wide{grid-column:span 3}
   .fspecgrid input{border:1px dashed #7d95ba;background:#fff;font:inherit;font-size:11px;color:var(--ink);padding:1px 3px}
   /* MC: a vendor's name on its own line under the group title. */
-  .fgv.col{flex-direction:column;gap:1px}
+  .fgv.col{flex-direction:column;gap:1px;min-width:0;max-width:100%}
+  /* A vendor's name in a form header: wrapped inside its box, never widening the page (MC, 29/09/2026). */
+  .fsheet .fvn{display:block;max-width:100%;white-space:normal;overflow-wrap:anywhere;line-height:1.2;
+               display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   /* PO / AH: the column switch while editing; the overhead lines. */
   .fcolbar{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;margin:2px 0 6px;font-size:11px}
   .fcolbar .chk{font-size:11px;gap:3px}
@@ -1541,6 +1551,39 @@
   .ftermrow.tail > :first-child{padding-right:10px}
   .ftotbox .ftl b{display:flex;align-items:center;margin:0}
   .ftotbox .ftl .fv{margin:0}
+  /* Feedback 29/09/2026 (FFE.KIT.01.2026 forms). */
+  /* QC / MC general block: the labels start where the bar's title does, not at the edge. */
+  .fsheet .fkv2 table.fkv:first-child{margin-left:2px}
+  /* QC: a vendor's name wraps inside its column; the three columns keep their width. */
+  .fqc:not(.fap) td.fvh{width:13%}
+  .fqc td.fvbox.freq{outline:2px solid #e8a33d;outline-offset:-2px;background:#fff7e6}
+  .fsheet .ftable td.c{text-align:center}
+  /* QC appendix: the score rows on the columns of the price table under them (same colgroup). */
+  .fsheet .fqc.fap{table-layout:fixed;width:100%;margin:0;border-spacing:0 2px}
+  .fsheet .fqc.fap td{border-left:3px solid transparent;border-right:3px solid transparent;background-clip:padding-box;padding:1px 4px}
+  .fqc.fap td.fnav,.fqc.fap td.fnav.sm{width:auto;overflow:hidden;text-overflow:ellipsis}
+  .fqc.fap td.fnav.wrap{white-space:normal;line-height:1.15}
+  .fqc.fap td.fvh .fvn{white-space:normal;overflow-wrap:anywhere}
+  /* PO: code, name and supplier on one row; the code box as wide as the code, the three the same height. */
+  .fgrid.feq{grid-template-columns:max-content minmax(0,1fr) minmax(0,1.35fr)}
+  .fgrid.feq > .fcell{display:flex;flex-direction:column}
+  .fgrid.feq > .fcell > .fv{flex:1}
+  /* PO overheads: the table's full width, black like the lines above. */
+  .fsheet .ftable.fovh{margin-top:6px}
+  /* PO / AH totals box: its rows share the height of the note beside it; each label on one line. */
+  .ftermrow.tail .ftotbox:has(.ftl + .ftl){display:grid;grid-auto-rows:1fr;row-gap:3px;align-self:stretch}
+  .ftermrow.tail .ftotbox{align-self:start}
+  .ftermrow.tail .ftotbox .ftl{margin:0}
+  .ftotbox .ftl b.fit{white-space:nowrap;overflow:hidden}
+  /* MC: the asset code of column B, with its search button. */
+  .wfpickw{display:flex;gap:3px;align-items:center}
+  .wfpickw input{flex:1;min-width:0}
+  .wfpickw .btn.tiny{padding:1px 5px;flex:none}
+  .fmcsub{display:flex;gap:3px;margin-top:2px}
+  .fmcsub input{min-width:0}
+  /* The Asset register in picking mode (an RR / MC line waiting for its asset). */
+  .regpick{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fff7e6;border:1px solid #e8a33d;border-radius:8px;padding:8px 12px;margin:0 0 8px}
+  .regpick span{flex:1;min-width:200px}
   /* ============ Tablet / phone mode (body.tab, tbDetect) — 26/09/2026 ============ */
   body.tab aside{display:none}
   body.tab .top{padding:9px 14px}
@@ -1918,6 +1961,71 @@
   .ctdue.late{background:var(--bad-bg);color:var(--red)}
   .ctfiles{margin-left:6px;font-size:11px;color:var(--dim)}
   .ctsub{color:var(--dim);font-size:12.5px;margin:-2px 0 6px}
+
+  /* Tendering (tendering.js, 41_tendering.sql) */
+  button.aokpi.tgkpi{font:inherit;text-align:left;cursor:pointer;color:inherit}
+  button.aokpi.tgkpi:hover{border-color:var(--navy)} button.aokpi.tgkpi.on{border-color:var(--navy);box-shadow:0 0 0 2px rgba(11,31,58,.14)}
+  .tgbt td{vertical-align:middle}
+  .tgbids{min-width:150px} .tgbids small{display:block;color:var(--dim);font-size:11.5px;margin-top:3px}
+  .tgbar{height:7px;border-radius:999px;background:#e6eaf1;overflow:hidden} .tgbar i{display:block;height:100%;background:var(--blue);border-radius:999px}
+  .tgbar.big{height:9px;flex:1;max-width:320px}
+  .tgprog{display:flex;align-items:center;gap:10px;margin:8px 0;font-size:12.5px}
+  .tgmore{display:flex;gap:4px;flex-wrap:wrap}
+  .tglate{color:var(--red);font-size:11.5px}
+  .tgwarn{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:8px 0}
+  .tgfiles{padding-left:18px;margin:4px 0} .tgfiles li{margin:3px 0} .tgfiles .xbtn{margin-left:6px}
+  .tgqa{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0;background:#fff}
+  .tgqa.open{border-color:#f0c77a;background:#fffaf0}
+  .tgqa .a{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)} .tgqa .a textarea{width:100%;margin-bottom:4px}
+  .tgqa table{margin-top:6px}
+  .tgitems input,.tgitems select{width:100%}
+  .tgdrawer{width:min(860px,100vw)}
+  .tgmodal{position:fixed;inset:0;z-index:60;background:rgba(11,31,58,.35);display:flex;align-items:flex-start;justify-content:center;padding:8vh 16px}
+  .tgmpanel{background:var(--panel);border-radius:10px;box-shadow:0 12px 40px rgba(11,31,58,.3);padding:16px 18px;width:min(560px,100%);display:flex;flex-direction:column;gap:8px;max-height:84vh;overflow:auto}
+  .tgmpanel:has(.ctclash),.tgmpanel:has(.pqpaybulk){width:min(860px,100%)}
+  .ctclash td{white-space:pre-wrap;vertical-align:top} .ctclash td.ctnew{background:#fffbe6}
+  .tgmpanel h2{margin:0 0 4px;font-size:14px;color:var(--navy)} .tgmpanel textarea,.tgmpanel input,.tgmpanel select{width:100%}
+
+  /* Receiving on a tablet (receive.js) */
+  .rvcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-top:8px}
+  .rvlist{display:flex;flex-direction:column;gap:8px;margin-bottom:90px}
+  .rvrow{display:grid;grid-template-columns:minmax(200px,1.4fr) minmax(150px,1fr) auto minmax(220px,1fr);gap:10px;align-items:center;
+         background:var(--panel);border:1px solid var(--line);border-left:5px solid #c3cad6;border-radius:10px;padding:10px 12px;transition:box-shadow .3s}
+  .rvrow.got{border-left-color:var(--blue)} .rvrow.full{border-left-color:var(--green);opacity:.75}
+  .rvrow.hit{box-shadow:0 0 0 3px rgba(47,111,181,.45)}
+  .rvwho{display:flex;flex-direction:column;gap:2px} .rvwho code{font-size:13.5px;font-weight:700;color:var(--navy)} .rvwho small{font-size:12px}
+  .rvqty{display:flex;align-items:flex-end;gap:6px} .rvqty label{display:flex;flex-direction:column;gap:2px} .rvqty input[type=text]{width:90px;font-size:15px;padding:7px 8px}
+  .rvchk{flex-direction:row!important;align-items:center;gap:6px!important;font-size:14px} .rvchk input{width:22px;height:22px}
+  .rvseg button{padding:8px 12px;font-size:13px}
+  .rvph{display:flex;gap:8px;flex-wrap:wrap}
+  .rvshot{display:flex;align-items:center;gap:6px;border:1px dashed #b8c2d3;border-radius:8px;background:#fff;padding:6px 10px;min-height:44px;cursor:pointer;font:inherit;font-size:13px}
+  .rvshot.ok{border-style:solid;border-color:var(--green);color:var(--green)} .rvshot img{width:36px;height:36px;object-fit:cover;border-radius:4px}
+  .rvfoot{position:sticky;bottom:0;z-index:5;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;
+          background:var(--panel);border:1px solid var(--line);border-top:3px solid var(--navy);border-radius:10px 10px 0 0;padding:10px 14px;box-shadow:0 -6px 18px rgba(11,31,58,.08)}
+  @media (max-width:760px){ .rvrow{grid-template-columns:1fr} }
+
+  /* Payment requests (payreq.js, 42_payment_request.sql) */
+  .ctst.pq-check,.ctst.pq-approve,.ctst.pq-process{background:var(--info-bg);color:var(--blue)}
+  .ctst.pq-paid{background:var(--ok-bg);color:var(--green)}
+  .ctst.pq-draft,.ctst.pq-returned{background:var(--warn-bg);color:var(--warn-ink)}
+  .ctst.pq-rejected,.ctst.pq-cancelled{background:var(--bad-bg);color:var(--red)}
+  tr.pqmine td{background:#f3f7fd} tr.pqpaid td{color:var(--green)}
+  .pqdrawer{width:min(860px,100vw)}
+  .pqmark{display:flex;align-items:center;gap:12px;border:2px solid var(--green);border-radius:8px;padding:6px 12px;margin:8px 0;color:var(--green);background:#f1faf4}
+  .pqmark img{height:40px}
+  dd.pqadj{color:var(--amber);font-weight:700}
+  .pqct{font-size:12.5px;color:var(--dim);padding:0 0 8px}
+  .pqpaybulk{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;border:1px solid var(--line);border-left:4px solid var(--green);border-radius:8px;padding:8px 12px;margin:8px 0;background:#f6fbf8}
+  /* The printed payment request (a cover page before the project's forms) */
+  .pqcover{width:733px;padding:18px 22px;background:#fff;color:#111;font:12.5px/1.45 Calibri,Arial,sans-serif}
+  .pqcover .pqch{display:flex;justify-content:space-between;gap:20px;border-bottom:2px solid #003366;padding-bottom:6px}
+  .pqcover .pqch .r{text-align:right}
+  .pqcover h1{text-align:center;color:#003366;font-size:18px;margin:14px 0}
+  .pqcover table{width:100%;border-collapse:collapse} .pqcover th,.pqcover td{border:1px solid #c9d3e0;padding:5px 8px;text-align:left;vertical-align:top;white-space:pre-wrap}
+  .pqcover th{width:38%;background:#eef3fa;color:#003366;font-weight:600}
+  .pqcover .pqsign{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px;text-align:center}
+  .pqcover .pqsign > div{border:1px solid #c9d3e0;padding:8px;display:flex;flex-direction:column;gap:3px;align-items:center;min-height:120px}
+  .pqcover .pqsign img{height:48px} .pqcover .pqsign .gap{height:48px} .pqcover .pqsign .nm{font-weight:700;text-transform:uppercase}
   .ctgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
   .ctgrid > div > .card{margin-bottom:12px}
   .ctpg{margin-left:6px;padding:0 6px;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--blue);font:600 10.5px/1.5 var(--font);cursor:pointer;text-transform:none;letter-spacing:0}
@@ -1954,6 +2062,14 @@
   img.regav:not([src]){visibility:hidden}
   .aoavatar{display:flex;align-items:flex-end;gap:10px;margin:6px 0 8px}
   .aoavatar img{max-width:220px;max-height:180px;border-radius:8px;border:2px solid var(--gold);object-fit:cover;display:block}
+  /* Asset panel top (29/09/2026): the avatar on the left, the facts beside it */
+  .aotop{display:grid;grid-template-columns:200px minmax(0,1fr);gap:16px;align-items:start}
+  .aoavtop{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+  .aoavtop img{width:200px;max-height:240px;border-radius:8px;border:2px solid var(--gold);object-fit:cover;display:block}
+  .aoavtop small{font-size:11px;line-height:1.3}
+  .aoavnone{width:200px;height:150px;border:1px dashed var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:34px;color:var(--dim);background:#f7f9fc}
+  .aowhorow{margin:2px 0}
+  @media (max-width:600px){ .aotop{grid-template-columns:1fr} }
   .aophotocell{display:flex;flex-direction:column;align-items:center;gap:3px}
   .aophoto.isav{outline:2px solid var(--gold);outline-offset:1px}
   /* Photo history in the asset panel: one dated row per photo, newest first (user 28/09/2026). */
@@ -2008,6 +2124,15 @@
   main h3,.drawer h3{font-size:12px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;margin:14px 0 6px}
   main .card > h3:first-child,.drawer .dbody > h3:first-child{margin-top:0}
   .role{font-size:11px} .kt{font-size:10.5px}
+  /* Asset dashboard (amdash.js): a tile that opens the screen behind it; short lists in two columns. */
+  .dfig.go{cursor:pointer;border-radius:6px} .dfig.go:hover,.dfig.go:focus-visible{background:var(--head);outline:none}
+  .amdlists{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:12px;margin-top:12px}
+  .amdlists .chartcard{margin:0}
+  .amdrow{display:flex;align-items:center;gap:10px;padding:7px 4px;border-top:1px solid var(--line);font-size:12.5px}
+  .amdrow:first-child{border-top:0} .amdrow .grow{flex:1;min-width:0}
+  .amdrow .num{white-space:nowrap;color:var(--ink-2);font-variant-numeric:tabular-nums}
+  .amdrow.click{cursor:pointer} .amdrow.click:hover{background:var(--head)}
+  .amdrow .meter{margin-top:5px}
   /* Project forms done outside the app (38_project_offline_avatar.sql): the step boxes step back. */
   .wfoffline{margin:4px 0 8px} .wfstrip.offline{opacity:.55}
   /* Building systems & shift checklists (eng.js). Tablet first: big touch targets on the checklist. */
@@ -2180,6 +2305,7 @@
 
 <div class="content">
   <div class="top">
+    <button class="btn tiny navback" id="btnBack" type="button" hidden onclick="navBack()"></button>
     <h1 id="pageTitle"></h1>
     <div class="tools" id="tools"></div>
     <!-- Notifications (phase 4). Hidden until 20_pm_notify.sql exists and the
@@ -2672,6 +2798,15 @@
       <div id="regBulkMsg"></div>
     </div>
 
+    <!-- Picking mode: an RR / MC line waiting for its asset (regPickBar). -->
+    <div class="regpick" id="regPick" hidden></div>
+    <!-- Actions on the ticked assets (user 29/09/2026): above the table, on the right; several assets at once. -->
+    <div class="row regops" id="regOps">
+      <span class="tdnote" id="regOpsHint" data-i18n="reg.ops.hint"></span>
+      <button class="btn" id="btnRegInc" type="button" data-i18n="reg.ops.inc" disabled></button>
+      <button class="btn" id="btnRegTf" type="button" data-i18n="reg.ops.tf" disabled></button>
+      <button class="btn" id="btnRegLr" type="button" data-i18n="reg.ops.lr" disabled></button>
+    </div>
     <div class="wrap"><table id="regGrid"><thead></thead><tbody></tbody></table></div>
     <div class="row" style="margin-top:10px;align-items:center">
       <button class="btn" id="btnRegPrev" data-i18n="reg.prev"></button>
@@ -2856,6 +2991,26 @@
       <div id="pdBody"></div>
     </section>
 
+    <!-- Asset dashboard (amdash.js, 40_asset_dashboard.sql): one filter row scopes every tile, chart and list below. -->
+    <section id="v-amdash" class="viz">
+      <p class="lead" data-i18n="amd.lead"></p>
+      <div class="card pmfilters">
+        <div class="row" style="align-items:flex-end">
+          <div class="fld" style="max-width:150px"><label data-i18n="pm.f.entity"></label>
+            <details class="ms" id="amdEnt"></details></div>
+          <div class="fld" style="max-width:220px"><label data-i18n="pm.f.dept"></label>
+            <details class="ms" id="amdDept"></details></div>
+          <div class="fld" style="max-width:190px"><label data-i18n="amd.kind"></label>
+            <select id="amdKind"></select></div>
+          <span style="flex:1"></span>
+          <button class="btn" id="btnAmdRep" type="button" data-i18n="amd.rep"></button>
+          <button class="btn" id="btnAmdReload" type="button" data-i18n="amd.reload"></button>
+        </div>
+      </div>
+      <div id="amdMsg"></div>
+      <div id="amdBody"></div>
+    </section>
+
     <section id="v-budget">
       <p class="lead" data-i18n-html="pm.bud.lead_html"></p>
       <div class="card">
@@ -3020,6 +3175,28 @@
       <div id="ctBody"></div>
     </section>
 
+    <!-- Calling for quotations from the project (tendering.js, 41_tendering.sql) -->
+    <section id="v-tendering">
+      <p class="lead" data-i18n="tg.lead"></p>
+      <div id="tgMsg"></div>
+      <div id="tgBody"></div>
+    </section>
+
+    <!-- Receiving the labels on a tablet: scan, photos, quantity, AH batch (receive.js) -->
+    <section id="v-recv">
+      <p class="lead" data-i18n="rv.lead"></p>
+      <div id="rvMsg"></div>
+      <div id="rvBody"></div>
+    </section>
+
+    <!-- Payment requests by instalment (payreq.js, 42_payment_request.sql) -->
+    <section id="v-payreq">
+      <p class="lead" data-i18n="pq.lead"></p>
+      <div class="card"><div class="seg permtabs" id="pqTabs"></div></div>
+      <div id="pqMsg"></div>
+      <div id="pqBody"></div>
+    </section>
+
     <!-- Owner / operator project meetings (meetings.js, 33_meetings.sql) -->
     <section id="v-meetings">
       <p class="lead" data-i18n="mt.lead"></p>
@@ -3151,14 +3328,18 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260928f"></script>
-<script src="flows.js?v=20260928f"></script>
-<script src="app.js?v=20260928f"></script>
-<script src="assetops.js?v=20260928f"></script>
-<script src="pricedb.js?v=20260928f"></script>
-<script src="meetings.js?v=20260928f"></script>
-<script src="contracts.js?v=20260928f"></script>
-<script src="demo.js?v=20260928f"></script>
-<script src="eng.js?v=20260928f"></script>
+<script src="i18n.js?v=20260928j"></script>
+<script src="flows.js?v=20260928j"></script>
+<script src="app.js?v=20260928j"></script>
+<script src="assetops.js?v=20260928j"></script>
+<script src="pricedb.js?v=20260928j"></script>
+<script src="meetings.js?v=20260928j"></script>
+<script src="contracts.js?v=20260928j"></script>
+<script src="demo.js?v=20260928j"></script>
+<script src="amdash.js?v=20260928j"></script>
+<script src="eng.js?v=20260928j"></script>
+<script src="tendering.js?v=20260928j"></script>
+<script src="receive.js?v=20260928j"></script>
+<script src="payreq.js?v=20260928j"></script>
 </body>
 </html>

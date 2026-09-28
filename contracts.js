@@ -164,7 +164,14 @@ function ctView(body, c) {
     const note = askNote ? prompt(t('ct.noteQ')) : null;
     if (askNote && note === null) return;
     try { await SB.rpc('pm_ct_set_status', { p_id: c.id, p_status: s, p_comment: note || null }); await ctReload(t('ct.stSet', { s: t('ct.st.' + s) })); } catch (e) { ctErr(out, e); } };
-  if (ctW() && ['draft', 'returned'].includes(c.status) && c.source !== 'import') act('📨 ' + t('ct.submit'), async () => {
+  // Uploaded from an approved PO (42_payment_request.sql): the signed scan is confirmed, not sent round again.
+  if (ctW() && ['draft', 'returned'].includes(c.status) && c.source === 'po') act('✔ ' + t('ct.confirm'), async () => {
+    if (!confirm(t('ct.confirmQ', { no: c.no }))) return;
+    try { await SB.rpc('pm_ct_confirm', { p_id: c.id }); await ctReload(t('ct.confirmed')); } catch (e) { ctErr(out, e); } }, 'btn pri');
+  // Confirmed: Purchasing asks for the first (or next) payment.
+  if (c.project_code && ['approved', 'active', 'completed'].includes(c.status) && window.pqNew && (can('payment', 'create') || wfCanPrepare('PO', c.dept_code)))
+    act('💳 ' + t('ct.payReq'), () => { PQ.newFor = c.project_code; showView('payreq'); });
+  if (ctW() && ['draft', 'returned'].includes(c.status) && c.source !== 'import') act((c.source === 'po' ? '' : '📨 ') + t('ct.submit'), async () => {
     if (!confirm(t('ct.submitQ', { no: c.no, route: ctRouteText(c) }))) return;
     try { await SB.rpc('pm_ct_submit', { p_id: c.id }); await ctReload(t('ct.submitted')); } catch (e) { ctErr(out, e); } }, 'btn pri');
   if (ctEd() && (c.status === 'approved' || (c.source === 'import' && ['draft', 'returned'].includes(c.status)))) act('✔ ' + t('ct.markActive'), () => setSt('active'), 'btn pri');
@@ -495,8 +502,43 @@ function ctApplyFound(c, j, src, note) {
   if (j.pages && !Array.isArray(j.pages)) Object.assign(pages, j.pages);
   for (const f of ['signed_date', 'start_date', 'end_date', 'delivery_due']) if (v[f] && !/^\d{4}-\d{2}-\d{2}$/.test(v[f])) delete v[f];
   const unsure = (j.uncertain || []).filter(Boolean);
-  CT.draft = { values: v, pages, src, note: [note, unsure.length ? t('ct.r.unsure', { f: unsure.map(f => t('ct.f.' + f)).join(', ') }) : ''].filter(Boolean).join('\n') };
-  CT.edit = true; ctRender();
+  const apply = () => {
+    CT.draft = { values: v, pages, src, note: [note, unsure.length ? t('ct.r.unsure', { f: unsure.map(f => t('ct.f.' + f)).join(', ') }) : ''].filter(Boolean).join('\n') };
+    CT.edit = true; ctRender();
+  };
+  /* Terms already filled in (from the PO, or typed): what the reading (A / B / C) found fills the EMPTY
+     boxes by itself; a box that already holds something different is overwritten only if Purchasing
+     ticks it (user 29/09/2026). */
+  const clash = Object.keys(v).filter(f => !ctEmpty(c[f]) && !ctSame(f, c[f], v[f]));
+  if (!clash.length || typeof tdModal !== 'function') return apply();
+  const rows = clash.map(f => ({ f, cb: el('input', { type: 'checkbox' }) }));
+  const all = el('input', { type: 'checkbox' });
+  all.onchange = () => rows.forEach(r => { r.cb.checked = all.checked; });
+  const tb = el('table', { className: 'lqbt ctclash' }, [el('tr', {}, [el('th', { textContent: t('ct.ow.field') }), el('th', { textContent: t('ct.ow.now') }),
+    el('th', { textContent: t('ct.ow.read') }), el('th', { className: 'c' }, [all, ' ' + t('ct.ow.take')])])]);
+  for (const r of rows) tb.append(el('tr', {}, [el('td', { textContent: t('ct.f.' + r.f) }), el('td', { className: 'aowrap', textContent: ctShowVal(r.f, c[r.f], c) }),
+    el('td', { className: 'aowrap ctnew', textContent: ctShowVal(r.f, v[r.f], c) }), el('td', { className: 'c' }, r.cb)]));
+  tdModal(t('ct.ow.title'), [el('div', { className: 'tdnote', textContent: t('ct.ow.hint', { n: Object.keys(v).length - clash.length }) }), el('div', { className: 'wrap' }, tb)], [
+    [t('ct.ow.apply'), 'pri', close => { for (const r of rows) if (!r.cb.checked) delete v[r.f]; close(); apply(); }],
+    [t('auth.cancel'), '', close => close()]]);
+}
+const ctEmpty = x => x == null || x === '' || x === false || (Array.isArray(x) && !x.length);
+function ctSame(f, a, b) {
+  const n = x => { const k = Number(String(x).replace(/[^\d.-]/g, '')); return isFinite(k) ? Math.round(k * 100) / 100 : null; };
+  if (['value_pre_vat', 'value_total', 'vat_pct', 'warranty_months', 'notice_days'].includes(f)) return n(a) === n(b);
+  if (Array.isArray(a) || Array.isArray(b)) {
+    const s = x => JSON.stringify((x || []).map(p => [n(p.pct), n(p.amount), String(p.milestone || p.kind || '').trim().toLowerCase(), p.expiry || '']));
+    return s(a) === s(b);
+  }
+  return hnorm(String(a)).trim() === hnorm(String(b)).trim();
+}
+function ctShowVal(f, x, c) {
+  if (ctEmpty(x)) return '—';
+  if (f === 'pay_terms') return x.map(p => [p.milestone, p.pct != null && p.pct !== '' ? p.pct + '%' : '', p.amount != null ? ctMoney(p.amount, c.currency) : '', p.condition].filter(Boolean).join(' · ')).join('\n');
+  if (f === 'bonds') return x.map(b => [t('ct.bond.' + (b.kind || 'performance')), b.pct != null ? b.pct + '%' : '', b.amount != null ? ctMoney(b.amount) : '', b.expiry].filter(Boolean).join(' · ')).join('\n');
+  if (['value_pre_vat', 'value_total'].includes(f)) return ctMoney(x, c.currency);
+  if (/_date$|_due$|_until$/.test(f)) return fmtDate(x);
+  return typeof x === 'boolean' ? t('ct.yes') : String(x);
 }
 const ctParseJson = s => JSON.parse(String(s).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim());
 
@@ -742,6 +784,18 @@ async function ctTodos() {
   return [...inbox.map(c => row(c, 'ct')), ...back.map(c => row(c, 'ctret'))];
 }
 function ctOpen(id) { CT.tab = 'register'; CT.open = id; CT.edit = false; showView('contracts'); }
+/* "Upload contract" on an approved PO (42_payment_request.sql): the project's contract is
+   created pre-filled from the PO and the chosen quotation (supplier, value, payment
+   schedule, delivery, warranty) — or the existing one opened — ready for the scan and
+   the reading of its terms. */
+async function ctFromPo(poId) {
+  try {
+    const id = await SB.rpc('pm_ct_from_po', { p_doc: poId });
+    CT.tab = 'register'; CT.open = id; CT.edit = false; CT.draft = null;
+    CT.flash = t('ct.fromPo');
+    showView('contracts');
+  } catch (e) { msg('#wdMsg', 'err', ctMissing(e) ? t('ct.notInstalled') : e.message); }
+}
 function ctOpenNo(no) { const c = CT.rows.find(x => x.no === no); CT.tab = 'register'; CT.open = c ? c.id : null; CT.pendingNo = c ? null : no; showView('contracts'); }
 async function ctProjectPanel(p, card) {
   if (!can('contract', 'view')) return;

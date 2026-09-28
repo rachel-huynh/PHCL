@@ -342,8 +342,10 @@ async function incLoad() {
     incRender();
   } catch (e) { $('#incBody').innerHTML = ''; aoErr(out, e); }
 }
+// A new report — for one asset, or for several ticked in the register (user 29/09/2026): one incident each.
 function incNew(asset) {
-  AO.inc.draft = { asset: asset || null, kind: 'repair', reported_at: aoToday() };
+  const list = Array.isArray(asset) ? asset : asset ? [asset] : [];
+  AO.inc.draft = { assets: list, kind: 'repair', reported_at: aoToday() };
   if (VIEW !== 'incident') showView('incident'); else incRender();
 }
 function incRender() {
@@ -385,33 +387,49 @@ function incRender() {
 
 function incForm(body) {
   const D = AO.inc.draft, out = el('div');
+  D.assets = D.assets || (D.asset ? [D.asset] : []);
   const kind = el('select'); selFill(kind, AO_INC_KINDS.map(k => [k, t('ao.inc.k.' + k)])); kind.value = D.kind;
   const date = el('input', { type: 'date', value: D.reported_at });
-  const qty = el('input', { className: 'aoqty', inputMode: 'decimal', placeholder: D.asset ? fmtNum(D.asset.qty) : '' });
+  const qty = el('input', { className: 'aoqty', inputMode: 'decimal' });
   const desc = el('textarea', { rows: 2, placeholder: t('ao.inc.descPh') }), cause = el('input'), wo = el('input'), vendor = el('input');
   const warr = el('input', { type: 'checkbox' });
   const who = el('div', { className: 'aowho' });
   const showAsset = () => {
     who.innerHTML = '';
-    if (!D.asset) return;
-    const a = D.asset, w = a.warranty_until && a.warranty_until >= aoToday();
-    warr.checked = !!w;
-    who.append(el('code', { textContent: a.asset_code }), document.createTextNode(' ' + aoName(a) + ' · ' + [a.dept_code, a.location_code, amStatusLabel(a.status_code)].filter(Boolean).join(' · ')),
-      a.warranty_until ? el('div', { className: w ? 'aook' : 'dim', textContent: t(w ? 'ao.inc.inWarranty' : 'ao.inc.outWarranty', { d: fmtDate(a.warranty_until) }) }) : '');
-    qty.hidden = a.asset_kind !== 'low';
+    const one = D.assets.length === 1 ? D.assets[0] : null;
+    for (const a of D.assets) {
+      const w = a.warranty_until && a.warranty_until >= aoToday();
+      who.append(el('div', { className: 'aowhorow' }, [el('code', { textContent: a.asset_code }),
+        document.createTextNode(' ' + aoName(a) + ' · ' + [a.dept_code, a.location_code, amStatusLabel(a.status_code)].filter(Boolean).join(' · ')),
+        a.warranty_until ? el('span', { className: w ? 'aook' : 'dim', textContent: ' · ' + t(w ? 'ao.inc.inWarranty' : 'ao.inc.outWarranty', { d: fmtDate(a.warranty_until) }) }) : '',
+        el('button', { className: 'xbtn', type: 'button', textContent: '✕', title: t('ph.remove'), onclick: () => { D.assets = D.assets.filter(x => x !== a); showAsset(); } })]));
+    }
+    if (D.assets.length > 1) who.prepend(el('div', { className: 'tdnote', textContent: t('ao.inc.many', { n: D.assets.length }) }));
+    // Quantity (a low-value batch) and "in warranty" only make sense for a single asset.
+    warr.checked = !!(one && one.warranty_until && one.warranty_until >= aoToday());
+    qty.hidden = !(one && one.asset_kind === 'low');
+    qty.placeholder = one ? fmtNum(one.qty) : '';
   };
   const picker = aoPicker({ filter: a => !['0', '7', '9', '23'].includes(String(a.status_code || '')), onPick: async a => {
     try { const [w] = await SB.select('am_asset', `select=warranty_until&id=eq.${a.id}`); a.warranty_until = w && w.warranty_until; } catch {}
-    D.asset = a; showAsset(); } });
+    if (!D.assets.some(x => x.id === a.id)) D.assets.push(a); showAsset(); } });
   showAsset();
   const save = async () => {
-    if (!D.asset) return msg(out, 'err', t('ao.inc.pickFirst'));
-    try {
-      await SB.rpc('am_inc_report', { p_data: { asset_id: D.asset.id, kind: kind.value, qty: qty.value.trim() ? numIn(qty.value) : null, reported_at: date.value,
-        description: desc.value.trim(), cause: cause.value.trim() || null, wo_no: wo.value.trim() || null, vendor: vendor.value.trim() || null, warranty: warr.checked } });
-      AO.inc.draft = null; AO.inc.tab = 'open'; AO.inc.flash = t('ao.inc.reported');
-      await incLoad();
-    } catch (e) { aoErr(out, e); }
+    if (!D.assets.length) return msg(out, 'err', t('ao.inc.pickFirst'));
+    const bad = [];
+    let ok = 0;
+    for (const a of D.assets) {
+      const w = D.assets.length === 1 ? warr.checked : !!(a.warranty_until && a.warranty_until >= aoToday());
+      try {
+        await SB.rpc('am_inc_report', { p_data: { asset_id: a.id, kind: kind.value, qty: D.assets.length === 1 && qty.value.trim() ? numIn(qty.value) : null, reported_at: date.value,
+          description: desc.value.trim(), cause: cause.value.trim() || null, wo_no: wo.value.trim() || null, vendor: vendor.value.trim() || null, warranty: w } });
+        ok++;
+      } catch (e) { bad.push(`${a.asset_code}: ${e.message}`); }
+    }
+    if (bad.length && !ok) return msg(out, 'err', bad.join('\n'));
+    AO.inc.draft = null; AO.inc.tab = 'open';
+    AO.inc.flash = D.assets.length > 1 ? t('ao.inc.reportedN', { n: ok }) + (bad.length ? ' ' + t('ao.inc.someFailed', { l: bad.join(' · ') }) : '') : t('ao.inc.reported');
+    await incLoad();
   };
   body.append(el('div', { className: 'card' }, [el('h2', { textContent: t('ao.inc.newH') }),
     el('div', { className: 'tdnote', textContent: t('ao.inc.hint') }), picker, who,
@@ -484,6 +502,33 @@ function incXlsx() {
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Su co');
   const file = `phcl-su-co-${bkStamp()}.xlsx`; XLSX.writeFile(wb, file); msg('#incMsg', 'ok', t('lq.exported', { file }));
 }
+
+/* The register's actions on the ticked assets (user 29/09/2026): report an incident (one each),
+   a transfer slip (one department at a time), a liquidation request (one department at a time).
+   Assets already gone (lost, liquidated, destroyed) are left out, with a word about it. */
+async function aoBulkAct(kind, ids) {
+  const out = $('#regMsg');
+  if (!ids.length) return msg(out, 'info', t('reg.ops.hint'));
+  if (ids.length > 300) return msg(out, 'warn', t('reg.ops.tooMany', { n: fmtInt(ids.length) }));
+  try {
+    const cols = 'id,asset_code,barcode,name_vi,name_en,unit_code,unit_price,qty,dept_code,location_code,in_use_date,purchase_date,asset_kind,status_code,warranty_until';
+    let rows = [];
+    for (let i = 0; i < ids.length; i += 150)
+      rows.push(...await (kind === 'lr' ? lqFinSelect(cols, `&id=in.(${ids.slice(i, i + 150).join(',')})`) : SB.select('am_asset', `select=${cols}&id=in.(${ids.slice(i, i + 150).join(',')})`)));
+    const gone = rows.filter(a => ['0', '7', '9', '23'].includes(String(a.status_code || '')));
+    rows = rows.filter(a => !gone.includes(a)).sort((a, b) => String(a.asset_code).localeCompare(String(b.asset_code)));
+    if (!rows.length) return msg(out, 'warn', t('reg.ops.allGone'));
+    const note = gone.length ? t('reg.ops.gone', { n: gone.length, l: gone.slice(0, 5).map(a => a.asset_code).join(', ') }) : '';
+    const depts = [...new Set(rows.map(a => a.dept_code))];
+    if ((kind === 'tf' || kind === 'lr') && depts.length > 1) return msg(out, 'warn', t('reg.ops.oneDept', { l: depts.join(', ') }));
+    if (kind === 'tf' && !aoScope(depts[0])) return msg(out, 'err', t('reg.ops.noScope', { d: depts[0] }));
+    if (kind === 'inc') { incNew(rows); if (note) setTimeout(() => msg('#incMsg', 'warn', note), 400); return; }
+    if (kind === 'tf') { tfNew(rows); if (note) setTimeout(() => msg('#tfMsg', 'warn', note), 400); return; }
+    showView('liq');
+    setTimeout(() => { try { lqNewForm(rows); if (note) msg('#lqMsg', 'warn', note); } catch (e) { msg('#lqMsg', 'err', e.message); } }, 700);
+  } catch (e) { msg(out, 'err', e.message); }
+}
+window.aoBulkAct = aoBulkAct;
 
 // An asset beyond repair (or found lost) → a new LR with it, on the liquidation screen.
 async function aoToLr(assetId, out) {
@@ -1044,15 +1089,19 @@ async function aoAsset(id) {
     const f = (k, v) => v == null || v === '' ? [] : [el('dt', { textContent: t(k) }), el('dd', { textContent: v })];
     const wIn = el('input', { type: 'date', value: a.warranty_until || '', disabled: !can('assets', 'edit') || H.old });
     wIn.onchange = async () => { try { await SB.patch('am_asset', `id=eq.${a.id}`, { warranty_until: wIn.value || null }); msg(out, 'ok', t('ao.saved')); } catch (e) { msg(out, 'err', e.message); } };
-    const acts = [];
-    if (!['0', '7', '9', '23'].includes(String(a.status_code || '')) && !H.old) {
-      acts.push(el('button', { className: 'btn', type: 'button', textContent: '🔧 ' + t('ao.inc.new'), onclick: () => { aoDrawerClose(); incNew(a); } }));
-      if (aoScope(a.dept_code)) acts.push(el('button', { className: 'btn', type: 'button', textContent: '⇄ ' + t('ao.tf.new'), onclick: () => { aoDrawerClose(); tfNew([a]); } }));
-      if (can('liquidation', 'create')) acts.push(el('button', { className: 'btn', type: 'button', textContent: '♻ ' + t('ao.toLr'), onclick: () => { aoDrawerClose(); aoToLr(a.id, out); } }));
-    }
-    body.append(el('div', { className: 'row', style: 'gap:8px;flex-wrap:wrap;margin-bottom:10px' }, acts),
+    /* Top (user 29/09/2026): the avatar on the left, the facts beside it; the project the asset came
+       from links to the Project screen. Report incident / transfer / liquidation are no longer here:
+       tick the assets in the register and use the buttons above its table (several at once). */
+    const avBox = el('div', { className: 'aoavtop' });
+    const prjA = a.purpose_code ? el('a', { href: '#', className: 'aolink', textContent: a.purpose_code + ' ↗', title: t('ao.a.projectOpen'),
+      onclick: e => { e.preventDefault(); aoDrawerClose(); PM.prj.open = a.purpose_code; showView('projects'); } }) : null;
+    const prj = prjA ? el('dd', {}, prjA) : null;
+    if (prjA) SB.select('pm_project', `select=name&code=eq.${encodeURIComponent(a.purpose_code)}`)
+      .then(([p]) => { if (p && p.name) prjA.textContent = `${a.purpose_code} — ${p.name} ↗`; }).catch(() => {});
+    body.append(el('div', { className: 'aotop' }, [avBox,
       el('dl', { className: 'aodl' }, [
         ...f('ao.c.code', a.asset_code), ...f('ao.a.barcode', a.barcode), ...f('ao.a.kind', t('ao.a.k.' + a.asset_kind)),
+        ...(prj ? [el('dt', { textContent: t('ao.a.project') }), prj] : []),
         ...f('pm.col.dept', a.dept_code ? `${a.dept_code} — ${pmDeptName(a.dept_code)}` : ''), ...f('ao.c.loc', a.location_code),
         ...f('ao.a.qty', `${fmtNum(a.qty)} ${a.unit_code || ''}`), ...f('ao.a.status', amStatusLabel(a.status_code)),
         ...f('ao.a.cat', [a.group_code, a.category_code].filter(Boolean).join(' · ')), ...f('ao.a.brand', [a.spec_brand, a.spec_model, a.serial].filter(Boolean).join(' · ')),
@@ -1060,9 +1109,12 @@ async function aoAsset(id) {
         ...f('ao.a.price', a.unit_price != null ? `${lqN(a.unit_price)} × ${fmtNum(a.qty)} = ${lqN(n0(a.unit_price) * n0(a.qty))}` : ''),
         ...f('ao.a.fin', a.fin_status ? `${t('acc.fs.' + a.fin_status)}${a.fin_cost != null ? ` · ${lqN(a.fin_cost)}` : ''}${a.fin_nbv != null ? ` · GTCL ${lqN(a.fin_nbv)}` : ''}${a.fin_as_of ? ` (${fmtDate(a.fin_as_of)})` : ''}` : t('acc.fs.temp')),
         el('dt', { textContent: t('ao.a.warranty') }), el('dd', {}, wIn),
-        ...f('ao.a.label', a.label_printed ? '✓' : a.no_label ? t('col.no_label') : '✗'), ...f('ao.a.note', a.note)]));
-    // Photos: the avatar first (shown in the register), then every photo; ⭐ makes one the avatar (35_vendor_photo_count.sql).
-    const ph = el('div', { className: 'aophotos' }), av = el('div', { className: 'aoavatar' });
+        ...f('ao.a.label', a.label_printed ? '✓' : a.no_label ? t('col.no_label') : '✗'),
+        ...((x => x ? f('col.dep_end', `${fmtDate(x.end)} · ${t('ao.a.depUsed', { u: x.used, n: x.term })}`) : [])(typeof regDep === 'function' ? regDep(a) : null)),
+        ...((x => x ? f('col.nbv_sl', lqN(x.nbv)) : [])(typeof regDep === 'function' ? regDep(a) : null)),
+        ...f('ao.a.note', a.note)])]));
+    // Photos: the avatar at the top (shown in the register), then every photo; ⭐ makes one the avatar (35_vendor_photo_count.sql).
+    const ph = el('div', { className: 'aophotos' }), av = avBox;
     const mayAv = !H.old && (can('assets', 'edit') || aoScope(a.dept_code));
     const avFile = el('input', { type: 'file', accept: 'image/*', hidden: true });
     avFile.setAttribute('capture', 'environment');
@@ -1071,12 +1123,13 @@ async function aoAsset(id) {
       msg(out, 'info', t('ph.uploading'));
       try { await phUpload(a, 'avatar', avFile.files[0]); msg(out, 'ok', t('ao.a.avatarSet')); aoAsset(a.id); } catch (e) { msg(out, 'err', e.message); }
     };
-    const avHead = el('div', { className: 'row', style: 'gap:8px;align-items:center;justify-content:flex-start' }, [el('h3', { style: 'margin:0', textContent: t('ao.a.photos') })]);
-    if (mayAv && 'avatar_photo_id' in a) avHead.append(avFile, el('button', { className: 'btn tiny', type: 'button', textContent: '📷 ' + t('ao.a.avatarTake'), onclick: () => avFile.click() }));
-    body.append(avHead, av, ph);
+    const avHead = el('div', { className: 'row', style: 'gap:8px;align-items:center;justify-content:flex-start;margin-top:12px' }, [el('h3', { style: 'margin:0', textContent: t('ao.a.photos') })]);
+    if (mayAv && 'avatar_photo_id' in a) av.append(avFile, el('button', { className: 'btn tiny aoavbtn', type: 'button', textContent: '📷 ' + t('ao.a.avatarTake'), onclick: () => avFile.click() }));
+    body.append(avHead, ph);
     phLoad([a.id]).then(async ps => {
       const cur = ps.find(p => p.id === a.avatar_photo_id);
-      if (cur) { try { const u = cur.source === 'link' ? cur.url : await phUrl(cur.storage_path); av.append(el('a', { href: u, target: '_blank', rel: 'noopener' }, el('img', { src: u, alt: t('reg.avatar') })), el('small', { className: 'dim', textContent: `⭐ ${t('reg.avatar')} · ${t('ph.k.' + cur.kind)} · ${fmtDateTime(cur.taken_at)}${cur.taken_name ? ' · ' + cur.taken_name : ''}` })); } catch {} }
+      if (cur) { try { const u = cur.source === 'link' ? cur.url : await phUrl(cur.storage_path); av.prepend(el('a', { href: u, target: '_blank', rel: 'noopener' }, el('img', { src: u, alt: t('reg.avatar') })), el('small', { className: 'dim', textContent: `⭐ ${t('ph.k.' + cur.kind)} · ${fmtDateTime(cur.taken_at)}${cur.taken_name ? ' · ' + cur.taken_name : ''}` })); } catch {} }
+      else av.prepend(el('div', { className: 'aoavnone', textContent: '📷' }));
       if (!ps.length) { ph.append(el('div', { className: 'dim', textContent: t('ao.a.noPhoto') })); return; }
       /* Photo history (user 28/09/2026): nothing is overwritten. The newest asset-count photo becomes the
          avatar; every older photo stays here with its date, who took it and — for an asset count — which round.
