@@ -9,7 +9,7 @@
                  low-value batch splits into a new row).
      incident    Repair · maintenance · breakage (B&L) · loss, with the asset
                  status following it, work order, vendor, warranty, cost, outcome.
-     stock       Periodic stock-take by department / location: the register list
+     stock       Periodic asset count by department / location: the register list
                  frozen when the count opens, counted on the tablet (stockcount)
                  by scanning, then closed — locations updated, "loss" and
                  "repair" incidents raised for what was missing or damaged —
@@ -24,7 +24,7 @@ const AO = {
   tf:  { rows: [], lines: [], assets: new Map(), inbox: [], tab: 'todo', open: null, edit: null, q: '' },
   inc: { rows: [], assets: new Map(), tab: 'open', open: null, draft: null, q: '' },
   kk:  { rows: [], open: null, lines: [], filter: 'all', edit: null, q: '' },
-  // avatar: the newest stock-take photo becomes the avatar (user 28/09/2026); earlier photos stay in the asset's photo history.
+  // avatar: the newest asset-count photo becomes the avatar (user 28/09/2026); earlier photos stay in the asset's photo history.
   sc:  { count: null, lines: [], loc: '', q: '', only: 'here', avatar: true },
   rep: { mode: 'month', val: '', data: null, snaps: [], cmp: '', view: null }
 };
@@ -495,7 +495,7 @@ async function aoToLr(assetId, out) {
   } catch (e) { msg(out, 'err', e.message); }
 }
 
-/* ============================================================ STOCK-TAKE */
+/* ============================================================ ASSET COUNT (stock-take) */
 const AO_KK_FILTERS = ['all', 'pending', 'found', 'missing', 'moved', 'short', 'damaged', 'extra'];
 const kkState = l => l.found == null ? 'pending' : l.found === false ? 'missing' : l.extra ? 'extra'
   : l.cond === 'damaged' ? 'damaged' : l.kind === 'low' && n0(l.qty_found) < n0(l.qty_book) ? 'short' : l.loc_found && l.loc_found !== l.loc_book ? 'moved' : 'found';
@@ -1078,8 +1078,8 @@ async function aoAsset(id) {
       const cur = ps.find(p => p.id === a.avatar_photo_id);
       if (cur) { try { const u = cur.source === 'link' ? cur.url : await phUrl(cur.storage_path); av.append(el('a', { href: u, target: '_blank', rel: 'noopener' }, el('img', { src: u, alt: t('reg.avatar') })), el('small', { className: 'dim', textContent: `⭐ ${t('reg.avatar')} · ${t('ph.k.' + cur.kind)} · ${fmtDateTime(cur.taken_at)}${cur.taken_name ? ' · ' + cur.taken_name : ''}` })); } catch {} }
       if (!ps.length) { ph.append(el('div', { className: 'dim', textContent: t('ao.a.noPhoto') })); return; }
-      /* Photo history (user 28/09/2026): nothing is overwritten. The newest stock-take photo becomes the
-         avatar; every older photo stays here with its date, who took it and — for a stock-take — which round.
+      /* Photo history (user 28/09/2026): nothing is overwritten. The newest asset-count photo becomes the
+         avatar; every older photo stays here with its date, who took it and — for an asset count — which round.
          ⭐ puts an older one back as the avatar. */
       const counts = new Map();
       const lineIds = [...new Set(ps.map(p => p.count_line_id).filter(Boolean))];

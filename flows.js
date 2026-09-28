@@ -276,12 +276,12 @@ const FLOWS = [
           li: ['Trưởng BP giao → trưởng BP nhận → TGĐ JVC (khác pháp nhân) → QLTS xác nhận',
                'Đổi bộ phận: <b>cấp mã mới</b>, giữ mã vạch, đưa tem vào hàng đợi in lại'],
           go: 'transfer' }] }] },
-    { t: '🔍 GIAI ĐOẠN 4 – Kiểm tra, kiểm kê & báo cáo định kỳ', en: 'Checks, stock-take & periodic reports', n: 'Bước 13 → 17', rows: [
+    { t: '🔍 GIAI ĐOẠN 4 – Kiểm tra, kiểm kê & báo cáo định kỳ', en: 'Checks, asset counts & periodic reports', n: 'Bước 13 → 17', rows: [
       { k: 'B13–B14', s: [
         { l: 'am', n: 'Bước 13', t: 'Đối chiếu hàng tháng', en: 'Monthly reconciliation',
           li: ['Theo dõi: tài sản tạm chờ ≥ 3 tháng, dòng KT chưa có tài sản, dòng gộp chưa phân bổ, chênh lệch',
                'Việc còn lại chuyển sang tháng sau (gối đầu)'], go: 'acc' },
-        { l: 'am', n: 'Bước 14', t: 'Mở đợt kiểm kê', en: 'Open a stock-take',
+        { l: 'am', n: 'Bước 14', t: 'Mở đợt kiểm kê', en: 'Open an asset count',
           li: ['Chọn bộ phận / vị trí, ngày, ban kiểm kê', 'Mở đợt → <b>chốt danh sách sổ</b> tại thời điểm mở'],
           go: 'stock' }] },
       { k: 'B15–B16', s: [

@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260928c';
+const APP_VERSION = '20260928d';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -12951,7 +12951,7 @@ function tbBarRender() {
   if (canView('inbox')) bar.append(item('inbox', 'tb.todo', '✓', WF.badgeN));
   // A liquidation batch waiting for its physical count: counted walking round with the tablet.
   if (LQ.countN && canView('lqcount')) bar.append(item('lqcount', 'lc.tab', '☑', LQ.countN));
-  // A periodic stock-take open: counted walking round with the tablet (assetops.js).
+  // A periodic asset count open: counted walking round with the tablet (assetops.js).
   if (window.AO && AO.sc.openN && canView('stockcount')) bar.append(item('stockcount', 'ao.sc.tab', '▣', AO.sc.openN));
   bar.append(item('flows', 'tb.flows', '⇄'));
   // Back to the full screens (a PC with a narrow or zoomed window turns tablet mode on by itself):

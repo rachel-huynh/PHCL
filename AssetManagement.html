@@ -1769,7 +1769,7 @@
   .prstdpick{display:inline-flex;gap:6px;align-items:center} .prstdin{width:260px}
   .prvocab input{width:100%;min-width:120px} .prvocab textarea.prkw{width:100%;min-width:260px;font:12px/1.4 var(--mono)} .prvocab select{min-width:110px}
   .prmc{margin-top:6px} .prmcline{padding:6px 0;border-top:1px dashed var(--line)} .prmcline:first-child{border-top:0}
-  /* Asset operations (assetops.js): transfers, incidents, stock-take, reports, the asset panel */
+  /* Asset operations (assetops.js): transfers, incidents, asset count, reports, the asset panel */
   .aost{display:inline-block;padding:2px 9px;border-radius:999px;font:600 11.5px/1.5 var(--font);background:var(--chip);color:var(--chip-ink);white-space:nowrap}
   .aost.draft,.aost.open{background:var(--warn-bg);color:var(--warn-ink)} .aost.pending,.aost.in_progress{background:var(--info-bg);color:var(--blue)}
   .aost.returned,.aost.rejected{background:var(--bad-bg);color:var(--red)} .aost.done,.aost.closed{background:var(--ok-bg);color:var(--green)} .aost.cancelled{background:var(--chip);color:var(--dim)}
@@ -1942,7 +1942,7 @@
   .ctpanelrow{padding:4px 0;font-size:12.5px}
   @media (max-width:1100px){ .ctgrid{grid-template-columns:1fr} }
 
-  /* Asset avatar photos and stock-take photos (35_vendor_photo_count.sql) */
+  /* Asset avatar photos and asset-count photos (35_vendor_photo_count.sql) */
   th.avcol,td.avcol{width:46px;padding:2px 4px;text-align:center}
   img.regav{width:36px;height:36px;object-fit:cover;border-radius:6px;border:1px solid var(--line);background:var(--head);cursor:pointer;display:block;margin:0 auto}
   img.regav:not([src]){visibility:hidden}
@@ -1969,7 +1969,7 @@
 
   /* ============================================================ CONSISTENCY
      Last word, so the modules added later (liquidation, reconciliation, price
-     reference, transfers / incidents / stock-take, workflows) read exactly
+     reference, transfers / incidents / asset count, workflows) read exactly
      like the first ones: one chip, one table, one KPI tile, one corner radius. */
   /* Status chips: one shape and size everywhere; colour comes from the tint tokens. */
   .st,.stg,.aost,.prk,.lqbs,.lqis,.tdchip,.phprog,.virt,.accchip,.mtst,.ctst{padding:1px 8px;border-radius:999px;
@@ -3145,14 +3145,14 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260928c"></script>
-<script src="flows.js?v=20260928c"></script>
-<script src="app.js?v=20260928c"></script>
-<script src="assetops.js?v=20260928c"></script>
-<script src="pricedb.js?v=20260928c"></script>
-<script src="meetings.js?v=20260928c"></script>
-<script src="contracts.js?v=20260928c"></script>
-<script src="demo.js?v=20260928c"></script>
-<script src="eng.js?v=20260928c"></script>
+<script src="i18n.js?v=20260928d"></script>
+<script src="flows.js?v=20260928d"></script>
+<script src="app.js?v=20260928d"></script>
+<script src="assetops.js?v=20260928d"></script>
+<script src="pricedb.js?v=20260928d"></script>
+<script src="meetings.js?v=20260928d"></script>
+<script src="contracts.js?v=20260928d"></script>
+<script src="demo.js?v=20260928d"></script>
+<script src="eng.js?v=20260928d"></script>
 </body>
 </html>
