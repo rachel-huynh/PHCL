@@ -50,7 +50,8 @@
   nav .grp .n{margin-left:auto;font-size:10px;opacity:.65;letter-spacing:0}
   nav .kids{border-left:1px solid rgba(255,255,255,.10);margin-left:22px}
   nav .kids.shut{display:none}
-  nav .kids a{padding-left:14px}
+  /* One label edge per level (user 28/09/2026): the fold arrow sits in the margin, not in the text flow. */
+  nav .kids a{padding-left:20px}
   /* A child entry stays INSIDE its parent instead of levelling with it. */
   nav .kids a.sub{padding-left:30px;font-size:12.5px}
   nav .kids a.sub::before{content:'└';flex:none;width:9px;margin-left:-15px;
@@ -61,13 +62,17 @@
      thing entirely. Only the cursor hints that it folds rather than navigates. */
   nav .kids a.branch{cursor:pointer}
   nav .kids a.sub.sub2{padding-left:46px;font-size:12px}   /* third level: Department → aliases */
+  /* A second-level item that folds (Department, Origin): its arrow takes the place of the └ mark. */
+  nav .kids a.sub > .car{left:14px}
+  nav .kids a.sub:has(> .car)::before{visibility:hidden}
   nav .kids .subkids.shut{display:none}
   nav a{display:flex;align-items:center;gap:8px;padding:7px 18px;color:var(--side-ink);
         font-size:13px;cursor:pointer;border-left:4px solid transparent;text-decoration:none}
   nav a .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   /* Caret on an item that has children: its own click target, so folding the
      branch and opening the screen are separate actions. */
-  nav a > .car{flex:none;width:11px;margin-left:-13px;border:none;background:none;
+  nav a{position:relative}
+  nav a > .car{flex:none;width:11px;position:absolute;left:5px;top:50%;margin-top:-4px;border:none;background:none;
                padding:0;color:var(--side-dim);font-size:8px;line-height:1;cursor:pointer;
                transition:transform .12s;transform:rotate(90deg)}
   nav a > .car.shut{transform:rotate(0deg)}
@@ -3146,14 +3151,14 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20260928e"></script>
-<script src="flows.js?v=20260928e"></script>
-<script src="app.js?v=20260928e"></script>
-<script src="assetops.js?v=20260928e"></script>
-<script src="pricedb.js?v=20260928e"></script>
-<script src="meetings.js?v=20260928e"></script>
-<script src="contracts.js?v=20260928e"></script>
-<script src="demo.js?v=20260928e"></script>
-<script src="eng.js?v=20260928e"></script>
+<script src="i18n.js?v=20260928f"></script>
+<script src="flows.js?v=20260928f"></script>
+<script src="app.js?v=20260928f"></script>
+<script src="assetops.js?v=20260928f"></script>
+<script src="pricedb.js?v=20260928f"></script>
+<script src="meetings.js?v=20260928f"></script>
+<script src="contracts.js?v=20260928f"></script>
+<script src="demo.js?v=20260928f"></script>
+<script src="eng.js?v=20260928f"></script>
 </body>
 </html>
