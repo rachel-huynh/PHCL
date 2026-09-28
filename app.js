@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260928d';
+const APP_VERSION = '20260928e';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -1878,71 +1878,56 @@ function initAlr() {
 }
 
 /* --------------------------------------------------------- navigation */
-/* Each entry is [viewId, labelKey, children?]. Children render one level
-   deeper, so an item that belongs to another one sits under it rather than
-   beside it. */
-/* Assets first: the register is the thing people open the app for, and intake,
-   the label receipt and the counters are all steps around it — so they live in
-   that one module instead of being scattered as sibling groups. Origin sits
-   under the catalogue (it is master data like the rest) and backup under the
-   system (it is plumbing, not daily work). */
+/* Each entry is [viewId, labelKey, children?]; viewId null = a heading that only
+   folds. A heading's children may have children of their own (Department →
+   its aliases), drawn one level deeper still. labelKey null = the table's name.
+   The layout is the user's (28/09/2026): Overview · Project management · Asset
+   management · Data source · System. */
 const NAV = [
-  // Budget and projects first: the dashboard, because it is what the people who
-  // approve open this for, then their to-do list.
-  ['nav.pm', [
-    ['pmdash', 'nav.pmdash'],
-    ['inbox', 'nav.inbox'],
-    ['budget', 'nav.budget'],
-    ['projects', 'nav.projects'],
-    ['meetings', 'nav.meetings'],       // owner / operator project meetings (meetings.js, 33_meetings.sql)
-    ['payments', 'nav.payments'],
-    ['contracts', 'nav.contracts'],     // procurement contract register (contracts.js, 34_contracts.sql)
-    ['tbl:pm_vendor', null],
-    ['price', 'nav.price'],             // price reference database (pricedb.js, 32_price_db.sql)
-    ['chains', 'nav.chains']
+  ['nv.g.overview', [
+    [null, 'nv.dashboard', [['pmdash', 'nv.dashProject'], ['amrep', 'nv.dashAsset']]],
+    ['inbox', 'nv.todo']
   ]],
-  ['nav.assets', [
-    ['register', 'nav.register'],
-    ['intake', 'nav.intake'],
-    ['alr', 'nav.alr'],
-    // The asset-management module in detail (assetops.js, 31_asset_ops.sql).
-    ['transfer', 'nav.transfer'],
-    ['incident', 'nav.incident'],
-    // Building systems, shift checklists and condition (eng.js, 37_eng_checklist.sql).
-    ['engchk', 'nav.engchk'],
-    ['eng', 'nav.eng'],
-    ['stock', 'nav.stock'],
-    ['liq', 'nav.liq'],
-    ['acc', 'nav.acc'],
-    ['amrep', 'nav.amrep'],
-    ['counter', 'nav.counter']
+  ['nv.g.pm', [
+    ['budget', 'nv.budget'],
+    ['projects', 'nv.project'],
+    [null, 'nv.delivery', [['intake', 'nv.newDelivery'], ['alr', 'nv.alr']]],
+    ['meetings', 'nv.meeting'],         // owner / operator project meetings (meetings.js, 33_meetings.sql)
+    ['contracts', 'nv.contract'],       // procurement contract register (contracts.js, 34_contracts.sql)
+    ['payments', 'nv.payment']
   ]],
-  // Every file that is uploaded from time to time, in one place: the budget
-  // workbook, the dossiers, the accounting exports, the master-data templates.
-  // Every file that is uploaded from time to time, on one screen (user 25/09/2026):
-  // the budget workbook, dossiers and accounting exports on top, then the master-data templates.
-  ['nav.import', [
-    ['sources', 'nav.sources']
+  ['nv.g.am', [
+    ['register', 'nv.register'],
+    ['eng', 'nv.building'],             // building systems & condition (eng.js, 37_eng_checklist.sql)
+    // Day-to-day operation (assetops.js 31_asset_ops.sql; the shift checklist is eng.js).
+    [null, 'nv.operation', [['transfer', 'nv.transfer'], ['incident', 'nv.workorder'], ['engchk', 'nv.shiftchk']]],
+    ['stock', 'nv.count'],
+    ['acc', 'nv.recon'],
+    ['liq', 'nv.liq']
   ]],
-  ['nav.catalog', [
-    ['tbl:am_org', null, [['tbl:am_org_alias', null]]],
-    ['cat', 'nav.cat'],
-    ['tbl:am_unit', null], ['tbl:am_location', null], ['tbl:am_product', null],
-    // A heading, not a screen: the three origin tables belong together, and
-    // none of them is the natural parent of the other two.
-    [null, 'nav.originHead', [['tbl:am_origin', null],
-                              ['tbl:am_origin_alias', null],
-                              ['tbl:am_origin_rejected', null]]]
+  ['nv.g.data', [
+    ['sources', 'nv.import'],           // every file uploaded from time to time, on one screen
+    ['counter', 'nv.counter'],
+    ['price', 'nv.price'],              // price reference database (pricedb.js, 32_price_db.sql)
+    [null, 'nv.category', [
+      ['cat', 'nv.assetCat'],
+      ['tbl:am_product', 'nv.product'],
+      ['tbl:am_org', 'nv.dept', [['tbl:am_org_alias', null]]],
+      ['tbl:am_location', 'nv.location'],
+      ['tbl:am_origin', 'nv.origin', [['tbl:am_origin_alias', null], ['tbl:am_origin_rejected', null]]],
+      ['tbl:am_unit', 'nv.unit'],
+      ['tbl:pm_vendor', 'nv.vendor']]],
+    // The four workflows (flows.js) stand in for a user manual.
+    [null, 'nv.procedure', [['flows', 'nv.workflow'], ['chains', 'nv.chains']]]
   ]],
-  // The four workflows (flows.js) stand in for a user manual (user 26/09/2026).
-  ['nav.guide', [
-    ['flows', 'nav.flows']
-  ]],
-  ['nav.system', [
-    ['settings', 'nav.settings'],
-    ['backup', 'nav.backup'],
-    ['users', 'nav.users'], ['perms', 'nav.perms'], ['audit', 'nav.audit'], ['admin', 'nav.admin'],
-    ['setup', 'nav.setup']
+  ['nv.g.sys', [
+    ['settings', 'nv.settings'],
+    ['admin', 'nv.admin'],
+    ['users', 'nv.users'],
+    ['perms', 'nv.perms'],
+    ['backup', 'nv.backup'],
+    ['audit', 'nv.audit'],
+    ['setup', 'nv.setup']
   ]]
 ];
 
@@ -1987,12 +1972,14 @@ const canView = v => { if (v === 'pmimport') return ['budget', 'project', 'payme
 function firstView() {
   if (TB.on) return canView('inbox') ? 'inbox' : 'pmdash';
   if (canView('register')) return 'register';
-  for (const [, items] of NAV)
-    for (const [id, , ch] of items) {
-      if (id && id !== 'setup' && canView(id)) return id;
-      for (const [cid] of ch || []) if (canView(cid)) return cid;
-    }
-  return 'setup';
+  return navViews().find(v => v !== 'setup' && canView(v)) || 'setup';
+}
+// Every screen in the menu, in menu order (headings, their children and grandchildren).
+function navViews() {
+  const out = [];
+  const walk = list => { for (const [id, , ch] of list || []) { if (id) out.push(id); walk(ch); } };
+  for (const [, items] of NAV) walk(items);
+  return out;
 }
 
 /* Asset groups and category codes are one screen with a switch, because the
@@ -2022,12 +2009,13 @@ function buildNav() {
     // Only what this user may open. A group left with nothing is not drawn at
     // all, rather than shown as an empty heading.
     const items = allItems
-      .map(([id, key, ch]) => [id, key, (ch || []).filter(c => canView(c[0]))])
+      .map(([id, key, ch]) => [id, key, (ch || []).filter(c => canView(c[0]))
+        .map(([cid, ckey, gch]) => [cid, ckey, (gch || []).filter(g => canView(g[0]))])])
       .filter(([id, , ch]) => (id ? canView(id) : ch.length > 0));
     if (!items.length) continue;
     // A group holding the current view is always expanded, so the active item
     // can never be hidden inside a collapsed branch.
-    const flat = items.flatMap(([id, , ch]) => [id, ...(ch || []).map(c => c[0])])
+    const flat = items.flatMap(([id, , ch]) => [id, ...(ch || []).flatMap(c => [c[0], ...(c[2] || []).map(g => g[0])])])
                       .filter(Boolean);        // a heading has no view of its own
     const holdsCurrent = flat.includes(VIEW);
     const shut = NAV_SHUT.has(grpKey) && !holdsCurrent;
@@ -2051,6 +2039,7 @@ function buildNav() {
       a.dataset.view = id;
       a.classList.toggle('on', id === VIEW);
       if (depth) a.classList.add('sub');
+      if (depth > 1) a.classList.add('sub2');
       a.append(el('span', { className: 'lbl',
         textContent: labelKey ? t(labelKey) : tblLabel(id.slice(4)) }));
       if (id === 'inbox' && WF.badgeN > 0) a.append(el('span', { className: 'tag', textContent: String(WF.badgeN) }));
@@ -2063,7 +2052,7 @@ function buildNav() {
        target inside the link, so opening the branch and opening the screen stay
        separate actions. Folded by default, same as the headings: the parent is
        what people navigate to, the children are occasional. */
-    const addBranch = (parent, children) => {
+    const addBranch = (parent, children, depth = 1) => {
       const key = 'subopen:' + parent.dataset.view;
       const inner = el('div', { className: 'subkids' });
       const holds = children.some(c => c[0] === VIEW);
@@ -2081,7 +2070,7 @@ function buildNav() {
       };
       parent.prepend(car);
       parent.after(inner);
-      for (const [cid, ckey] of children) addItem(cid, ckey, 1, inner);
+      for (const [cid, ckey] of children) addItem(cid, ckey, depth, inner);
     };
     for (const [id, labelKey, children] of items) {
       if (id) {
@@ -2101,7 +2090,7 @@ function buildNav() {
          anywhere on it folds instead of navigating. */
       const key = 'subopen:' + labelKey;
       const inner = el('div', { className: 'subkids' });
-      const holds = (children || []).some(c => c[0] === VIEW);
+      const holds = (children || []).some(c => c[0] === VIEW || (c[2] || []).some(g => g[0] === VIEW));
       const shutSub = !holds && !NAV_SHUT.has(key);
       inner.classList.toggle('shut', shutSub);
 
@@ -2118,7 +2107,10 @@ function buildNav() {
         navSaveShut();
       };
       kids.append(head, inner);
-      for (const [cid, ckey] of children || []) addItem(cid, ckey, 1, inner);
+      for (const [cid, ckey, gch] of children || []) {
+        const a = addItem(cid, ckey, 1, inner);
+        if (gch && gch.length) addBranch(a, gch, 2);   // e.g. Department → its aliases
+      }
     }
     nav.append(head, kids);
   }
@@ -11901,9 +11893,7 @@ const snapLib = name => window[name] ? Promise.resolve() : new Promise((ok, bad)
 async function snapTargets() {
   const out = [];
   const add = (view, label, o = {}) => out.push(Object.assign({ view, label }, o));
-  for (const [, items] of NAV)
-    for (const [id, key, ch] of items)
-      for (const [v] of [[id, key], ...(ch || [])]) {
+  for (const v of navViews()) {
         if (!v || v === 'setup' || !canView(v)) continue;
         if (v === 'payments') {
           for (const tab of PAY_TABS) add(v, `${viewTitle(v)} — ${t('pay.tab.' + tab)}`,
