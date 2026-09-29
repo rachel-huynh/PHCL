@@ -16617,6 +16617,12 @@ alter table pm_payreq add column if not exists approved_by     uuid;
 alter table pm_payreq add column if not exists approved_name   text;
 alter table pm_payreq add column if not exists approved_at     timestamptz;
 alter table pm_payreq add column if not exists approved_sig    jsonb;
+-- 29/09/2026: Thu mua ký khi gửi, Kế toán ký khi xác nhận đã chi — cùng hiện trên trang đề nghị in ra.
+alter table pm_payreq add column if not exists submitted_name  text;
+alter table pm_payreq add column if not exists submitted_sig   jsonb;
+alter table pm_payreq add column if not exists paid_by         uuid;
+alter table pm_payreq add column if not exists paid_name       text;
+alter table pm_payreq add column if not exists paid_sig        jsonb;
 comment on table pm_payreq is
   'Đề nghị thanh toán theo đợt của dự án: Thu mua lập → Kế toán trưởng duyệt (Kế toán được báo cùng lúc) → Kế toán xác nhận đã chi. Ghi qua pm_payreq_*.';
 
@@ -16805,9 +16811,11 @@ returns void language sql security definer set search_path = public as $$
 $$;
 
 -- Gửi: cần số tiền, hồ sơ đính kèm và thư đề nghị thanh toán của nhà thầu (bản scan có đóng dấu).
-create or replace function pm_payreq_submit(p_id bigint)
+-- p = {sig: {png}}: chữ ký của người gửi (Thu mua), 29/09/2026.
+drop function if exists pm_payreq_submit(bigint);
+create or replace function pm_payreq_submit(p_id bigint, p jsonb default '{}'::jsonb)
 returns void language plpgsql security definer set search_path = public as $$
-declare r pm_payreq; v_to text;
+declare r pm_payreq; v_to text; v_sig jsonb;
 begin
   select * into r from pm_payreq where id = p_id for update;
   if r.id is null then raise exception 'Không có đề nghị %.', p_id; end if;
@@ -16822,9 +16830,11 @@ begin
   -- Số tiền khác lịch thanh toán của hợp đồng: ghi lý do điều chỉnh.
   if r.amount_contract is not null and abs(coalesce(r.amount, 0) - r.amount_contract) >= 1
      and coalesce(trim(r.adjust_note), '') = '' then raise exception 'Số tiền khác hợp đồng: ghi lý do điều chỉnh.'; end if;
+  v_sig := pm_sig_check(p -> 'sig');
   -- Có bước kiểm tra (pay_route.check) thì tới đó; không thì thẳng tới Kế toán trưởng duyệt.
   v_to := case when jsonb_array_length(coalesce(pm_pay_roles('check'), '[]')) > 0 then 'check' else 'approve' end;
-  update pm_payreq set status = v_to, submitted_at = now(), updated_at = now() where id = r.id returning * into r;
+  update pm_payreq set status = v_to, submitted_at = now(), submitted_name = am_me_name(), submitted_sig = v_sig, updated_at = now()
+   where id = r.id returning * into r;
   perform pm_payreq_log(r.id, 'prep', case when r.route @> '[{"action": "return"}]' then 'resubmit' else 'submit' end, null);
   perform pm_pay_notify(r, 'pay', v_to, v_to);
   perform pm_pay_notify(r, 'info', 'watch', 'submitted');         -- Kế toán nắm thông tin cùng lúc
@@ -16875,9 +16885,10 @@ begin
     perform pm_pay_notify(r, 'info', null, v_to);                      -- Thu mua thấy hồ sơ đi tới đâu
     return v_to;
   end if;
-  -- Đã chi.
+  -- Đã chi: Kế toán ký (p.sig), tên và chữ ký hiện ở ô "Đã chi" của trang đề nghị.
   if nullif(p ->> 'paid_at', '') is null then raise exception 'Nhập ngày chi.'; end if;
-  update pm_payreq set status = 'paid', paid_at = (p ->> 'paid_at')::date,
+  v_sig := pm_sig_check(p -> 'sig');
+  update pm_payreq set status = 'paid', paid_at = (p ->> 'paid_at')::date, paid_by = auth.uid(), paid_name = am_me_name(), paid_sig = v_sig,
                        paid_amount = coalesce(nullif(p ->> 'paid_amount', '')::numeric, amount_total, amount),
                        voucher_no = nullif(trim(p ->> 'voucher_no'), ''), updated_at = now()
    where id = r.id returning * into r;
@@ -16906,7 +16917,7 @@ begin
   if nullif(p ->> 'paid_at', '') is null then raise exception 'Nhập ngày chi.'; end if;
   foreach v_id in array coalesce(p_ids, '{}') loop
     perform pm_payreq_act(v_id, 'paid', nullif(trim(p ->> 'note'), ''),
-                          jsonb_build_object('paid_at', p ->> 'paid_at', 'voucher_no', p ->> 'voucher_no'));
+                          jsonb_build_object('paid_at', p ->> 'paid_at', 'voucher_no', p ->> 'voucher_no', 'sig', p -> 'sig'));   -- một chữ ký cho cả lô
     n := n + 1;
   end loop;
   return n;
@@ -17047,11 +17058,11 @@ revoke execute on function pm_pay_notify(pm_payreq, text, text, text), pm_payreq
   from public, anon, authenticated;
 revoke execute on function pm_ct_from_po(bigint), pm_ct_confirm(bigint), pm_payreq_see(text), pm_pay_roles(text), pm_pay_can(text, text),
   pm_payreq_state(text), pm_payreq_save(jsonb), pm_payreq_file_add(bigint, text, text, bigint, text), pm_payreq_file_del(bigint, text), pm_payreq_paid_many(bigint[], jsonb),
-  pm_payreq_submit(bigint), pm_payreq_act(bigint, text, text, jsonb), pm_payreq_cancel(bigint, text), pm_todo_pay(),
+  pm_payreq_submit(bigint, jsonb), pm_payreq_act(bigint, text, text, jsonb), pm_payreq_cancel(bigint, text), pm_todo_pay(),
   pm_payreq_path_ok(text, boolean) from public, anon;
 grant execute on function pm_ct_from_po(bigint), pm_ct_confirm(bigint), pm_payreq_see(text), pm_pay_roles(text), pm_pay_can(text, text),
   pm_payreq_state(text), pm_payreq_save(jsonb), pm_payreq_file_add(bigint, text, text, bigint, text), pm_payreq_file_del(bigint, text), pm_payreq_paid_many(bigint[], jsonb),
-  pm_payreq_submit(bigint), pm_payreq_act(bigint, text, text, jsonb), pm_payreq_cancel(bigint, text), pm_todo_pay(),
+  pm_payreq_submit(bigint, jsonb), pm_payreq_act(bigint, text, text, jsonb), pm_payreq_cancel(bigint, text), pm_todo_pay(),
   pm_payreq_path_ok(text, boolean) to authenticated;
 
 -- Lưới an toàn cho project dùng chung (xem app_lock_anon trong 17_auth.sql).

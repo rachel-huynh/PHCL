@@ -118,7 +118,9 @@ function pqPayBar(list) {
   const go = el('button', { className: 'btn pri', type: 'button', disabled: !n, textContent: '✔ ' + t('pq.payMany', { n }) });
   go.onclick = async () => {
     if (!confirm(t('pq.payManyQ', { n, s: fmtMoney(sum) }))) return;
-    try { const k = await SB.rpc('pm_payreq_paid_many', { p_ids: [...PQ.sel], p: { paid_at: fAt.value, voucher_no: fV.value.trim() || null } });
+    // One signature for the whole batch, on each request's "Paid".
+    const png = await sigAsk(t('pq.sigPaidMany', { n })); if (png === null) return;
+    try { const k = await SB.rpc('pm_payreq_paid_many', { p_ids: [...PQ.sel], p: Object.assign({ paid_at: fAt.value, voucher_no: fV.value.trim() || null }, png ? { sig: { png } } : {}) });
           PQ.sel.clear(); await pqReload(t('pq.paidMany', { n: k })); }
     catch (e) { msg('#pqMsg', 'err', e.message); }
   };
@@ -246,8 +248,9 @@ async function pqView(id) {
     body.append(el('div', { className: 'row', style: 'gap:8px;margin:10px 0' }, [
       el('button', { className: 'btn pri', type: 'button', textContent: '📨 ' + t('pq.submit'), onclick: async () => {
         if (!letter) return msg(out, 'err', t('pq.letterNeed'));
-        if (!confirm(t('pq.submitQ', { no: r.no }))) return;
-        try { await SB.rpc('pm_payreq_submit', { p_id: r.id }); await pqReload(t('pq.submitted'), r.id); } catch (e) { msg(out, 'err', e.message); } } }),
+        // Purchasing signs when sending (user 29/09/2026): the signature goes in "Requested by" on the request's page.
+        const png = await sigAsk(t('pq.sigSubmit', { no: r.no })); if (png === null) return;
+        try { await SB.rpc('pm_payreq_submit', { p_id: r.id, p: png ? { sig: { png } } : {} }); await pqReload(t('pq.submitted'), r.id); } catch (e) { msg(out, 'err', e.message); } } }),
       el('button', { className: 'btn danger tiny', type: 'button', textContent: t('pq.cancel'), onclick: async () => {
         const why = prompt(t('pq.cancelQ')); if (why === null) return;
         try { await SB.rpc('pm_payreq_cancel', { p_id: r.id, p_comment: why }); await pqReload(t('pq.cancelled')); pqDrawerClose(); } catch (e) { msg(out, 'err', e.message); } } })]));
@@ -289,7 +292,10 @@ function pqActBox(r, out) {
     const fV = el('input', { placeholder: t('pq.voucherPh') });
     box.append(el('div', { className: 'row' }, [el('div', { className: 'fld' }, [el('label', { textContent: t('pq.paidAt') }), fAt]),
       el('div', { className: 'fld' }, [el('label', { textContent: t('pq.paidAmt') }), fAmt]), el('div', { className: 'fld grow' }, [el('label', { textContent: t('pq.voucher') }), fV])]));
-    btns.push(el('button', { className: 'btn pri', type: 'button', textContent: '✔ ' + t('pq.markPaid'), onclick: () => go('paid', { paid_at: fAt.value, paid_amount: numIn(fAmt.value), voucher_no: fV.value }) }));
+    btns.push(el('button', { className: 'btn pri', type: 'button', textContent: '✔ ' + t('pq.markPaid'), onclick: async () => {
+      // The Accountant signs the payment: the signature goes in "Paid" on the request's page (user 29/09/2026).
+      const png = await sigAsk(t('pq.sigPaid', { no: r.no })); if (png === null) return;
+      go('paid', Object.assign({ paid_at: fAt.value, paid_amount: numIn(fAmt.value), voucher_no: fV.value }, png ? { sig: { png } } : {})); } }));
   } else btns.push(el('button', { className: 'btn pri', type: 'button', textContent: '✔ ' + t('pq.ok.' + r.status), onclick: async () => {
     // The Chief Accountant signs the approval: the signature goes on the "Approved by CA" mark of the printed dossier.
     if (r.status === 'approve') { const png = await sigAsk(t('pq.sigTitle', { no: r.no })); if (png === null) return; return go('approve', png ? { sig: { png } } : {}); }
@@ -493,6 +499,7 @@ function pqCoverEl(r, p) {
   const adj = r.amount_contract != null && Math.abs(Number(r.amount) - Number(r.amount_contract)) >= 1;
   const last = k => [...(r.route || [])].reverse().find(x => x.step === k && ['submit', 'resubmit', 'approve', 'paid'].includes(x.action));
   const sub = last('prep'), paid = last('process');
+  const sigImg = s => s && s.png ? el('img', { src: s.png, alt: '' }) : el('div', { className: 'gap' });
   const cover = el('div', { className: 'pqcover' }, [
     el('div', { className: 'pqch' }, [el('div', {}, [el('b', { textContent: FS_CO[0] }), el('div', { textContent: FS_CO[1] }), el('small', { textContent: FS_CO[2] })]),
       el('div', { className: 'r' }, [el('b', { textContent: r.no }), el('div', { textContent: fmtDate(String(r.submitted_at || r.created_at || '').slice(0, 10)) })])]),
@@ -504,13 +511,16 @@ function pqCoverEl(r, p) {
       row('VAT', r.vat_pct != null ? Number(r.vat_pct) + '%' : ''), row('Tổng thanh toán / Total incl. VAT', fmtMoney(r.amount_total)),
       ...(r.invoice_no ? [row('Hoá đơn / Invoice', r.invoice_no)] : []), ...(r.note ? [row('Ghi chú / Note', r.note)] : []),
       row('Hồ sơ kèm theo / Attachments', [...(r.files || []).map(f => `${t('pq.f.' + (f.kind || 'other'))}: ${f.name}`), ...(r.links || []).map(l => l.label || l.url)].join('\n') || '—')]),
+    // Three signatures (user 29/09/2026): Purchasing when sending, the Chief Accountant when approving, the Accountant when paying.
     el('div', { className: 'pqsign' }, [
-      el('div', {}, [el('b', { textContent: 'Người đề nghị / Requested by' }), el('small', { textContent: 'Thu mua / Purchasing' }), el('div', { className: 'nm', textContent: (sub && sub.name) || r.created_name || '' }),
-        el('small', { textContent: sub ? fmtDateTime(sub.at) : '' })]),
+      el('div', {}, [el('b', { textContent: 'Người đề nghị / Requested by' }), el('small', { textContent: 'Thu mua / Purchasing' }), sigImg(r.submitted_sig),
+        el('div', { className: 'nm', textContent: r.submitted_name || (sub && sub.name) || r.created_name || '' }),
+        el('small', { textContent: sub ? fmtDateTime(sub.at) : r.submitted_at ? fmtDateTime(r.submitted_at) : '' })]),
       el('div', {}, [el('b', { textContent: 'Duyệt / Approved by' }), el('small', { textContent: 'Kế toán trưởng / Chief Accountant' }),
-        r.approved_sig && r.approved_sig.png ? el('img', { src: r.approved_sig.png, alt: '' }) : el('div', { className: 'gap' }),
+        sigImg(r.approved_sig),
         el('div', { className: 'nm', textContent: r.approved_name || '' }), el('small', { textContent: r.approved_at ? fmtDateTime(r.approved_at) : '' })]),
-      el('div', {}, [el('b', { textContent: 'Đã chi / Paid' }), el('small', { textContent: 'Kế toán / Accountant' }), el('div', { className: 'nm', textContent: (paid && paid.name) || '' }),
+      el('div', {}, [el('b', { textContent: 'Đã chi / Paid' }), el('small', { textContent: 'Kế toán / Accountant' }), sigImg(r.paid_sig),
+        el('div', { className: 'nm', textContent: r.paid_name || (paid && paid.name) || '' }),
         el('small', { textContent: r.paid_at ? `${fmtDate(r.paid_at)}${r.voucher_no ? ' · ' + r.voucher_no : ''}` : '' })])])]);
   return cover;
 }
