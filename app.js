@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260929b';
+const APP_VERSION = '20260929d';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -11102,7 +11102,21 @@ async function wfStampCanvas(canvas, st) {
   g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
   g.drawImage(canvas, 0, 0);
   const pad = Math.round(band * 0.14), x0 = Math.round(c.width * 0.42), y0 = canvas.height + pad, w = c.width - x0 - pad, h = band - 2 * pad;
-  g.strokeStyle = '#1e7e4f'; g.lineWidth = Math.max(2, band * 0.04); g.strokeRect(x0, y0, w, h);
+  await wfStampDraw(g, x0, y0, w, h, st, pad);
+  return c;
+}
+// The mark alone, as a PNG of w × h pixels: laid on a scanned page (the vendor's letter, docview.js).
+async function wfStampPng(st, w = 1400, h = 104) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);
+  const lw = Math.max(2, h * 0.05);
+  await wfStampDraw(g, lw / 2, lw / 2, w - lw, h - lw, st, Math.round(h * 0.16));
+  return new Uint8Array(await (await new Promise(r => c.toBlob(r, 'image/png'))).arrayBuffer());
+}
+// The box: green frame, "✔ APPROVED BY CHIEF ACCOUNTANT — NAME", the time and the request, the signature on the right.
+async function wfStampDraw(g, x0, y0, w, h, st, pad) {
+  g.strokeStyle = '#1e7e4f'; g.lineWidth = Math.max(2, h * 0.05); g.strokeRect(x0, y0, w, h);
   g.fillStyle = '#1e7e4f'; g.font = `700 ${Math.round(h * 0.34)}px Calibri, Arial, sans-serif`; g.textBaseline = 'middle';
   const txt = `✔ APPROVED BY CHIEF ACCOUNTANT — ${String(st.name || '').toUpperCase()}`;
   g.fillText(txt, x0 + pad, y0 + h * 0.32, w * 0.72);
@@ -11115,7 +11129,6 @@ async function wfStampCanvas(canvas, st) {
       g.drawImage(img, x0 + w - iw - pad, y0 + (h - ih) / 2, iw, ih);
     } catch {}
   }
-  return c;
 }
 // A node (a cover page) as a shot, like a form page.
 async function wfShotOf(node, label, land) {
@@ -11163,6 +11176,7 @@ async function wfCaptureForms(code, fmt, out, onlyId, opts = {}) {
     await wfLookups(); await wfCatLoad();
     const stamp = opts.stamp !== undefined ? opts.stamp : await wfCaStamp(code);
     if (opts.cover) { const s = await wfShotOf(opts.cover, opts.coverLabel || 'Cover', false); s.canvas = await wfStampCanvas(s.canvas, stamp); shots.push(s); }
+    if (opts.coverOnly && fmt === 'blob') return wfCapPdf(shots).output('blob');   // a payment request's own page (payreq.js)
     const enc = encodeURIComponent(code);
     // No project code: one liquidation request (onlyId), in its own package.
     const [[project], docs, pkgs] = code ? await Promise.all([

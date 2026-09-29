@@ -3,7 +3,7 @@
    contract, the project's approved forms — are merged into one PDF shown at once: the list on
    the left jumps to each; a file the browser cannot show (Excel, Word, zip) stays in the list
    with its own download button, a OneDrive link opens in a new tab.
-   dvOpen(title, items) — items: [{ label, sub, name, get: async () => Blob }] or [{ label, sub, url }]. */
+   dvOpen(title, items) — items: [{ label, sub, name, get: async () => Blob, stamp? }] or [{ label, sub, url }]. */
 async function dvLib() {
   if (window.PDFLib) return window.PDFLib;
   await new Promise((ok, no) => {
@@ -42,6 +42,26 @@ async function dvPng(blob) {
     return new Uint8Array(await (await new Promise(r => c.toBlob(r, 'image/png'))).arrayBuffer());
   } finally { URL.revokeObjectURL(u); }
 }
+/* The Chief Accountant's mark on a scanned document (item.stamp — the vendor's payment-request letter,
+   user 29/09/2026): each page is made taller by a white strip at the bottom, the green box drawn there as
+   on the forms (wfStampCanvas), so it never covers the vendor's own stamp or signature. */
+async function dvStampPages(out, from, to, st, cache) {
+  for (let i = from - 1; i < to; i++) {
+    const pg = out.getPage(i), b = pg.getCropBox(), m = pg.getMediaBox();
+    const band = b.width * 0.055, pad = band * 0.14;
+    const x = b.x + b.width * 0.42, w = b.x + b.width - pad - x, h = band - 2 * pad;
+    const key = `${st.no}|${Math.round(w / h * 10)}`;
+    const img = cache[key] || (cache[key] = await out.embedPng(await wfStampPng(st, 1400, Math.max(40, Math.round(1400 * h / w)))));
+    // A page turned in its file (/Rotate) keeps its size; the mark goes on it as it is.
+    if (!(pg.getRotation().angle % 360)) {
+      const y0 = b.y - band;
+      if (m.y > y0) pg.setMediaBox(m.x, y0, m.width, m.height + (m.y - y0));
+      pg.setCropBox(b.x, y0, b.width, b.height + band);
+      pg.drawRectangle({ x: b.x, y: y0, width: b.width, height: band, color: window.PDFLib.rgb(1, 1, 1) });
+      pg.drawImage(img, { x, y: y0 + pad, width: w, height: h });
+    } else pg.drawImage(img, { x, y: b.y + pad, width: w, height: h });
+  }
+}
 // One stored file in the viewer (the links of the tendering and payment screens).
 const dvFile = (f, bucket) => dvOpen(f.name || 'file', [{ label: f.name || 'file', name: f.name, get: () => dvStored(bucket, f.path) }]);
 
@@ -51,9 +71,10 @@ async function dvOpen(title, items) {
   const stage = el('div', { className: 'dvstage' }, el('div', { className: 'dim dvwait', textContent: t('dv.loading') }));
   const info = el('span', { className: 'dim dvinfo' });
   const dl = el('button', { className: 'btn tiny', type: 'button', textContent: '⬇ ' + t('dv.download'), disabled: true });
+  const pr = el('button', { className: 'btn tiny pri', type: 'button', textContent: '🖨 ' + t('dv.print'), disabled: true });
   const close = el('button', { className: 'dbtn', type: 'button', textContent: '✕', title: t('pm.prj.close') });
   const win = el('div', { id: 'dvWin', className: 'capprev dvwin', role: 'dialog', 'aria-label': title }, [
-    el('div', { className: 'dhead' }, [el('h2', { textContent: title }), info, el('span', { style: 'flex:1' }), dl, close]),
+    el('div', { className: 'dhead' }, [el('h2', { textContent: title }), info, el('span', { style: 'flex:1' }), pr, dl, close]),
     el('div', { className: 'dvbody' + (items.length > 1 ? '' : ' one') }, [el('div', { className: 'dvside' }, list), stage])]);
   let url = null, gone = false;
   const esc = e => { if (e.key === 'Escape') shut(); };
@@ -76,7 +97,7 @@ async function dvOpen(title, items) {
   try {
     const L = await dvLib();
     const out = await L.PDFDocument.create();
-    const blobs = [];
+    const blobs = [], stampCache = {};
     for (let i = 0; i < items.length && !gone; i++) {
       const it = items[i], li = rows[i], st = li.querySelector('.dvst');
       const off = text => { st.textContent = text; li.classList.remove('wait'); li.classList.add('off'); };
@@ -105,6 +126,7 @@ async function dvOpen(title, items) {
           out.addPage([W, H]).drawImage(im, { x: (W - im.width * s) / 2, y: (H - im.height * s) / 2, width: im.width * s, height: im.height * s });
         } else { off(t('dv.noPreview')); continue; }
         const to = out.getPageCount();
+        if (it.stamp && to >= from) await dvStampPages(out, from, to, it.stamp, stampCache);
         li.dataset.page = String(from);
         li.classList.remove('wait');
         st.textContent = to > from ? t('dv.pages', { a: from, b: to }) : t('dv.page', { a: from });
@@ -120,6 +142,9 @@ async function dvOpen(title, items) {
     // One file: the original is downloaded; several: the merged PDF.
     const one = items.length === 1 && blobs[0];
     dl.disabled = false;
+    // Print every page at once: the browser's print of the PDF in the frame (a new tab where a browser will not).
+    pr.disabled = false;
+    pr.onclick = () => { const f = stage.querySelector('iframe'); try { f.contentWindow.focus(); f.contentWindow.print(); } catch { window.open(url, '_blank', 'noopener'); } };
     dl.onclick = () => one ? dvSave(one, items[0].name || items[0].label) : dvSave(merged, title.replace(/[\\/:*?"<>|]/g, '-') + '.pdf');
     show(1);
   } catch (e) { stage.innerHTML = ''; stage.append(el('div', { className: 'msg err', textContent: (e && e.message) || String(e) })); }

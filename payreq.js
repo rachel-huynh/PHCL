@@ -85,7 +85,7 @@ function pqRender() {
   for (const id of [...PQ.sel]) if (!rows.some(r => r.id === id && payable(r))) PQ.sel.delete(id);
   if (canPay) card.append(pqPayBar(rows.filter(payable)));
   const tb = el('table', { className: 'lqbt' });
-  tb.append(el('tr', {}, [...(canPay ? [['', 'tick']] : []), ['pq.c.no'], ['pm.col.code'], ['pm.col.name'], ['pq.c.kind'], ['pq.c.milestone'], ['pq.c.amount', 'num'], ['pq.c.total', 'num'], ['pq.c.status'], ['pq.c.sent'], ['pq.c.paid']]
+  tb.append(el('tr', {}, [...(canPay ? [['', 'tick']] : []), ['', 'pqeye'], ['pq.c.no'], ['pm.col.code'], ['pm.col.name'], ['pq.c.kind'], ['pq.c.milestone'], ['pq.c.amount', 'num'], ['pq.c.total', 'num'], ['pq.c.status'], ['pq.c.sent'], ['pq.c.paid']]
     .map(([k, c]) => el('th', { className: c || '', textContent: k ? t(k) : '' }))));
   for (const r of rows) {
     const p = PQ.prj.get(r.project_code) || {};
@@ -93,7 +93,10 @@ function pqRender() {
       const cb = el('input', { type: 'checkbox', checked: PQ.sel.has(r.id) });
       cb.onchange = () => { cb.checked ? PQ.sel.add(r.id) : PQ.sel.delete(r.id); pqRender(); };
       return cb; })() : '') : null;
-    const tr = el('tr', { className: 'aoclick' + (mine.has(r.id) ? ' pqmine' : '') }, [...(tick ? [tick] : []), el('td', {}, el('code', { textContent: r.no })), el('td', {}, el('code', { textContent: r.project_code })),
+    // 👁 between the tick and the number: the full document of the request, without opening it (user 29/09/2026).
+    const eye = el('td', { className: 'pqeye', onclick: e => e.stopPropagation() }, el('button', { className: 'btn tiny', type: 'button', textContent: '👁',
+      title: t('pq.dv.allT'), onclick: () => pqViewAll(r) }));
+    const tr = el('tr', { className: 'aoclick' + (mine.has(r.id) ? ' pqmine' : '') }, [...(tick ? [tick] : []), eye, el('td', {}, el('code', { textContent: r.no })), el('td', {}, el('code', { textContent: r.project_code })),
       el('td', { className: 'aowrap', textContent: p.name || '' }), el('td', { textContent: t('pq.kind.' + r.kind) }), el('td', { className: 'aowrap', textContent: r.milestone || '' }),
       el('td', { className: 'num', textContent: r.amount != null ? fmtMoney(r.amount) : '' }), el('td', { className: 'num', textContent: r.amount_total != null ? fmtMoney(r.amount_total) : '' }),
       el('td', {}, pqChip(r.status)), el('td', { textContent: fmtDate(String(r.submitted_at || '').slice(0, 10)) }),
@@ -121,7 +124,8 @@ function pqPayBar(list) {
   };
   return el('div', { className: 'pqpaybulk' }, [el('label', { className: 'tdpick' }, [all, ' ' + t('pq.payAll', { n: list.length })]),
     el('b', { textContent: n ? t('pq.paySel', { n, s: fmtMoney(sum) }) : t('pq.payPick') }), el('span', { style: 'flex:1' }),
-    el('div', { className: 'fld' }, [el('label', { textContent: t('pq.paidAt') }), fAt]), el('div', { className: 'fld' }, [el('label', { textContent: t('pq.voucher') }), fV]), go]);
+    el('div', { className: 'fld' }, [el('label', { textContent: t('pq.paidAt') }), fAt]), el('div', { className: 'fld' }, [el('label', { textContent: t('pq.voucher') }), fV]), go,
+    el('button', { className: 'btn', type: 'button', disabled: !n, textContent: '🖨 ' + t('pq.printMany', { n }), title: t('pq.printManyT'), onclick: () => pqPrintMany([...PQ.sel]) })]);
 }
 
 /* ------------------------------------------------------------ the drawer */
@@ -229,7 +233,7 @@ async function pqView(id) {
       ...(adj ? [el('dt', { textContent: t('pq.adjNote') }), el('dd', { textContent: r.adjust_note || '—' })] : []),
       // The vendor's payment-request letter (a stamped scan) goes with every request (user 29/09/2026).
       el('dt', { textContent: t('pq.f.vendor_letter') }), el('dd', {}, letter
-        ? el('a', { href: '#', className: 'aolink', textContent: '📎 ' + (letter.name || t('pq.f.vendor_letter')), onclick: e => { e.preventDefault(); tdFile(letter, 'pm-payreq'); } })
+        ? el('a', { href: '#', className: 'aolink', textContent: '📎 ' + (letter.name || t('pq.f.vendor_letter')), onclick: e => { e.preventDefault(); dvOpen(letter.name || t('pq.f.vendor_letter'), pqPayItems(Object.assign({}, r, { files: [letter], links: [] }))); } })
         : el('span', { className: 'tglate', textContent: t('pq.noLetter') })),
       el('dt', { textContent: t('pq.c.total') }), el('dd', { textContent: `${fmtMoney(r.amount_total)}${r.vat_pct != null ? ' · VAT ' + Number(r.vat_pct) + '%' : ''}` }),
       ...(r.invoice_no ? [el('dt', { textContent: t('pq.invoice') }), el('dd', { textContent: r.invoice_no })] : []),
@@ -310,7 +314,7 @@ function pqFiles(r, out, canAdd) {
     el('button', { className: 'btn tiny pri', type: 'button', style: 'margin-left:auto', textContent: '👁 ' + t('pq.dv.all'), title: t('pq.dv.allT'), onclick: () => pqViewAll(r) })]));
   const ul = el('ul', { className: 'tgfiles' });
   for (const f of r.files || []) ul.append(el('li', {}, [el('span', { className: 'tdchip' + (f.kind === 'vendor_letter' ? ' ok' : ''), textContent: t('pq.f.' + (f.kind || 'other')) }), ' ',
-    el('a', { href: '#', textContent: '📎 ' + (f.name || 'file'), onclick: e => { e.preventDefault(); tdFile(f, 'pm-payreq'); } }),
+    el('a', { href: '#', textContent: '📎 ' + (f.name || 'file'), onclick: e => { e.preventDefault(); dvOpen(f.name || 'file', pqPayItems(Object.assign({}, r, { files: [f], links: [] }))); } }),
     el('small', { className: 'dim', textContent: ` ${Math.max(1, Math.round((f.size || 0) / 1024))} KB · ${f.by || ''} · ${fmtDate(String(f.at || '').slice(0, 10))}` }),
     ['draft', 'returned'].includes(r.status) && canAdd ? el('button', { className: 'xbtn', type: 'button', textContent: '✕', onclick: async () => {
       try { await SB.rpc('pm_payreq_file_del', { p_id: r.id, p_path: f.path }); await pqReload('', r.id); } catch (e) { msg(out, 'err', e.message); } } }) : '']));
@@ -362,7 +366,9 @@ function pqFiles(r, out, canAdd) {
 const PQ_FK = { vendor_letter: 0, invoice: 1, other: 2 };
 function pqPayItems(r) {
   return [...(r.files || [])].sort((a, b) => (PQ_FK[a.kind] ?? 2) - (PQ_FK[b.kind] ?? 2))
-    .map(f => ({ label: t('pq.f.' + (f.kind || 'other')), sub: f.name || '', name: f.name, get: () => dvStored('pm-payreq', f.path) }))
+    // The vendor's letter carries the CA's green mark once the request is approved (user 29/09/2026).
+    .map(f => ({ label: t('pq.f.' + (f.kind || 'other')), sub: f.name || '', name: f.name, get: () => dvStored('pm-payreq', f.path),
+                 stamp: f.kind === 'vendor_letter' ? pqStampOf(r) : null }))
     .concat((r.links || []).map(l => ({ label: t('pq.dv.link'), sub: l.label || l.url, url: l.url })));
 }
 async function pqCtItems(r) {
@@ -377,7 +383,13 @@ async function pqCtItems(r) {
     : { label: lbl, sub: [t('ct.fk.' + f.kind), f.name].filter(Boolean).join(' · '), name: f.name, get: () => dvStored('pm-contract', f.storage_path) });
 }
 const pqFormsItem = r => ({ label: t('pq.dv.forms'), sub: `${r.project_code} · ${t('pq.dv.formsSub')}`, name: `${r.project_code} - ${t('wf.cap.file')}.pdf`,
-  get: () => wfCaptureForms(r.project_code, 'blob', null, null, { approved: true }) });
+  // The request's own band once the CA approved it; else the project's latest (wfCaStamp).
+  get: () => wfCaptureForms(r.project_code, 'blob', null, null, Object.assign({ approved: true }, r.approved_at ? { stamp: pqStampOf(r) } : {})) });
+// The request's own page (amounts, attachments, the CA's signature), with its band.
+const pqCoverItem = r => ({ label: t('pq.dv.cover'), sub: r.no, name: r.no.replace(/\//g, '-') + '.pdf',
+  get: () => wfCaptureForms(r.project_code, 'blob', null, null, { cover: pqCoverEl(r, PQ.prj.get(r.project_code) || { code: r.project_code }), coverLabel: r.no, stamp: pqStampOf(r), coverOnly: true }) });
+// Everything of one request, in the order it is checked: its page, the payment documents, the contract, the approved forms.
+const pqDocItems = async r => [pqCoverItem(r), ...pqPayItems(r), ...await pqCtItems(r), pqFormsItem(r)];
 const pqViewForms = (r, p) => dvOpen(`${r.project_code} — ${p.name || ''} · ${t('pq.dv.forms')}`, [pqFormsItem(r)]);
 async function pqViewContract(r) {
   const items = await pqCtItems(r);
@@ -385,7 +397,16 @@ async function pqViewContract(r) {
   dvOpen(`${r.no} · ${t('pq.dv.contract')}`, items);
 }
 async function pqViewAll(r) {
-  dvOpen(`${r.no} — ${t('pq.dv.allH')}`, [...pqPayItems(r), ...await pqCtItems(r), pqFormsItem(r)]);
+  dvOpen(`${r.no} — ${t('pq.dv.allH')}`, await pqDocItems(r));
+}
+// "Print" beside "Confirm paid" (user 29/09/2026): every ticked request's documents in one file, request after
+// request, each request's page and forms marked "Approved by CA"; printed from the viewer in one go.
+async function pqPrintMany(ids) {
+  const rs = ids.map(id => PQ.rows.find(r => r.id === id)).filter(Boolean);
+  if (!rs.length) return;
+  const items = [];
+  for (const r of rs) for (const it of await pqDocItems(r)) items.push(Object.assign(it, { label: `${r.no} · ${it.label}` }));
+  dvOpen(t('pq.printManyH', { n: rs.length }), items);
 }
 
 /* The project's whole file for the accountant: every approved form (open one, or all
@@ -465,7 +486,8 @@ function pqNotice(r) {
 /* The payment request printed: its own page (amounts as the contract has them and as asked, the
    reason, attachments, who sent / approved / paid, the CA's signature) followed by every approved
    form of the project — all pages marked "Approved by CA" once the Chief Accountant approved. */
-async function pqPrint(r, p, btn) {
+// The request's own page (also the first page of each request in the viewer and in "print ticked").
+function pqCoverEl(r, p) {
   const esc = s => String(s ?? '');
   const row = (a, b) => el('tr', {}, [el('th', { textContent: a }), el('td', { textContent: esc(b) })]);
   const adj = r.amount_contract != null && Math.abs(Number(r.amount) - Number(r.amount_contract)) >= 1;
@@ -490,8 +512,14 @@ async function pqPrint(r, p, btn) {
         el('div', { className: 'nm', textContent: r.approved_name || '' }), el('small', { textContent: r.approved_at ? fmtDateTime(r.approved_at) : '' })]),
       el('div', {}, [el('b', { textContent: 'Đã chi / Paid' }), el('small', { textContent: 'Kế toán / Accountant' }), el('div', { className: 'nm', textContent: (paid && paid.name) || '' }),
         el('small', { textContent: r.paid_at ? `${fmtDate(r.paid_at)}${r.voucher_no ? ' · ' + r.voucher_no : ''}` : '' })])])]);
-  const stamp = r.approved_at ? { no: r.no, name: r.approved_name, at: r.approved_at, png: r.approved_sig && r.approved_sig.png } : null;
+  return cover;
+}
+// The green "Approved by CA" band of a request, once the Chief Accountant approved it.
+const pqStampOf = r => r.approved_at ? { no: r.no, name: r.approved_name, at: r.approved_at, png: r.approved_sig && r.approved_sig.png } : null;
+// "Print / PDF" of one request: the same set as "Print (n)", in the viewer — its page, the vendor's letter
+// with the CA's mark, the other payment documents, the contract, the approved forms.
+async function pqPrint(r, p, btn) {
   if (btn) btn.disabled = true;
-  try { await wfCaptureForms(r.project_code, 'preview', '#pqMsg', null, { cover, coverLabel: r.no, stamp, base: `${r.no.replace(/\//g, '-')} - ${t('pq.dossier')}` }); }
+  try { dvOpen(`${r.no} — ${t('pq.print')}`, await pqDocItems(r)); }
   finally { if (btn) btn.disabled = false; }
 }
