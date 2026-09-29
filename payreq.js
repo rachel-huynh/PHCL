@@ -81,18 +81,17 @@ function pqRender() {
     && words.every(w => hnorm([r.no, r.project_code, (PQ.prj.get(r.project_code) || {}).name, r.milestone, r.invoice_no, r.voucher_no].join(' ')).includes(w)));
   // The Accountant: approved requests ticked, then "paid" for all of them at once.
   const payable = r => r.status === 'process' && pqCan('process', (PQ.prj.get(r.project_code) || {}).dept_code);
-  const canPay = rows.some(payable);
-  for (const id of [...PQ.sel]) if (!rows.some(r => r.id === id && payable(r))) PQ.sel.delete(id);
-  if (canPay) card.append(pqPayBar(rows.filter(payable)));
+  // Ticks on every tab (print several at once); only what is on this tab stays ticked.
+  for (const id of [...PQ.sel]) if (!rows.some(r => r.id === id)) PQ.sel.delete(id);
+  if (rows.length) card.append(pqPayBar(rows, payable));
   const tb = el('table', { className: 'lqbt' });
-  tb.append(el('tr', {}, [...(canPay ? [['', 'tick']] : []), ['', 'pqeye'], ['pq.c.no'], ['pm.col.code'], ['pm.col.name'], ['pq.c.kind'], ['pq.c.milestone'], ['pq.c.amount', 'num'], ['pq.c.total', 'num'], ['pq.c.status'], ['pq.c.sent'], ['pq.c.paid']]
+  tb.append(el('tr', {}, [['', 'tick'], ['', 'pqeye'], ['pq.c.no'], ['pm.col.code'], ['pm.col.name'], ['pq.c.kind'], ['pq.c.milestone'], ['pq.c.amount', 'num'], ['pq.c.total', 'num'], ['pq.c.status'], ['pq.c.sent'], ['pq.c.paid']]
     .map(([k, c]) => el('th', { className: c || '', textContent: k ? t(k) : '' }))));
   for (const r of rows) {
     const p = PQ.prj.get(r.project_code) || {};
-    const tick = canPay ? el('td', { className: 'tick', onclick: e => e.stopPropagation() }, payable(r) ? (() => {
-      const cb = el('input', { type: 'checkbox', checked: PQ.sel.has(r.id) });
-      cb.onchange = () => { cb.checked ? PQ.sel.add(r.id) : PQ.sel.delete(r.id); pqRender(); };
-      return cb; })() : '') : null;
+    const cb = el('input', { type: 'checkbox', checked: PQ.sel.has(r.id) });
+    cb.onchange = () => { cb.checked ? PQ.sel.add(r.id) : PQ.sel.delete(r.id); pqRender(); };
+    const tick = el('td', { className: 'tick', onclick: e => e.stopPropagation() }, cb);
     // 👁 between the tick and the number: the full document of the request, without opening it (user 29/09/2026).
     const eye = el('td', { className: 'pqeye', onclick: e => e.stopPropagation() }, el('button', { className: 'btn tiny', type: 'button', textContent: '👁',
       title: t('pq.dv.allT'), onclick: () => pqViewAll(r) }));
@@ -109,25 +108,30 @@ function pqRender() {
 }
 
 const pqHasCheck = () => !!(PQ.route && (PQ.route.check || []).length);
-// "Confirm payment" for the ticked approved requests: one date and voucher for all.
-function pqPayBar(list) {
-  const n = PQ.sel.size, sum = list.filter(r => PQ.sel.has(r.id)).reduce((s, r) => s + (pqAmt(r) || 0), 0);
+// The bar over the list, on every tab (user 29/09/2026): tick all, what is ticked, print them all in one file;
+// for the Accountant also "Confirm paid" — for the ticked requests that are approved and waiting to be paid.
+function pqPayBar(list, payable) {
+  const sel = list.filter(r => PQ.sel.has(r.id)), n = sel.length, sum = sel.reduce((s, r) => s + (pqAmt(r) || 0), 0);
+  const toPay = sel.filter(payable), np = toPay.length, sumPay = toPay.reduce((s, r) => s + (pqAmt(r) || 0), 0);
   const all = el('input', { type: 'checkbox', checked: n > 0 && n === list.length });
   all.onchange = () => { list.forEach(r => all.checked ? PQ.sel.add(r.id) : PQ.sel.delete(r.id)); pqRender(); };
-  const fAt = el('input', { type: 'date', value: new Date().toISOString().slice(0, 10) }), fV = el('input', { placeholder: t('pq.voucherPh') });
-  const go = el('button', { className: 'btn pri', type: 'button', disabled: !n, textContent: '✔ ' + t('pq.payMany', { n }) });
-  go.onclick = async () => {
-    if (!confirm(t('pq.payManyQ', { n, s: fmtMoney(sum) }))) return;
-    // One signature for the whole batch, on each request's "Paid".
-    const png = await sigAsk(t('pq.sigPaidMany', { n })); if (png === null) return;
-    try { const k = await SB.rpc('pm_payreq_paid_many', { p_ids: [...PQ.sel], p: Object.assign({ paid_at: fAt.value, voucher_no: fV.value.trim() || null }, png ? { sig: { png } } : {}) });
-          PQ.sel.clear(); await pqReload(t('pq.paidMany', { n: k })); }
-    catch (e) { msg('#pqMsg', 'err', e.message); }
-  };
-  return el('div', { className: 'pqpaybulk' }, [el('label', { className: 'tdpick' }, [all, ' ' + t('pq.payAll', { n: list.length })]),
-    el('b', { textContent: n ? t('pq.paySel', { n, s: fmtMoney(sum) }) : t('pq.payPick') }), el('span', { style: 'flex:1' }),
-    el('div', { className: 'fld' }, [el('label', { textContent: t('pq.paidAt') }), fAt]), el('div', { className: 'fld' }, [el('label', { textContent: t('pq.voucher') }), fV]), go,
-    el('button', { className: 'btn', type: 'button', disabled: !n, textContent: '🖨 ' + t('pq.printMany', { n }), title: t('pq.printManyT'), onclick: () => pqPrintMany([...PQ.sel]) })]);
+  const kids = [el('label', { className: 'tdpick' }, [all, ' ' + t('pq.selAll', { n: list.length })]),
+    el('b', { textContent: n ? t('pq.paySel', { n, s: fmtMoney(sum) }) : t('pq.selPick') }), el('span', { style: 'flex:1' })];
+  if (list.some(payable)) {
+    const fAt = el('input', { type: 'date', value: new Date().toISOString().slice(0, 10) }), fV = el('input', { placeholder: t('pq.voucherPh') });
+    const go = el('button', { className: 'btn pri', type: 'button', disabled: !np, textContent: '✔ ' + t('pq.payMany', { n: np }), title: t('pq.payPick') });
+    go.onclick = async () => {
+      if (!confirm(t('pq.payManyQ', { n: np, s: fmtMoney(sumPay) }))) return;
+      // One signature for the whole batch, on each request's "Paid".
+      const png = await sigAsk(t('pq.sigPaidMany', { n: np })); if (png === null) return;
+      try { const k = await SB.rpc('pm_payreq_paid_many', { p_ids: toPay.map(r => r.id), p: Object.assign({ paid_at: fAt.value, voucher_no: fV.value.trim() || null }, png ? { sig: { png } } : {}) });
+            PQ.sel.clear(); await pqReload(t('pq.paidMany', { n: k })); }
+      catch (e) { msg('#pqMsg', 'err', e.message); }
+    };
+    kids.push(el('div', { className: 'fld' }, [el('label', { textContent: t('pq.paidAt') }), fAt]), el('div', { className: 'fld' }, [el('label', { textContent: t('pq.voucher') }), fV]), go);
+  }
+  kids.push(el('button', { className: 'btn', type: 'button', disabled: !n, textContent: '🖨 ' + t('pq.printMany', { n }), title: t('pq.printManyT'), onclick: () => pqPrintMany(sel.map(r => r.id)) }));
+  return el('div', { className: 'pqpaybulk' }, kids);
 }
 
 /* ------------------------------------------------------------ the drawer */

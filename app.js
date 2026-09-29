@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260929h';
+const APP_VERSION = '20260929i';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -13802,20 +13802,18 @@ function lqSheetDisposal(x) {
                           fsGrid(nbvRows.map(([l, i]) => fc(`${i + 1}. ${l.asset_code || 'N/A'} — ${l.name || ''}`, fsR(l.nbv_note || ''), 6, 'left')))] : []),
     lqConsent3(y)], 'land');
 }
-// The Disposal Form's three boxes: prepared by, checked by accounting (Chief Accountant), approved by the PHCL GM.
+// The Disposal Form's signature: prepared by. The Chief Accountant and the JVC GM sign later, in the Liquidation
+// Committee (minutes 02, decision 03), so their boxes are no longer on this form (user 29/09/2026).
 function lqConsent3(x) {
-  const k = WF.pkg || {}, st = role => (WF.steps || []).find(s => s.role_code === role && s.status === 'approved');
+  const k = WF.pkg || {};
   const box = (lbl, title, sig, name, at) => el('div', { className: 'fsig' }, [
     el('div', { className: 'sk', textContent: lbl }), el('div', { className: 'sr', textContent: title[0] }), el('div', { className: 'ss', textContent: title[1] || ' ' }),
     el('div', { className: 'simg' }, sigPng(sig) ? el('img', { src: sigPng(sig), alt: '' }) : ''),
     el('div', { className: 'sn', textContent: name || ' ' }), el('div', { className: 'sd', textContent: at ? fmtDate(String(at).slice(0, 10)) : ' ' })]);
-  const ca = st('CHIEF_ACC'), gm = st('JVC_GM');
   const prep = (wfChain(pmEntity(x.p.dept_code), 'LR').find(c => c.step === 0) || {}).role_code;
   return el('div', { className: 'fconsent' }, [el('div', { className: 'fct', textContent: 'Consent by:' }),
-    el('div', { className: 'fsigs', style: 'grid-template-columns:repeat(3,calc((100% - 24px) / 4));justify-content:center' }, [
-      box('Prepared by', prep ? wfSigTitle(prep) : ['', ''], k.prep_signature, k.submitted_at ? (k.created_name || k.created_email) : '', k.submitted_at),
-      box('Checked by Accounting Dept', ['Chief Accountant', 'Kế toán trưởng'], ca && ca.signature, ca && (ca.acted_name || ca.acted_email), ca && ca.acted_at),
-      box('Approved by PHCL GM', ['General Manager', 'Tổng Giám đốc'], gm && gm.signature, gm && (gm.acted_name || gm.acted_email), gm && gm.acted_at)])]);
+    el('div', { className: 'fsigs', style: 'grid-template-columns:calc((100% - 24px) / 4);justify-content:center' }, [
+      box('Prepared by', prep ? wfSigTitle(prep) : ['', ''], k.prep_signature, k.submitted_at ? (k.created_name || k.created_email) : '', k.submitted_at)])]);
 }
 
 /* ------------------------------------------------ condition photos of an LR
