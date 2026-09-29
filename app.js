@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260929e';
+const APP_VERSION = '20260929f';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -2383,7 +2383,7 @@ function showView(view) {
     if (view === 'counter' && SB.ready()) fillPickers();
     if (view === 'alr' && SB.ready()) { fillAlrPickers(); alrHistory(); }
     if (view === 'backup' && SB.ready()) bkCount();
-    if (view === 'sources' && SB.ready()) { if (can('system', 'view')) srcLoad(); srcChecklist(); pmLookups().catch(() => {}); piShow(); }
+    if (view === 'sources' && SB.ready()) { if (can('system', 'view')) srcLoad(); srcChecklist(); pmLookups().catch(() => {}); if (window.dsInit) dsInit(); piShow(); }
     if (view === 'settings' && SB.ready()) stLoad();
     if (view === 'register' && SB.ready()) { regFillPickers(); regLoad(true); }
     if (view === 'intake' && SB.ready()) inFill();
@@ -2450,7 +2450,7 @@ function switchLang(l) {
   // Only when signed in: on the sign-in box the language buttons work too, and
   // there is nothing to fetch yet.
   if (SB.ready() && ME) { fillPickers(); fillAlrPickers(); }
-  tplFill();                              // built options, same blind spot
+  if (window.dsRefresh) dsRefresh();      // the import list and the templates follow the language (datasrc.js)
   for (const [btn, field] of [['#btnShowUrl', '#sbUrl'], ['#btnShowKey', '#sbKey']])   // applyI18n reset them to Show
     $(btn).textContent = t($(field).type === 'password' ? 'setup.show' : 'setup.hide');
   showView(VIEW);
@@ -3291,17 +3291,6 @@ async function srcChecklist() {
       el('span', { className: 'miss', textContent: '✗ ' + t('src.ck.missing') }), el('span', { className: 'na', textContent: '· ' + t('src.ck.kNa') })]));
 }
 
-/* ------------------------------------------------------ blank templates
-   The upload boxes above only accept a sheet whose columns they recognise, so
-   the app has to be able to hand out that shape. Headers come from the same
-   TABLES descriptors the grids are built from — they cannot drift apart — and
-   the asset upload sheet from the Beetrack column maps. A few real rows are
-   included when connected, because a column is far easier to fill in correctly
-   with an example beside it than from a bare heading. */
-const TPL_MASTER = ['am_org', 'am_org_alias', 'am_category_group', 'am_category',
-                    'am_unit', 'am_origin', 'am_origin_alias', 'am_location',
-                    'am_product'];
-
 /* Refill a <select>, keeping what was chosen — so the labels follow a language
    switch instead of staying in the language the screen was first opened in. */
 function selFill(sel, opts) {
@@ -3311,53 +3300,9 @@ function selFill(sel, opts) {
   if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
 }
 
-function tplFill() {
-  const s = $('#tplPick');
-  if (!s) return;
-  selFill(s, [...TPL_MASTER.map(tbl => ['tbl:' + tbl, tblLabel(tbl)]), ['beetrack', t('tpl.beetrack')]]);
-}
-
-async function tplGet() {
-  const out = $('#tplMsg');
-  const pick = $('#tplPick').value;
-  const want = Number($('#tplRows').value) || 0;
-  try {
-    msg(out, 'info', t('tpl.building'));
-    const wb = XLSX.utils.book_new();
-    let file;
-
-    if (pick === 'beetrack') {
-      // Exactly the two sheets the Beetrack importer accepts, headers only.
-      for (const [name, cols] of [['Unique asset', BT_UNIQUE], ['Low-value asset', BT_LOW]])
-        XLSX.utils.book_append_sheet(wb, btSheet(cols, []), name);
-      file = `phcl-template-asset-upload-${bkStamp()}.xlsx`;
-    } else {
-      const tbl = pick.slice(4);
-      const cols = TABLES[tbl].cols.map(c => c.name);
-      let rows = [];
-      if (want && SB.ready()) {
-        try {
-          rows = await SB.select(tbl,
-            `select=${cols.join(',')}&order=${TABLES[tbl].order || TABLES[tbl].pk}&limit=${want}`);
-        } catch { /* headers alone are still a usable template */ }
-      }
-      const aoa = [cols, ...rows.map(r => cols.map(c => {
-        const v = r[c];
-        return v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : v;
-      }))];
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), tbl.slice(0, 31));
-      file = `phcl-template-${tbl}-${bkStamp()}.xlsx`;
-    }
-    XLSX.writeFile(wb, file);
-    msg(out, 'ok', t('tpl.done', { file }));
-  } catch (e) { msg(out, 'err', e.message); }
-}
-
 function initSources() {
   $('#btnSrcRead').onclick = srcRead;
   $('#btnSrcImport').onclick = srcImport;
-  $('#btnTplGet').onclick = tplGet;
-  tplFill();
 }
 
 /* ========================================================= ASSET REGISTER
@@ -5833,7 +5778,7 @@ function usRender() {
   // List or organisation chart (user 25/09/2026).
   const vs = $('#usView');
   vs.innerHTML = '';
-  for (const [v, k] of [['list', 'users.view.list'], ['org', 'users.view.org']]) {
+  for (const [v, k] of [['list', 'users.view.list'], ['org', 'users.view.org'], ['roles', 'users.view.roles']]) {
     const b = el('button', { textContent: t(k) });
     b.classList.toggle('on', (SEC.usView || 'list') === v);
     b.onclick = () => { SEC.usView = v; usRender(); };
@@ -5841,8 +5786,9 @@ function usRender() {
   }
   const org = $('#usOrg');
   org.innerHTML = '';
-  $('#usTableWrap').hidden = SEC.usView === 'org';
+  $('#usTableWrap').hidden = SEC.usView === 'org' || SEC.usView === 'roles';
   if (SEC.usView === 'org') { org.append(usOrgChart()); return; }
+  if (SEC.usView === 'roles') { org.append(usRolesEditor()); return; }
   const head = $('#usGrid thead'), body = $('#usGrid tbody');
   const admin = can('security', 'admin');
   head.innerHTML = ''; body.innerHTML = '';
@@ -5907,6 +5853,118 @@ function usRender() {
 /* Role first, then scope. The scope list starts on the role's usual scope
    (SOF for the hotel GM, PHCL for JVC) and stays empty for roles that must be
    tied to one department, so nobody is handed the whole hotel by accident. */
+/* Roles (user 29/09/2026): the list behind every role picker — the names, the group (hotel, Central
+   Plaza, JVC office, System), the order, whether the role drafts documents, the department suggested
+   when it is given to someone. A System Admin adds, renames, reorders and deletes roles here.
+   The built-in roles keep their code (the app's rules use it) and cannot be deleted; a role still
+   held by someone, used in an approval chain or in the payment route cannot be deleted either. */
+const ROLE_BUILTIN = new Set(['DEPT_STAFF', 'DEPT_HEAD', 'DOF', 'HOTEL_GM', 'PURCHASING', 'HOTEL_AM', 'CP_ADMIN', 'CP_MAINT', 'CP_HEAD',
+  'JVC_ADMIN', 'AM_COORD', 'AM_EXEC', 'CHIEF_ACC', 'ACCOUNTANT', 'JVC_DGM', 'JVC_GM', 'LEGAL', 'SYS_ADMIN', 'CONTENT_EDITOR']);
+const ROLE_ENT = ['SSP', 'CP', 'JVC', 'SYS'];
+function usRolesEditor() {
+  const admin = can('security', 'admin');
+  const box = el('div', { className: 'rolesed' }), out = el('div');
+  const held = new Map();
+  for (const u of SEC.users) for (const l of u.roles) held.set(l.role_code, (held.get(l.role_code) || 0) + 1);
+  const scopes = [['', t('users.roles.noScope')], ...orgTreeOrder().map(o => [o.code, `${'· '.repeat(o.depth)}${o.code} — ${orgName(o) || o.code}`])];
+  const sel = (opts, v, on) => {
+    const s = el('select', { disabled: !admin });
+    for (const [k, x] of opts) s.append(el('option', { value: k, textContent: x }));
+    s.value = v ?? ''; s.onchange = on;
+    return s;
+  };
+  const entOpts = ROLE_ENT.map(e => [e, t('perms.ent.' + e)]);
+  const edits = new Map();                    // code -> changed fields
+  const save = el('button', { className: 'btn pri', type: 'button', textContent: t('tool.save'), disabled: true, hidden: !admin });
+  const touch = (r, k, v) => { const e = edits.get(r.code) || {}; e[k] = v; edits.set(r.code, e); save.disabled = false; };
+  // What a box shows: the unsaved change if there is one (the table is redrawn once the usage is in).
+  const cur = (r, k) => { const e = edits.get(r.code); return e && k in e ? e[k] : r[k]; };
+  const usage = { chains: new Map(), pay: new Set() };
+  const tb = el('table', { className: 'lqbt rolesgrid' });
+  const draw = () => {
+    tb.innerHTML = '';
+    tb.append(el('tr', {}, [t('users.roles.code'), t('users.roles.nameEn'), t('users.roles.nameVi'), t('users.roles.group'), t('users.roles.prepares'),
+      t('users.roles.scope'), t('users.roles.sort'), t('users.roles.used'), ''].map(h => el('th', { textContent: h }))));
+    const list = [...SEC.roles].sort((a, b) => ROLE_ENT.indexOf(a.entity) - ROLE_ENT.indexOf(b.entity) || a.sort - b.sort || a.code.localeCompare(b.code));
+    let ent = null;
+    for (const r of list) {
+      if (r.entity !== ent) { ent = r.entity; tb.append(el('tr', { className: 'rolesent' }, el('td', { colSpan: 9, textContent: t('perms.ent.' + ent) }))); }
+      const inp = (k, cls) => {
+        const i = el('input', { value: cur(r, k) ?? '', className: cls || '', disabled: !admin });
+        i.onchange = () => touch(r, k, k === 'sort' ? Number(i.value) || 0 : i.value.trim());
+        return i;
+      };
+      const prep = el('input', { type: 'checkbox', checked: !!cur(r, 'prepares'), disabled: !admin });
+      prep.onchange = () => touch(r, 'prepares', prep.checked);
+      const n = held.get(r.code) || 0, ch = usage.chains.get(r.code) || 0, pay = usage.pay.has(r.code);
+      const why = ROLE_BUILTIN.has(r.code) ? t('users.roles.builtin') : n ? t('users.roles.heldBy', { n }) : ch ? t('users.roles.inChains', { n: ch }) : pay ? t('users.roles.inPay') : '';
+      const del = el('button', { className: 'xbtn', type: 'button', textContent: '✕', title: why || t('users.roles.del'), disabled: !admin || !!why, hidden: !admin });
+      del.onclick = async () => {
+        if (!confirm(t('users.roles.delQ', { r: roleName(r) }))) return;
+        try { await SB.remove('app_role', `code=eq.${encodeURIComponent(r.code)}`); await usRolesReload(t('users.roles.deleted', { r: r.code })); }
+        catch (e) { msg(out, 'err', e.message); }
+      };
+      tb.append(el('tr', {}, [
+        el('td', {}, [el('code', { textContent: r.code }), ROLE_BUILTIN.has(r.code) ? el('span', { className: 'dim', textContent: ' 🔒', title: t('users.roles.builtin') }) : '']),
+        el('td', {}, inp('name_en')), el('td', {}, inp('name_vi')),
+        el('td', {}, sel(entOpts, cur(r, 'entity'), e => touch(r, 'entity', e.target.value))), el('td', { className: 'c' }, prep),
+        el('td', {}, sel(scopes, cur(r, 'default_scope'), e => touch(r, 'default_scope', e.target.value || null))),
+        el('td', {}, inp('sort', 'num')),
+        el('td', { className: 'dim', textContent: [n ? t('users.roles.nPeople', { n }) : '', ch ? t('users.roles.nChains', { n: ch }) : '', pay ? t('users.roles.pay') : ''].filter(Boolean).join(' · ') || '—' }),
+        el('td', {}, del)]));
+    }
+  };
+  save.onclick = async () => {
+    save.disabled = true;
+    try {
+      for (const [code, p] of edits) {
+        if (p.name_en === '' || p.name_vi === '') throw new Error(t('users.roles.needNames', { r: code }));
+        await SB.patch('app_role', `code=eq.${encodeURIComponent(code)}`, p);
+      }
+      edits.clear();
+      await usRolesReload(t('users.roles.saved'));
+    } catch (e) { save.disabled = false; msg(out, 'err', e.message); }
+  };
+  // A new role: its code once and for all (A–Z, 0–9, _), then its names, group and order.
+  const code = el('input', { placeholder: 'CP_TECH', maxLength: 30, style: 'max-width:150px;text-transform:uppercase' });
+  const en = el('input', { placeholder: 'Technician' }), vi = el('input', { placeholder: 'Kỹ thuật viên' });
+  const grp = sel(entOpts, 'SSP', () => {});
+  const sort = el('input', { className: 'num', value: String(Math.max(0, ...SEC.roles.map(r => r.sort || 0)) + 10), style: 'max-width:80px' });
+  const prepNew = el('input', { type: 'checkbox' });
+  const go = el('button', { className: 'btn', type: 'button', textContent: '＋ ' + t('users.roles.add') });
+  go.onclick = async () => {
+    const c = code.value.trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9_]{1,29}$/.test(c)) return msg(out, 'err', t('users.roles.badCode'));
+    if (SEC.roles.some(r => r.code === c)) return msg(out, 'err', t('users.roles.dupCode', { c }));
+    if (!en.value.trim() || !vi.value.trim()) return msg(out, 'err', t('users.roles.needNames', { r: c }));
+    try {
+      await SB.insert('app_role', [{ code: c, entity: grp.value, name_en: en.value.trim(), name_vi: vi.value.trim(), prepares: prepNew.checked, default_scope: null, sort: Number(sort.value) || 0 }]);
+      await usRolesReload(t('users.roles.added', { r: c }));
+    } catch (e) { msg(out, 'err', e.message); }
+  };
+  const f = (k, node, cls) => el('div', { className: 'fld' + (cls ? ' ' + cls : '') }, [el('label', { textContent: t(k) }), node]);
+  const add = el('div', { className: 'row rolesadd', style: 'align-items:flex-end;flex-wrap:wrap', hidden: !admin }, [
+    f('users.roles.code', code), f('users.roles.nameEn', en, 'grow'), f('users.roles.nameVi', vi, 'grow'), f('users.roles.group', grp), f('users.roles.sort', sort),
+    el('label', { className: 'chk' }, [prepNew, el('span', { textContent: t('users.roles.prepares') })]), go]);
+  box.append(el('p', { className: 'tdnote', textContent: t(admin ? 'users.roles.lead' : 'users.roles.leadRo') }), out, el('div', { className: 'wrap' }, tb),
+    el('div', { className: 'row', style: 'margin-top:8px;justify-content:flex-end' }, save),
+    ...(admin ? [el('h3', { textContent: t('users.roles.addH') }), add] : []),
+    el('p', { className: 'tdnote', textContent: t('users.roles.next') }));
+  draw();
+  // Where each role is used beyond people: approval chains, the payment route.
+  Promise.all([SB.select('pm_chain', 'select=role_code').catch(() => []), SB.select('am_setting', 'select=value&key=eq.pay_route').catch(() => [])]).then(([ch, pr]) => {
+    for (const c of ch) usage.chains.set(c.role_code, (usage.chains.get(c.role_code) || 0) + 1);
+    const v = (pr[0] || {}).value || {};
+    for (const k of Object.keys(v)) for (const c of [].concat(v[k] || [])) usage.pay.add(c);
+    draw();
+  });
+  return box;
+}
+async function usRolesReload(note) {
+  await secLookups();
+  usRender();
+  if (note) msg('#usMsg', 'ok', note);
+}
 function usAddRoleCtl(u) {
   const wrap = el('span', { className: 'addrole' });
   const rs = el('select');
@@ -12395,11 +12453,16 @@ async function payLoad() {
    needs the projects (to read codes in the preview) and the last imports. */
 function piShow() {
   // Data sources screen: the periodic files on top (each by its own right), the master-data parts for System.
-  $('#srcMaster').hidden = !can('system', 'view');
-  $('#piBudCard').hidden = !can('budget', 'view');
-  $('#piDosCard').hidden = !can('project', 'view');
-  const pay = can('payment', 'view');
-  $('#piPayCard').hidden = !pay;
+  // The uploads are one card with a list (datasrc.js): a part this person may not see is left out of the list.
+  const allow = (id, ok) => { const e = $(id); if (e) e.dataset.allow = ok ? '1' : '0'; };
+  const sys = can('system', 'view'), pay = can('payment', 'view');
+  $('#srcMaster').hidden = !sys;
+  allow('#piBudCard', can('budget', 'view'));
+  allow('#piDosCard', can('project', 'view'));
+  allow('#piPayCard', pay);
+  allow('#srcUpBlk', sys);
+  allow('#legBlk', sys);
+  if (window.dsImpSync) dsImpSync();
   if (pay) payImpLoad();
 }
 async function payImpLoad() {
