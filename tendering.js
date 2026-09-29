@@ -866,5 +866,6 @@ window.ntHook = r => {
   if (r.kind === 'info' && r.doc_type === 'PO') return { text: t('tg.nt.poAck', { no: r.doc_no || '', v: String(r.comment || '').replace(/^po_ack: /, '') }), comment: null,
     open: () => r.doc_id && wfOpen(r.doc_id) };
   if (r.doc_type === 'TT' && window.pqNotice) return pqNotice(r);
+  if (r.doc_type === 'LQ' && window.lqNotice) return lqNotice(r);           // liquidation batches (lqflow.js)
   return null;
 };

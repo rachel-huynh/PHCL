@@ -374,7 +374,8 @@ function enRender() {
   if (EN.tab === 'cond') return enCondTab(body);
   if (EN.tab === 'log') return enLogTab(body);
   if (EN.tab === 'config') return enConfigTab(body);
-  if (EN.tab === 'import') return enImportTab(body);
+  // The workbooks are uploaded in Data sources (user 29/09/2026); the tab points there.
+  if (EN.tab === 'import') return canView('sources') && window.dsLinkCard ? body.append(dsLinkCard('eng', t('en.t.import'))) : enImportTab(body);
 }
 
 /* ------------------------------------------------------------- systems */
@@ -928,8 +929,11 @@ function enImportPreview(prev, out) {
     try {
       const r = await SB.rpc('am_eng_import', { p_sys: P.sys.map(({ _added, ...s }) => s), p_items: P.items, p_chk: P.chk, p_points: P.points });
       EN.parsed = null; EN.loaded = false;
+      const note = t('en.imp.done', { s: r.systems, i: r.items, c: r.checklists, p: r.points });
+      // From Data sources (user 29/09/2026) the result is said there; the screen reads the systems when opened.
+      if (VIEW !== 'eng') { prev.innerHTML = ''; msg(out, 'ok', note); return; }
       EN.tab = 'systems';
-      enReload(t('en.imp.done', { s: r.systems, i: r.items, c: r.checklists, p: r.points }));
+      enReload(note);
     } catch (e) { go.disabled = false; enErr(out, e); }
   };
   prev.append(el('div', { className: 'card' }, [el('div', { className: 'wrap' }, tb), el('p', { className: 'dim', style: 'font-size:12px', textContent: t('en.imp.keep') }), go]));

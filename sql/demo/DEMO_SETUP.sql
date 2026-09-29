@@ -158,7 +158,7 @@ begin
     'pm_contract_file', 'pm_contract', 'pr_line', 'pr_source', 'pr_import', 'pr_alias',
     'am_count_line', 'am_count', 'am_incident', 'am_transfer_line', 'am_transfer', 'am_report_snap',
     'pm_pay_alloc', 'pm_invoice', 'pm_payment', 'pm_pay_import',
-    'pm_lq_attend', 'pm_lq_quote', 'pm_lq_buyer', 'pm_lq_event', 'pm_lq_item', 'pm_lq_batch', 'pm_lq_member', 'pm_lq_council',
+    'pm_lq_sign', 'pm_lq_attend', 'pm_lq_quote', 'pm_lq_buyer', 'pm_lq_event', 'pm_lq_item', 'pm_lq_batch', 'pm_lq_member', 'pm_lq_council',
     'pm_tender_event', 'pm_tender_consent', 'pm_tender_bid', 'pm_tender_invite', 'pm_tender_invitee', 'pm_tender',
     'pm_doc_event', 'pm_doc_step', 'pm_doc', 'pm_pkg_event', 'pm_pkg_step', 'pm_pkg', 'pm_vendor_score',
     'pm_project', 'pm_budget_line', 'pm_budget_round', 'pm_budget_year',

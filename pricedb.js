@@ -563,9 +563,12 @@ function prImportTab(body) {
         } catch (e) { prErr(out, e); } }, () => { PR.draft = PR.drafts.shift() || null; prRender(); }), out]));
   }
   // 3. The old workbook
+  // Uploaded in Data sources (user 29/09/2026); here only for someone who cannot open that screen.
   const xOut = el('div'), file = el('input', { type: 'file', accept: '.xlsx,.xls' });
   file.onchange = () => prLegacyRead(file.files[0], xOut);
-  body.append(el('div', { className: 'card' }, [el('h2', { textContent: t('pr.legacyH') }), el('div', { className: 'tdnote', textContent: t('pr.legacyHint') }), file, xOut,
+  const moved = canView('sources') && window.dsLinkCard;
+  body.append(el('div', { className: 'card' }, [el('h2', { textContent: t('pr.legacyH') }), el('div', { className: 'tdnote', textContent: moved ? t('imp.moved') : t('pr.legacyHint') }),
+    ...(moved ? [el('button', { className: 'btn', type: 'button', textContent: '→ ' + t('imp.goSources'), onclick: () => dsGoImp('price') })] : [file, xOut]),
     el('div', { className: 'dim', style: 'margin-top:8px', textContent: t('pr.overview', { src: fmtInt(Object.values(ov.by_kind || {}).reduce((a, x) => a + x.sources, 0)),
       ln: fmtInt(Object.values(ov.by_kind || {}).reduce((a, x) => a + x.lines, 0)), nd: fmtInt(ov.no_date || 0), ns: fmtInt(ov.no_std || 0) }) })]));
 }

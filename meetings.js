@@ -96,7 +96,8 @@ function mtRender() {
   if (MT.tab === 'meetings') return MT.open ? mtMeetingView(body, mtMeeting(MT.open)) : mtMeetingList(body);
   if (MT.tab === 'topics') return MT.topic ? mtTopicView(body, mtTopic(MT.topic)) : mtTopicList(body);
   if (MT.tab === 'actions') return mtActionsTab(body);
-  if (MT.tab === 'import') return mtImportTab(body);
+  // The recap workbook is uploaded in Data sources (user 29/09/2026); the tab points there.
+  if (MT.tab === 'import') return canView('sources') && window.dsLinkCard ? body.append(dsLinkCard('meetings', t('mt.t.import'))) : mtImportTab(body);
 }
 
 /* ------------------------------------------------------------ meetings list */
@@ -1082,8 +1083,12 @@ function mtImportPreview(prev) {
         const r = await SB.rpc('mt_import', { p_rows: P.rows.slice(i, i + 120), p_reset: i === 0 });
         for (const k in tot) tot[k] += Number((r || {})[k] || 0);
       }
-      MT.parsed = null; MT.tab = 'meetings';
-      await mtReload(t('mt.imp.done', { m: fmtInt(tot.meetings), e: fmtInt(tot.entries), a: fmtInt(tot.actions) }));
+      MT.parsed = null;
+      const note = t('mt.imp.done', { m: fmtInt(tot.meetings), e: fmtInt(tot.entries), a: fmtInt(tot.actions) });
+      // From Data sources (user 29/09/2026) the result is said there.
+      if (VIEW !== 'meetings') { prev.innerHTML = ''; prev.append(el('div', { className: 'msg ok', textContent: note })); return; }
+      MT.tab = 'meetings';
+      await mtReload(note);
     } catch (e) { mtErr(out, e); }
   };
   prev.append(el('div', { className: 'msg info', textContent: t('mt.imp.sum', { f: P.file || '', s: P.sheets.join(' · '), m: dates.length, d1: fmtDate(dates[0] || ''), d2: fmtDate(dates[dates.length - 1] || ''),

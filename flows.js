@@ -22,6 +22,7 @@ const LANES = {
   fin:     ['#8a5a2e', '#f0e4d4', '#8a5a2e'],
   vendor:  ['#5a8a5a', '#d8edd8', '#5a8a5a'],
   council: ['#1f4e79', '#d6e2f0', '#1f4e79'],
+  ham:     ['#0f766e', '#d3ecea', '#0f766e'],   // Hotel Asset Manager (liquidation list, 29/09/2026)
   user:    ['#4a6fa5', '#dce8f5', '#4a6fa5'],
   multi:   ['#4a5a7a', '#eef2f8', '#4a5a7a']
 };
@@ -337,82 +338,58 @@ const FLOWS = [
   scope: 'Từ RR / LR đến xuất hoá đơn và đối chiếu xong giá trị tài sản',
   basis: 'TT 45/2013/TT-BTC · TT 200/2014/TT-BTC (mẫu 02, 04, 05-TSCĐ)',
   lanes: [['dept', 'Bộ phận đề xuất', 'Requesting dept'],
+          ['ham', 'QLTS khách sạn', 'Hotel Asset Manager'],
           ['am', 'Nhóm QLTS', 'AM Coordinator · AM Executive'],
-          ['council', 'Hội đồng thanh lý', 'Liquidation council'],
+          ['council', 'Hội đồng thanh lý', 'Liquidation committee'],
           ['vendor', 'Bên thu mua', 'Buyers'],
-          ['fin', 'Kế toán', 'Finance'],
-          ['jvc', 'KS / JVC phê duyệt', 'HOD · DOF · GM · KTT · TGĐ']],
+          ['fin', 'Kế toán', 'Accountant · Chief Accountant'],
+          ['hotel', 'Khách sạn duyệt', 'HOD · DOF · Hotel GM']],
+  // Quy trình mới 29/09/2026 (43_liquidation_flow.sql): QLTS khách sạn gom đề nghị và gán mã; Hội đồng ký trong app.
   phases: [
-    { t: '📋 GIAI ĐOẠN 1 – Đề xuất thanh lý (LR + Disposal Form)', en: 'Liquidation request', n: 'Bước 1 → 3', rows: [
+    { t: '📋 GIAI ĐOẠN 1 – Đề nghị của bộ phận', en: 'Department request', n: 'Bước 1 → 2', rows: [
       { k: 'B1–B2', s: [
-        { l: 'dept', n: 'Bước 1', t: 'Lập LR', en: 'Liquidation Request',
-          li: ['Nguồn: RR "Liquidation" → <b>LR nháp tự tạo</b> khi AH cuối được duyệt; hoặc bộ phận tự lập',
-               'Mỗi dòng: hiện trạng (Full Operational / Poor / Damaged), lý do, phương án (bán / huỷ)',
-               '≥ 1 <b>ảnh hiện trạng</b> mỗi dòng; nguyên giá – hao mòn lấy từ sổ KT nếu đã ghi nhận'],
+        { l: 'dept', n: 'Bước 1', t: 'Lập đề nghị (LR)', en: 'Liquidation request',
+          li: ['Từng món, kể cả món <b>không có mã</b> (vd tài sản của gói xây dựng ban đầu)', 'Hiện trạng, lý do, phương án (bán / khác); ≥ 1 <b>ảnh hiện trạng</b> mỗi dòng'],
           doc: ['LR', 'Asset Disposal Form', 'Ảnh hiện trạng'], go: 'liq' },
-        { l: 'jvc', n: 'Bước 2', t: 'Khách sạn duyệt', en: 'Hotel approval', li: ['Trưởng BP → DOF → Hotel GM'], go: 'inbox' }] },
-      { k: 'B3', s: [
-        { l: 'am', n: 'Bước 3', t: 'Kiểm tra LR', en: 'AM check',
-          li: ['AM Coordinator → AM Executive kiểm tra, có thể trả lại'] },
-        { l: 'jvc', t: 'JVC duyệt', li: ['KTT → DGM → TGĐ JVC', 'Duyệt xong: tài sản → <b>8 / 24 chờ thanh lý</b>, vào <b>kho chờ thanh lý</b>'] }] }] },
-    { t: '🏛️ GIAI ĐOẠN 2 – Hội đồng & đợt thanh lý', en: 'Council & batch', n: 'Bước 4 → 6', rows: [
-      { k: 'B4–B5', s: [
-        { l: 'jvc', n: 'Bước 4', t: 'QĐ thành lập HĐTL', en: 'Council decision',
-          li: ['Nhập QĐ và thành viên ở tab <b>Hội đồng</b> (một QĐ hiệu lực)', 'Chủ tịch, phó CT, thành viên thường trực / không thường trực'],
-          doc: ['01 – QĐ thành lập HĐTL'], go: 'liq' },
-        { l: 'am', n: 'Bước 5', t: 'Tạo đợt & họp HĐTL', en: 'Batch & meeting',
-          li: ['Đợt L0x.yyyy, chọn tài sản từ kho chờ thanh lý', 'Giữ lại tài sản không thanh lý (kèm lý do)', 'Ghi biên bản họp'],
-          doc: ['02 – BB họp HĐTL'], go: 'liq' },
-        { l: 'council', t: 'Xét duyệt', li: ['Xem từng dòng, thống nhất bán / huỷ', 'Xác nhận danh sách và tiến độ'] }] },
-      { k: 'B6', s: [
-        { l: 'jvc', n: 'Bước 6', t: 'QĐ thanh lý', en: 'Liquidation decision', li: ['TGĐ ký; đợt chuyển "đã quyết định"'], doc: ['03 – QĐ thanh lý'] }] }] },
-    { t: '🔍 GIAI ĐOẠN 3 – Kiểm kê & đánh giá lại', en: 'Count & revaluation', n: 'Bước 7 → 8', rows: [
-      { k: 'B7–B8', s: [
-        { l: 'am', n: 'Bước 7', t: 'Kiểm kê trên máy tính bảng', en: 'Tablet count',
-          li: ['Màn <b>Kiểm kê</b>: quét mã, tìm thấy / số lượng / ghi chú', 'Không tìm thấy → sẽ đóng là mất (0)'],
-          doc: ['04 – BB kiểm kê (Mẫu 05-TSCĐ)'], go: 'lqcount' },
-        { l: 'council', t: 'Xác nhận', li: ['Thành viên HĐ kiểm tra thực tế, ký biên bản'] },
-        { l: 'fin', n: 'Bước 8', t: 'Đánh giá lại', en: 'Revaluation',
-          li: ['Giá đánh giá lại từng dòng = <b>giá sàn</b>', 'Chênh lệch so với sổ sách'],
-          doc: ['05 – BB đánh giá lại (Mẫu 04-TSCĐ)'] }] }] },
-    { t: '💰 GIAI ĐOẠN 4 – Gọi báo giá & mở thầu', en: 'Quotations & opening', n: 'Bước 9 → 11', rows: [
-      { k: 'B9', s: [
-        { l: 'am', n: 'Bước 9', t: 'Gọi báo giá (≥ 3 bên)', en: 'Call for quotations',
-          li: ['Hạn nộp, điều khoản; thêm bên mua → mỗi bên một link cổng thanh lý', 'Mời xem tài sản thực tế'],
-          doc: ['07 – Thư báo giá'], go: 'liq' },
-        { l: 'vendor', t: 'Bên mua nộp báo giá', li: ['Cá nhân (CCCD) / doanh nghiệp (MST + email nhận hoá đơn)', 'Giá từng hạng mục, chi phí thu gom, file đính kèm, cam kết'] }] },
+        { l: 'hotel', n: 'Bước 2', t: 'Khách sạn duyệt', en: 'Hotel approval', li: ['Trưởng BP → DOF → GM khách sạn', 'Duyệt xong: các món vào <b>kho chờ thanh lý</b>'], go: 'inbox' }] }] },
+    { t: '🗂️ GIAI ĐOẠN 2 – Danh sách thanh lý', en: 'Liquidation list', n: 'Bước 3 → 5', rows: [
+      { k: 'B3–B5', s: [
+        { l: 'ham', n: 'Bước 3', t: 'Lập danh sách & gán mã', en: 'List & code mapping',
+          li: ['Chọn các đề nghị đã duyệt (nhiều bộ phận)', 'Gán <b>mã tài sản</b>; tài sản của gói: mã gói + <b>tỉ lệ %</b>', 'Nguyên giá, khấu hao lấy từ sổ kế toán'], go: 'liq' },
+        { l: 'hotel', n: 'Bước 4', t: 'DOF → GM ký', en: 'DOF & Hotel GM sign', li: ['Ký danh sách trong app'] },
+        { l: 'am', n: 'Bước 5', t: 'AM kiểm tra', en: 'AM check', li: ['AM Coordinator → AM Executive', 'Được sửa mã / tỉ lệ — giá trị tự cập nhật', 'Trả về: ghi lý do, ký lại từ đầu'] }] }] },
+    { t: '🏛️ GIAI ĐOẠN 3 – Hội đồng thanh lý', en: 'Liquidation committee', n: 'Bước 6 → 7', rows: [
+      { k: 'B6–B7', s: [
+        { l: 'council', n: 'Bước 6', t: 'Biên bản họp (02)', en: 'Minutes', li: ['Thành viên: DOF, KTT, TGĐ JVC (Chủ tịch), Trưởng cao ốc văn phòng', '<b>Mọi thành viên ký</b> trong app; bản giấy tải lên'], doc: ['02 – BB họp HĐTL'] },
+        { l: 'council', n: 'Bước 7', t: 'Quyết định (03)', en: 'Decision', li: ['Chủ tịch ký theo biên bản', 'Mở cùng lúc: kiểm tra thực tế và gọi báo giá'], doc: ['03 – QĐ thanh lý'] }] }] },
+    { t: '🔍 GIAI ĐOẠN 4 – Kiểm tra, đánh giá lại & báo giá (song song)', en: 'Check, revaluation & quotations', n: 'Bước 8 → 11', rows: [
+      { k: 'B8–B9', s: [
+        { l: 'am', n: 'Bước 8', t: 'Kiểm tra thực tế (04)', en: 'Physical check',
+          li: ['Kiểm kê trên máy tính bảng', 'In biên bản kiểm tra hiện trường, ký, <b>tải bản đã ký lên</b> rồi mới chốt'], doc: ['04 – BB kiểm kê'], go: 'lqcount' },
+        { l: 'am', n: 'Bước 9', t: 'Đánh giá lại (05)', en: 'Revaluation', li: ['Giá sàn từng dòng; chốt sau kiểm kê'], doc: ['05 – BB đánh giá lại'] }] },
       { k: 'B10–B11', s: [
-        { l: 'am', n: 'Bước 10', t: 'Mở thầu', en: 'Opening',
-          li: ['<b>&gt; 50% thành viên</b> HĐTL có mặt', 'Sau hạn hoặc khi mọi bên đã nộp; &lt; 3 báo giá phải ghi lý do'],
-          doc: ['08 – BB mở thầu'] },
-        { l: 'council', n: 'Bước 11', t: 'Trao thầu', en: 'Award',
-          li: ['App gợi ý <b>giá cao nhất</b>; chọn khác phải ghi lý do', 'Dưới giá sàn: cảnh báo'] },
-        { l: 'jvc', t: 'Duyệt kết quả', li: ['TGĐ / HĐTL ký kết quả'] }] }] },
-    { t: '📦 GIAI ĐOẠN 5 – Bàn giao, hoá đơn & đối chiếu', en: 'Handover, invoice & reconciliation', n: 'Bước 12 → 16', rows: [
+        { l: 'ham', n: 'Bước 10', t: 'Gọi báo giá', en: 'Call for quotations', li: ['Ngay khi có Quyết định (03)', 'Mỗi bên mua một link riêng; ≥ 3 bên'], doc: ['07 – Thư báo giá'], go: 'liq' },
+        { l: 'vendor', t: 'Nộp báo giá', li: ['Niêm phong tới khi mở thầu'] },
+        { l: 'am', n: 'Bước 11', t: 'Mở thầu & đề xuất kết quả', en: 'Opening & result', li: ['&gt; 50% thành viên có mặt', 'Cần đã chốt kiểm kê và đánh giá lại'], doc: ['08 – BB mở thầu'] }] }] },
+    { t: '📦 GIAI ĐOẠN 5 – Duyệt giá, giao nhận, hoá đơn & đóng đợt', en: 'Price approval, handover, invoice & close', n: 'Bước 12 → 15', rows: [
       { k: 'B12–B13', s: [
-        { l: 'am', n: 'Bước 12', t: 'BB thanh lý', en: 'Liquidation minutes',
-          li: ['Kết quả bán / huỷ từng dòng, số tiền bằng chữ'], doc: ['06 – BB thanh lý (Mẫu 02-TSCĐ)'] },
-        { l: 'council', n: 'Bước 13', span: 2, t: 'Gate pass & giao nhận', en: 'Gate pass & handover',
-          li: ['Gate pass: bên mua + bảo vệ + trưởng BP', 'Bên mua tháo dỡ, vận chuyển; lập biên bản giao nhận'],
-          doc: ['10 – Gate pass', '11 – BB giao nhận'] }] },
-      { k: 'B14–B16', s: [
-        { l: 'fin', n: 'Bước 14', t: 'Xuất hoá đơn GTGT', en: 'VAT invoice',
-          li: ['<b>Bắt buộc</b>; số / ngày hoá đơn ghi vào app', 'Khớp BB thanh lý và báo giá'], doc: ['09 – Hoá đơn GTGT'] },
-        { l: 'am', n: 'Bước 15', t: 'Đóng đợt', en: 'Close batch',
-          li: ['Chặn nếu thiếu hoá đơn / gate pass', 'Tài sản → 7 đã thanh lý · 23 CCDC · 9 huỷ · 0 mất'], go: 'liq' },
-        { l: 'fin', n: 'Bước 16', t: 'Ghi giảm & đối chiếu', en: 'Write-off & reconcile',
-          li: ['Bút toán ghi giảm, thu nhập thanh lý, chênh lệch đánh giá lại',
-               '<b>Đối chiếu kế toán → Chênh lệch</b>: tài sản đã thanh lý mà sổ KT chưa ghi giảm → gửi danh sách đề nghị',
-               'File tháng sau cho thấy đã ghi giảm → đối chiếu xong'],
-          doc: ['Danh sách đề nghị ghi giảm'], go: 'acc' }] }] }],
+        { l: 'council', n: 'Bước 12', t: 'Hội đồng duyệt giá', en: 'Committee approves the prices', li: ['Mọi thành viên ký', 'Sau đó: BB thanh lý (06), gate pass, BB giao nhận'], doc: ['06 – BB thanh lý'] },
+        { l: 'ham', n: 'Bước 13', t: 'Giao nhận', en: 'Handover', li: ['Gate pass cho bảo vệ kiểm tra', 'Tải lên <b>BB giao nhận và gate pass đã ký</b> của từng bên mua'], doc: ['10 – Gate pass', '11 – BB giao nhận'] }] },
+      { k: 'B14–B15', s: [
+        { l: 'fin', n: 'Bước 14', t: 'Xuất hoá đơn', en: 'VAT invoice', li: ['Kế toán nhận thông tin, ghi số / ngày hoá đơn'], doc: ['09 – Hoá đơn GTGT'] },
+        { l: 'fin', n: 'Bước 15', t: 'Duyệt cuối & đóng đợt', en: 'Final approval', li: ['<b>AM + Kế toán + KTT</b> cùng duyệt (thứ tự nào cũng được)', 'Sổ tài sản tự cập nhật: 7 bán · 9 huỷ · 23 một phần (gói) · 0 mất; đối chiếu kế toán'], go: 'acc' }] }] }],
   docs: [['LR', 'Đề xuất thanh lý + Asset Disposal Form + ảnh'], ['01', 'QĐ thành lập HĐTL'], ['02', 'BB họp HĐTL'], ['03', 'QĐ thanh lý'],
          ['04', 'BB kiểm kê (Mẫu 05-TSCĐ)'], ['05', 'BB đánh giá lại (Mẫu 04-TSCĐ)'], ['06', 'BB thanh lý (Mẫu 02-TSCĐ)'],
          ['07', 'Thư báo giá (≥ 3 bên)'], ['08', 'BB mở thầu'], ['09', 'Hoá đơn GTGT ⚠'], ['10', 'Gate pass'], ['11', 'BB giao nhận']],
-  rules: ['Disposal Form phân loại đúng hiện trạng &amp; lý do; ≥ 1 ảnh mỗi dòng',
+  rules: ['Đề nghị của bộ phận chỉ cần khách sạn duyệt; QLTS khách sạn gom và gán mã',
+          'Tài sản của gói xây dựng: ghi giảm theo <b>tỉ lệ %</b> của tài sản gói',
+          'Hội đồng ký trong app; bản giấy đã ký tải lên',
+          'Disposal Form phân loại đúng hiện trạng &amp; lý do; ≥ 1 ảnh mỗi dòng',
           'Tối thiểu <b>3 báo giá</b>; ít hơn phải ghi lý do',
           'Mở thầu cần <b>&gt; 50% thành viên HĐTL</b>',
           '<b>Bắt buộc xuất hoá đơn GTGT</b> — không đóng đợt khi thiếu',
-          'Gate pass đủ 3 chữ ký: bên mua + bảo vệ + trưởng BP',
+          'Gate pass đủ 3 chữ ký: bên mua + bảo vệ + trưởng BP — bản đã ký tải lên',
+          'Đóng đợt khi <b>AM, Kế toán và KTT</b> cùng duyệt — sổ tài sản chỉ cập nhật lúc đó',
           'Giá trị chỉ đối chiếu xong khi sổ KT đã ghi giảm']
 }];
 

@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260929f';
+const APP_VERSION = '20260929h';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -14141,10 +14141,12 @@ function lqXlsx() {
 /* To-do: this person's LRs still in draft — started and not sent, or drawn up
    automatically from a replacement project's RR when its last handover was approved. */
 async function lqTodos() {
-  if (!ME || !can('liquidation', 'create')) return [];
+  // The batches: signatures, the list to draw up, the count / revaluation / call, the buyers' papers (lqflow.js).
+  const flow = window.lqFlowTodos ? await lqFlowTodos().catch(() => []) : [];
+  if (!ME || !can('liquidation', 'create')) return flow;
   const rows = await SB.select('pm_doc', `select=id,doc_no,dept_code,created_at,total_value,src:data->>project_code,rr:data->>rr_doc_no&doc_type=eq.LR&status=eq.draft&created_by=eq.${ME.id}&order=id`);
   return rows.map(d => ({ kind: 'draft', doc_type: 'LR', grp: 'LR', doc_id: d.id, doc_no: d.doc_no, project_code: d.src || '', project_name: t('lq.docName'),
-                          dept_code: d.dept_code, total_value: d.total_value, submitted_at: d.created_at, rr: d.rr }));
+                          dept_code: d.dept_code, total_value: d.total_value, submitted_at: d.created_at, rr: d.rr })).concat(flow);
 }
 
 function initLq() {
@@ -14165,9 +14167,10 @@ function initLq() {
    quotations). Form 06 is drawn from the same list; its results are phase 3.
    Every form comes out of the ONE list, with the same numbers and dates, so the
    documents of a batch can no longer disagree with each other. */
-const LQB_STEPS = ['open', 'decided', 'counted', 'valued', 'bidding'];
-const LQB_NEXT = { open: 'decided', decided: 'counted', counted: 'valued' };
-const LQB_BACK = { decided: 'open', counted: 'decided', valued: 'counted' };
+// The steps of a batch (43_liquidation_flow.sql): list (Hotel AM) → DOF + Hotel GM → AM team check → committee (02 + 03)
+// → decided (count 04 + revaluation 05, and the call for quotations, side by side) → quotations → committee approves the
+// prices → settlement (buyers' papers, invoice; AM + Accountant + Chief Accountant approve) → closed. Moves follow the signatures (lqflow.js).
+const LQB_STEPS = ['open', 'hotel', 'amcheck', 'committee', 'decided', 'bidding', 'awarding', 'settling'];
 const LQ_PLACE = '17 Lê Duẩn, phường Sài Gòn, TP.HCM / 17 Le Duan, Sai Gon Ward, Ho Chi Minh City';
 const lqMemRep = m => m.role === 'chair' ? ['Chủ tịch hội đồng', 'Chairman of the Council']
   : m.role === 'vice' ? ['Phó Chủ tịch hội đồng', 'Vice Chairman of the Council']
@@ -14184,6 +14187,8 @@ async function lqLoadBatches() {
       SB.select('pm_lq_council', 'select=*&order=id.desc'), SB.select('pm_lq_member', 'select=*&order=council_id,sort,id'),
       SB.select('pm_lq_batch', 'select=*&order=id.desc')]);
     Object.assign(LQ, { councils, members, batches, p2: true });
+    // Manages the lists (Hotel AM, AM team, liquidation admin) — 43_liquidation_flow.sql.
+    LQ.isAm = await SB.rpc('pm_lq_is_am').catch(() => false);
   } catch { Object.assign(LQ, { councils: [], members: [], batches: [], p2: false }); }
 }
 
@@ -14238,7 +14243,8 @@ function lqBatchNew(card) {
 
 // One batch: its steps, the meeting, the list, the forms.
 function lqBatchDetail(panel, b) {
-  const edit = can('liquidation', 'edit') && !['closed', 'cancelled'].includes(b.status);
+  // Who manages the list: the Hotel Asset Manager and the AM team (pm_lq_is_am), not everyone with the edit right.
+  const edit = lqIsAm() && !['closed', 'cancelled'].includes(b.status);
   const its = lqBatchItems(b), live = its.filter(i => ['batched', 'sold', 'destroyed', 'lost'].includes(i.status)), kept = its.filter(i => i.status === 'kept');
   const out = el('div');
   const docNo = id => (LQ.docs.find(d => d.id === id) || {}).doc_no || '';
@@ -14248,7 +14254,7 @@ function lqBatchDetail(panel, b) {
     el('a', { href: '#', textContent: '← ' + t('lqb.list'), onclick: e => { e.preventDefault(); LQ.batchOpen = null; lqRender(); } }),
     el('b', { style: 'font-size:16px', textContent: b.code }), el('span', { className: 'lqbs ' + b.status, textContent: t('lqb.st.' + b.status) })]));
   const idx = b.status === 'closed' ? LQB_STEPS.length : LQB_STEPS.indexOf(b.status);
-  top.append(el('div', { className: 'lqsteps' }, LQB_STEPS.map((s, i) => el('div', { className: 'lqstep' + (i < idx ? ' done' : i === idx ? ' cur' : '') + (s === 'bidding' ? ' later' : '') },
+  top.append(el('div', { className: 'lqsteps' }, LQB_STEPS.map((s, i) => el('div', { className: 'lqstep' + (i < idx ? ' done' : i === idx ? ' cur' : '') },
     [el('span', { className: 'n', textContent: String(i + 1) }), el('div', {}, [el('b', { textContent: t('lqb.step.' + s) }), el('small', { textContent: t('lqb.stepHint.' + s) })])]))));
   // What can be done now.
   const acts = el('div', { className: 'row', style: 'gap:8px;flex-wrap:wrap;margin-top:10px' });
@@ -14258,12 +14264,20 @@ function lqBatchDetail(panel, b) {
     try { await SB.rpc('pm_lq_batch_move', { p_id: b.id, p_to: to }); await lqLoad(); msg('#lqMsg', 'ok', t('lqb.moved', { c: b.code, s: t('lqb.st.' + to) })); }
     catch (e) { msg(out, 'err', e.message); }
   };
-  if (edit && LQB_NEXT[b.status]) act('lqb.next.' + b.status, 'pri', () => move(LQB_NEXT[b.status], t('lqb.ask.' + b.status, { c: b.code })));
-  if (edit && b.status === 'decided') act('lqb.countOpen', '', () => { LQ.countBatch = b.id; showView('lqcount'); });
-  if (edit && LQB_BACK[b.status]) act('lqb.back', '', () => move(LQB_BACK[b.status], t('lqb.askBack', { c: b.code, s: t('lqb.st.' + LQB_BACK[b.status]) })));
+  // The Hotel AM sends the list to DOF and Hotel GM; after that the steps follow the signatures (lqbSignCard).
+  if (edit && b.status === 'open') act('lqf.submit', 'pri', async () => {
+    if (!confirm(t('lqf.submitQ', { c: b.code }))) return;
+    try { await SB.rpc('pm_lq_submit', { p_batch: b.id }); LQ.flash = t('lqf.submitted', { c: b.code }); await lqLoad(); } catch (e) { msg(out, 'err', e.message); }
+  });
+  if (edit && b.status === 'bidding' && b.opened_at) act('lqf.awardSubmit', 'pri', async () => {
+    if (!confirm(t('lqf.awardSubmitQ', { c: b.code }))) return;
+    try { await SB.rpc('pm_lq_award_submit', { p_batch: b.id }); LQ.flash = t('lqf.awardSubmitted', { c: b.code }); await lqLoad(); } catch (e) { msg(out, 'err', e.message); }
+  });
   if (edit && b.status === 'open') act('lqb.cancel', 'danger', () => move('cancelled', t('lqb.askCancel', { c: b.code })));
   top.append(acts, out);
   panel.append(top);
+  lqbSignCard(panel, b);
+  lqbMilestones(panel, b);
 
   // The meeting and the dates.
   const info = el('div', { className: 'card' });
@@ -14273,16 +14287,16 @@ function lqBatchDetail(panel, b) {
   const fld = (key, node, wide) => el('div', { className: 'fld' + (wide ? ' lqwide' : '') }, [el('label', { textContent: t(key) }), node]);
   const inp = (k, type = 'text', v) => { const i = el('input', { type, value: v ?? b[k] ?? '', disabled: !edit }); i.onchange = () => { patch[k] = i.value; }; return i; };
   const txt = k => { const i = el('textarea', { rows: 2, value: d[k] || '', disabled: !edit }); i.onchange = () => { patch.data = Object.assign(patch.data || {}, { [k]: i.value }); }; return i; };
-  const csel = el('select', { disabled: !edit || b.status !== 'open' });
+  const csel = el('select', { disabled: !edit || !['open', 'hotel', 'amcheck'].includes(b.status) });
   csel.append(el('option', { value: '', textContent: '—' }));
   for (const c of LQ.councils) csel.append(el('option', { value: c.id, textContent: `${c.decision_no}${c.active ? ' ✓' : ''}` }));
   csel.value = b.council_id || '';
   csel.onchange = () => { patch.council_id = csel.value; };
-  const codeIn = inp('code'); codeIn.disabled = !edit || b.status !== 'open';
+  const codeIn = inp('code'); codeIn.disabled = !edit || !['open', 'hotel', 'amcheck'].includes(b.status);
   info.append(el('div', { className: 'lqgrid' }, [
     fld('lqb.c.code', codeIn), fld('lqb.c.council', csel), fld('lqb.meetingDate', inp('meeting_date', 'date')), fld('lqb.meetingTime', inp('meeting_time')),
-    fld('lqb.place', inp('meeting_place'), true), fld('lqb.decisionDate', inp('decision_date', 'date')), fld('lqb.countDate', inp('count_date', 'date')),
-    fld('lqb.valDate', inp('valuation_date', 'date')), fld('lqb.liqDate', inp('liquidation_date', 'date')),
+    fld('lqb.place', inp('meeting_place'), true), fld('lqb.decisionDate', inp('decision_date', 'date')), fld('lqb.countDate', el('input', { type: 'date', value: b.count_date || '', disabled: true, title: t('lqf.dateByConfirm') })),
+    fld('lqb.valDate', el('input', { type: 'date', value: b.valuation_date || '', disabled: true, title: t('lqf.dateByConfirm') })), fld('lqb.liqDate', inp('liquidation_date', 'date')),
     fld('lqb.causesVi', txt('causes_vi'), true), fld('lqb.causesEn', txt('causes_en'), true),
     fld('lqb.planVi', txt('plan_vi'), true), fld('lqb.planEn', txt('plan_en'), true),
     fld('lqb.conclVi', txt('conclusion_vi'), true), fld('lqb.conclEn', txt('conclusion_en'), true)]));
@@ -14296,23 +14310,26 @@ function lqBatchDetail(panel, b) {
   const list = el('div', { className: 'card' });
   const lh = el('div', { className: 'chead' }, [el('h2', { textContent: t('lqb.items', { n: fmtInt(live.length) }) })]);
   if (edit && b.status === 'open') lh.append(el('button', { className: 'btn', type: 'button', textContent: t('lqb.addFromPool'), onclick: () => lqPoolPicker(list, b) }));
-  if (edit && b.status === 'counted') lh.append(el('button', { className: 'btn', type: 'button', textContent: t('lqb.revalFill'), onclick: async () => {
+  const revalOpen = edit && ['decided', 'bidding'].includes(b.status) && b.count_date && !b.valuation_date;
+  if (revalOpen) lh.append(el('button', { className: 'btn', type: 'button', textContent: t('lqb.revalFill'), onclick: async () => {
     try { for (const i of live.filter(x => x.reval_value == null)) await SB.rpc('pm_lq_reval', { p_item: i.id, p_value: Math.max(0, Number(i.nbv) || 0), p_note: null });
           await lqLoad(); } catch (e) { msg(out, 'err', e.message); } } }));
   list.append(lh);
-  const showCount = ['decided', 'counted', 'valued', 'bidding', 'closed'].includes(b.status), showReval = ['counted', 'valued', 'bidding', 'closed'].includes(b.status);
+  const showCount = ['decided', 'bidding', 'awarding', 'settling', 'closed'].includes(b.status), showReval = !!b.count_date || b.status === 'closed';
+  // The method is the committee's: it can change until the first member signs the minutes (the database refuses after).
+  const modeLocked = false;
   const heads = ['lq.c.no', 'lq.c.code', 'lq.c.name', 'lq.c.qty', 'pm.col.dept', 'lq.c.cond', 'lq.c.mode', 'lq.c.orig', 'lq.c.dep', 'lq.c.nbv',
                  ...(showCount ? ['lqb.c.counted'] : []), ...(showReval ? ['lqb.c.reval', 'lqb.c.diff'] : []), ...(edit && b.status === 'open' ? [''] : [])];
   const tb = el('table', { className: 'lqbt' }, [el('tr', {}, heads.map(k => el('th', { className: /orig|dep|nbv|reval|diff|qty/.test(k) ? 'num' : '', textContent: k ? t(k) : '' })))]);
   for (const i of live) {
-    const cells = [el('td', {}, el('code', { textContent: docNo(i.lr_doc_id) })), el('td', {}, el('code', { textContent: i.asset_code || 'N/A' })), el('td', { textContent: i.name }),
+    const cells = [el('td', {}, el('code', { textContent: docNo(i.lr_doc_id) })), el('td', {}, lqbMapCell(i, b, out)), el('td', { textContent: i.name }),
       el('td', { className: 'num', textContent: `${fmtNum(i.qty)} ${i.unit || ''}` }), el('td', { textContent: i.dept_code || '' }),
-      el('td', { textContent: lqBi(LQ_COND, i.condition) }), el('td', { textContent: lqBi(LQ_MODE, i.mode) }),
+      el('td', { textContent: lqBi(LQ_COND, i.condition) }), el('td', {}, lqbModeCell(i, b, out, modeLocked)),
       el('td', { className: 'num', textContent: lqN(i.original_value) }), el('td', { className: 'num', textContent: lqN(i.depreciation) }), el('td', { className: 'num', textContent: lqN(i.nbv) })];
     if (showCount) cells.push(el('td', { className: i.count_found === false || (i.count_found && n0(i.count_qty) !== n0(i.qty)) ? 'bad' : '',
       textContent: i.count_found == null ? '—' : i.count_found ? `✓ ${fmtNum(i.count_qty)}` : '✗ ' + t('lqb.notFound'), title: i.count_note || '' }));
     if (showReval) {
-      if (edit && b.status === 'counted') {
+      if (revalOpen) {
         const r = el('input', { value: i.reval_value != null ? fmtNum(i.reval_value) : '', inputMode: 'decimal', className: 'lqrv' });
         r.onchange = async () => { try { await SB.rpc('pm_lq_reval', { p_item: i.id, p_value: numIn(r.value), p_note: null }); i.reval_value = numIn(r.value); } catch (e) { msg(out, 'err', e.message); } };
         cells.push(el('td', { className: 'num' }, r));
@@ -14346,7 +14363,8 @@ function lqBatchDetail(panel, b) {
   panel.append(list);
 
   // Quotations, opening, result, the buyers' papers, closing (phase 3).
-  if (['valued', 'bidding', 'closed'].includes(b.status)) lqbBidCard(panel, b);
+  if (['decided', 'bidding', 'awarding', 'settling', 'closed'].includes(b.status)) lqbBidCard(panel, b);
+  lqbFilesCard(panel, b, LQ.quotes || []);
 
   // The forms.
   const forms = el('div', { className: 'card' });
@@ -14479,8 +14497,11 @@ function lqCouncilNew(card, out) {
    Bilingual as the templates are; long lists run on over as many A4 pages as
    they need, the signatures on the last. */
 const LQB_FORMS = ['02', '03', '04', '05', '08', '06'];
-const lqbFormReady = (k, b) => { const i = LQB_STEPS.indexOf(b.status);
-  return k === '02' || k === '03' ? i >= 1 : k === '04' ? i >= 2 : k === '05' ? i >= 3 : k === '08' ? !!b.opened_at : b.status === 'closed'; };
+// Final once the step behind it is done: 02 / 03 when the committee signed, 04 when the count is confirmed, 05 the revaluation,
+// 08 at the opening, 06 once the committee approved the prices.
+const lqbFormReady = (k, b) => { const i = b.status === 'closed' ? LQB_STEPS.length : LQB_STEPS.indexOf(b.status);
+  return k === '02' || k === '03' ? i >= LQB_STEPS.indexOf('decided') : k === '04' ? !!b.count_date : k === '05' ? !!b.valuation_date
+    : k === '08' ? !!b.opened_at : i >= LQB_STEPS.indexOf('settling'); };
 const LQB_TT200 = { '04': 'Mẫu số 05 - TSCĐ', '05': 'Mẫu số 04 - TSCĐ', '06': 'Mẫu số 02 - TSCĐ' };
 
 function lqbCtx(b, assets) {
@@ -14805,7 +14826,7 @@ async function lcLoad() {
   try {
     await wfLookups();
     if (!LQ.batches) await lqLoadBatches();
-    const bs = await SB.select('pm_lq_batch', 'select=*&status=eq.decided&order=id');
+    const bs = await SB.select('pm_lq_batch', 'select=*&status=in.(decided,bidding)&count_date=is.null&order=id');   // counted beside the call for quotations
     if (!bs.length) { body.innerHTML = ''; return msg(out, 'info', t('lc.none')); }
     const b = bs.find(x => x.id === LQ.countBatch) || bs[0];
     LQ.countBatch = b.id;
@@ -14846,10 +14867,11 @@ function lcRender() {
     setTimeout(() => $('.lcscan') && $('.lcscan').focus(), 50);
   };
   top.append(el('div', { className: 'lchead' }, [el('b', { textContent: t('lc.progress', { n: done, of: LC.items.length }) }), bar]), scan);
-  if (can('liquidation', 'edit')) top.append(el('button', { className: 'btn pri', type: 'button', textContent: t('lqb.next.decided'), disabled: done < LC.items.length, onclick: async () => {
-    if (!confirm(t('lqb.ask.decided', { c: b.code }))) return;
-    try { await SB.rpc('pm_lq_batch_move', { p_id: b.id, p_to: 'counted' });
-          LQ.flash = t('lqb.moved', { c: b.code, s: t('lqb.st.counted') });
+  // Confirming the count needs the signed site-check minutes uploaded (on the batch screen) — the database says so if not.
+  if (LQ.isAm) top.append(el('button', { className: 'btn pri', type: 'button', textContent: t('lqf.countConfirm'), disabled: done < LC.items.length, onclick: async () => {
+    if (!confirm(t('lqf.countConfirmQ', { c: b.code }))) return;
+    try { await SB.rpc('pm_lq_milestone', { p_batch: b.id, p_what: 'count', p_done: true });
+          LQ.flash = t('lqf.ms.countDone');
           // Back to the batch on a PC; a tablet has no batch screen, so it stays here and says so.
           if (TB.on) { await lcLoad(); msg('#lcMsg', 'ok', LQ.flash); LQ.flash = null; } else { LQ.tab = 'batch'; LQ.batchOpen = b.id; showView('liq'); } }
     catch (e) { msg('#lcMsg', 'err', e.message); } } }));
@@ -14969,7 +14991,7 @@ function lqbBidCard(panel, b) {
 }
 
 function lqbBidBody(card, b, bl) {
-  const edit = can('liquidation', 'edit') && ['valued', 'bidding'].includes(b.status);
+  const edit = lqIsAm() && ['decided', 'bidding'].includes(b.status);
   const out = el('div');
   const live = lqBatchItems(b).filter(i => i.status === 'batched' || ['sold', 'destroyed', 'lost'].includes(i.status));
   const quotes = bl.buyers.filter(v => v.quote && v.quote.status === 'submitted').map(v => Object.assign({ buyer: v }, v.quote));
@@ -14978,14 +15000,14 @@ function lqbBidBody(card, b, bl) {
   const re = async () => { await lqLoad(); };
 
   // 1. The call: deadline and instructions.
-  if (b.status === 'valued' || (b.status === 'bidding' && !opened)) {
+  if (b.status === 'decided' || (b.status === 'bidding' && !opened)) {
     const dl = el('input', { type: 'datetime-local', value: b.call_deadline ? new Date(new Date(b.call_deadline).getTime() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 16) : '', disabled: !edit });
     const terms = el('textarea', { rows: 3, value: b.call_terms || t('lqq.termsDef'), disabled: !edit });
     card.append(el('h3', { className: 'lqsub', textContent: t('lqq.call') }),
       el('div', { className: 'lqgrid' }, [el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.deadline') }), dl]),
         el('div', { className: 'fld lqwide', style: 'grid-column:span 3' }, [el('label', { textContent: t('lqq.terms') }), terms])]));
     if (edit) card.append(el('div', { className: 'row', style: 'gap:8px;margin-top:6px' }, [
-      el('button', { className: 'btn pri', type: 'button', textContent: t(b.status === 'valued' ? 'lqq.callOpen' : 'lqq.callSave'), onclick: async () => {
+      el('button', { className: 'btn pri', type: 'button', textContent: t(b.status === 'decided' ? 'lqq.callOpen' : 'lqq.callSave'), onclick: async () => {
         if (!dl.value) return msg(out, 'err', t('lqq.needDeadline'));
         try { await SB.rpc('pm_lq_call_open', { p_batch: b.id, p_deadline: new Date(dl.value).toISOString(), p_terms: terms.value }); await re(); }
         catch (e) { msg(out, 'err', e.message); } } }),
@@ -14994,7 +15016,7 @@ function lqbBidBody(card, b, bl) {
   }
 
   // 2. The buyers invited and where their quotation stands.
-  if (b.status !== 'valued') {
+  if (b.status !== 'decided') {
     card.append(el('h3', { className: 'lqsub', textContent: t('lqq.buyers', { n: bl.buyers.length, s: quotes.length }) }));
     const linkBox = el('div');
     const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['lqq.b.name', 'lqq.b.contact', 'lqq.b.quote', 'lqq.b.link', ''].map(k => el('th', { textContent: k ? t(k) : '' })))]);
@@ -15046,20 +15068,10 @@ function lqbBidBody(card, b, bl) {
   }
 
   // 4. The result, item by item (destroying needs no quotation; selling needs the opening).
-  if (['valued', 'bidding', 'closed'].includes(b.status)) lqbAward(card, b, bl, quotes, live, edit, out);
-  // 5. The winners' papers, and closing.
-  if (b.status === 'bidding' || b.status === 'closed') lqbWinners(card, b, bl, live, edit, out);
-  if (edit) {
-    const left = live.filter(i => i.status === 'batched' && i.count_found !== false && !i.outcome).length;
-    const date = el('input', { type: 'date', value: b.liquidation_date || new Date().toISOString().slice(0, 10) });
-    card.append(el('h3', { className: 'lqsub', textContent: t('lqq.close') }), el('div', { className: 'tdnote', textContent: t('lqq.closeHint') }),
-      el('div', { className: 'row', style: 'gap:8px;align-items:flex-end' }, [el('div', { className: 'fld' }, [el('label', { textContent: t('lqb.liqDate') }), date]),
-        el('button', { className: 'btn pri', type: 'button', disabled: left > 0, title: left ? t('lqq.left', { n: left }) : '', textContent: t('lqq.closeBtn'), onclick: async () => {
-          if (!confirm(t('lqq.closeAsk', { c: b.code }))) return;
-          try { await SB.rpc('pm_lq_close', { p_batch: b.id, p_date: date.value || null }); LQ.flash = t('lqq.closed', { c: b.code }); await re(); }
-          catch (e) { msg(out, 'err', e.message); } } }),
-        left ? el('span', { className: 'dim', textContent: t('lqq.left', { n: left }) }) : '']));
-  }
+  if (['bidding', 'awarding', 'settling', 'closed'].includes(b.status)) lqbAward(card, b, bl, quotes, live, edit && b.status === 'bidding', out);
+  // 5. The winners' papers (after the committee approved the prices): uploaded here, the invoice by the Accountant.
+  LQ.quotes = quotes;
+  if (['settling', 'closed'].includes(b.status)) lqbWinners(card, b, bl, live, b.status === 'settling', out);
   if ((bl.events || []).length) card.append(el('details', { className: 'lqlog' }, [el('summary', { textContent: t('lqq.log', { n: bl.events.length }) }),
     el('ul', {}, bl.events.map(e => el('li', { textContent: `${fmtDateTime(e.at)} · ${e.actor || ''} · ${t('lqq.ev.' + e.action) === 'lqq.ev.' + e.action ? e.action : t('lqq.ev.' + e.action)}${e.detail ? ' · ' + e.detail : ''}` })))]));
 }
@@ -15138,32 +15150,41 @@ async function lqbSaveAward(b, draft, out) {
   catch (e) { msg(out, 'err', e.message); }
 }
 
-// Each winning buyer: what they bought, the VAT invoice, the gate pass, the handover; their papers to print.
-function lqbWinners(card, b, bl, live, edit, out) {
+// Each winning buyer, once the committee approved the prices: what they bought, their papers to print (07, gate pass,
+// handover minutes), the SIGNED handover minutes and gate pass uploaded back by the Hotel AM, the VAT invoice number
+// recorded by the Accountant (29/09/2026). All of it is needed before the final approvals.
+function lqbWinners(card, b, bl, live, open, out) {
   const wins = bl.buyers.filter(v => v.quote && live.some(i => i.outcome === 'sale' && i.sale_quote_id === v.quote.id));
   if (!wins.length) return;
-  card.append(el('h3', { className: 'lqsub', textContent: t('lqq.winners', { n: wins.length }) }));
+  const am = open && lqIsAm(), acc = open && (lqIsAm() || lqHas(['ACCOUNTANT', 'CHIEF_ACC']));
+  card.append(el('h3', { className: 'lqsub', textContent: t('lqq.winners', { n: wins.length }) }), el('div', { className: 'tdnote', textContent: t('lqf.winHint') }));
   for (const v of wins) {
     const q = v.quote, mine = live.filter(i => i.outcome === 'sale' && i.sale_quote_id === q.id);
-    const total = mine.reduce((s, i) => s + n0(i.sale_value), 0), dis = !edit || b.status === 'closed';
-    const inv = el('input', { value: q.invoice_no || '', disabled: dis }), invD = el('input', { type: 'date', value: q.invoice_date || '', disabled: dis });
-    const gd = el('input', { type: 'date', value: q.gate_date || '', disabled: dis }), gok = el('input', { type: 'checkbox', checked: !!q.gate_ok, disabled: dis });
-    const hd = el('input', { type: 'date', value: q.handover_date || '', disabled: dis });
+    const total = mine.reduce((s, i) => s + n0(i.sale_value), 0);
+    const files = (b.files || []).filter(f => f.quote_id === q.id);
+    const has = k => files.some(f => f.kind === k);
+    const inv = el('input', { value: q.invoice_no || '', disabled: !acc }), invD = el('input', { type: 'date', value: q.invoice_date || '', disabled: !acc });
+    const gd = el('input', { type: 'date', value: q.gate_date || '', disabled: !am }), hd = el('input', { type: 'date', value: q.handover_date || '', disabled: !am });
     const fOut = el('div');
-    const box = el('div', { className: 'lqwin' + (q.invoice_no && q.gate_ok ? ' ok' : '') }, [
+    const chip = (k, ok) => el('span', { className: 'tdchip' + (ok ? ' ok' : ''), textContent: (ok ? '✓ ' : '✗ ') + t('lqf.fk.' + k) });
+    const box = el('div', { className: 'lqwin' + (q.invoice_no && has('handover') && has('gatepass') ? ' ok' : '') }, [
       el('div', { className: 'row', style: 'align-items:center;gap:10px;flex-wrap:wrap' }, [el('b', { textContent: (q.data && q.data.name) || v.name }),
-        el('span', { className: 'dim', textContent: `${lqBuyerId(q.data)} · ${t('lqq.items', { n: mine.length })} · ${lqN(total)}` })]),
+        el('span', { className: 'dim', textContent: `${lqBuyerId(q.data)} · ${t('lqq.items', { n: mine.length })} · ${lqN(total)}` }),
+        chip('handover', has('handover')), chip('gatepass', has('gatepass')), chip('invoice', !!q.invoice_no)]),
       el('div', { className: 'lqgrid', style: 'margin-top:6px' }, [
         el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.invNo') }), inv]), el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.invDate') }), invD]),
-        el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.gateDate') }), gd]),
-        el('label', { className: 'chk', style: 'align-self:end' }, [gok, el('span', { textContent: t('lqq.gateOk') })]),
-        el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.handDate') }), hd])]),
+        el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.gateDate') }), gd]), el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.handDate') }), hd])]),
       el('div', { className: 'row', style: 'gap:6px;margin-top:6px;flex-wrap:wrap' }, [
-        ...(dis ? [] : [el('button', { className: 'btn tiny pri', type: 'button', textContent: t('tool.save'), onclick: async () => {
-          try { await SB.rpc('pm_lq_buyer_doc', { p_quote: q.id, p_patch: { invoice_no: inv.value, invoice_date: invD.value, gate_date: gd.value, gate_ok: gok.checked, handover_date: hd.value } });
-                LQ.flash = t('lqq.docSaved', { v: (q.data && q.data.name) || v.name }); await lqLoad(); } catch (e) { msg(out, 'err', e.message); } } })]),
-        ...[['07', 'lqb.f.07'], ['GP', 'lqb.f.GP'], ['11', 'lqb.f.11']].map(([k, key]) => el('button', { className: 'btn tiny', type: 'button', textContent: t(key),
-          onclick: () => lqbCapture(b, [k], 'preview', fOut, q.id) }))]), fOut]);
+        ...(am || acc ? [el('button', { className: 'btn tiny pri', type: 'button', textContent: t('tool.save'), onclick: async () => {
+          const patch = {};
+          if (acc) Object.assign(patch, { invoice_no: inv.value, invoice_date: invD.value });
+          if (am) Object.assign(patch, { gate_date: gd.value, handover_date: hd.value });
+          try { await SB.rpc('pm_lq_buyer_doc', { p_quote: q.id, p_patch: patch }); LQ.flash = t('lqq.docSaved', { v: (q.data && q.data.name) || v.name }); await lqLoad(); }
+          catch (e) { msg(out, 'err', e.message); } } })] : []),
+        ...[['07', 'lqb.f.07'], ['GP', 'lqb.f.GP'], ['11', 'lqb.f.11']].map(([k, key]) => el('button', { className: 'btn tiny', type: 'button', textContent: '🖨 ' + t(key),
+          onclick: () => lqbCapture(b, [k], 'preview', fOut, q.id) })),
+        ...(am ? [lqbUploadBtn(b, 'handover', q.id, out, t('lqf.upHandover')), lqbUploadBtn(b, 'gatepass', q.id, out, t('lqf.upGate'))] : []),
+        ...(acc && !am ? [lqbUploadBtn(b, 'invoice', q.id, out, t('lqf.upInvoice'))] : [])]), fOut]);
     card.append(box);
   }
 }
@@ -15289,8 +15310,8 @@ function accParse(wb, fileName, periodYm) {
   return { kind, sheet: found.name, rows, block: blk >= 0 };
 }
 
-async function accPick(files) {
-  const out = $('#accMsg');
+// out / redraw: where it reports and what redraws the preview — Reconciliation or Data sources (accUploadCard).
+async function accPick(files, out = $('#accMsg'), redraw = accRender) {
   try {
     if (typeof XLSX === 'undefined') throw new Error('XLSX');
     ACC.files = [];
@@ -15302,11 +15323,10 @@ async function accPick(files) {
       ACC.files.push({ file: f.name, wb, ym, parsedYm: ym, ...p });
     }
     msg(out, '', '');
-    accRender();
+    redraw();
   } catch (e) { msg(out, 'err', e.message); }
 }
-async function accImport() {
-  const out = $('#accMsg');
+async function accImport(out = $('#accMsg'), redraw = accRender) {
   try {
     for (const f of ACC.files) {
       if (f.ym !== f.parsedYm) Object.assign(f, accParse(f.wb, f.file, f.ym), { parsedYm: f.ym });
@@ -15320,7 +15340,8 @@ async function accImport() {
     }
     const done = ACC.files.map(f => `${f.file}: ${t('acc.stats', { n: f.stats.new || 0, c: f.stats.changed || 0, g: f.stats.gone || 0, r: f.stats.rekeyed || 0, a: f.stats.autolinked || 0 })}`).join('\n');
     ACC.files = [];
-    await accLoad();
+    // On Reconciliation the lists are read again; from Data sources they are read when Reconciliation opens.
+    if (VIEW === 'acc') await accLoad(); else { ACC.ready = false; redraw(); }
     msg(out, 'ok', done);
   } catch (e) { msg(out, 'err', e.message); }
 }
@@ -15509,9 +15530,18 @@ function accRender() {
 }
 
 function accHome(body, s) {
+  // The registers are uploaded in Data sources (user 29/09/2026); here only for someone who cannot open that screen.
+  body.append(canView('sources') && window.dsLinkCard ? dsLinkCard('acc', t('acc.upload')) : accUploadCard(s.edit, $('#accMsg'), accRender));
+  if (!ACC.ready) return;
+  const tile = (n, k, tab, warn) => el('button', { className: 'acctile' + (warn && n ? ' warn' : ''), type: 'button', onclick: () => { ACC.tab = tab; accRender(); } },
+    [el('b', { textContent: fmtInt(n) }), el('span', { textContent: t(k) })]);
+  accHomeTiles(body, s, tile);
+}
+// The upload of accounting's registers (FA, CCDC, short-term): Data sources, or Reconciliation (accHome).
+function accUploadCard(edit, out, redraw) {
   const up = el('div', { className: 'card' }, [el('h2', { textContent: t('acc.upload') }), el('div', { className: 'tdnote', textContent: t('acc.uploadHint') })]);
-  if (s.edit) {
-    const inp = el('input', { type: 'file', multiple: true, accept: '.xlsx,.xls,.xlsm', style: 'display:none', onchange: () => { accPick([...inp.files]); inp.value = ''; } });
+  if (edit) {
+    const inp = el('input', { type: 'file', multiple: true, accept: '.xlsx,.xls,.xlsm', style: 'display:none', onchange: () => { accPick([...inp.files], out, redraw); inp.value = ''; } });
     up.append(inp, el('button', { className: 'btn pri', type: 'button', textContent: t('acc.pick'), onclick: () => inp.click() }));
   }
   if (ACC.files.length) {
@@ -15523,13 +15553,13 @@ function accHome(body, s) {
       if (!f.block) tb.append(el('tr', {}, el('td', { colSpan: 6, className: 'bad', textContent: t('acc.noBlock', { m: f.ym }) })));
     }
     up.append(el('div', { className: 'wrap', style: 'margin-top:8px' }, tb),
-      el('div', { className: 'row', style: 'gap:8px;margin-top:8px' }, [el('button', { className: 'btn pri', type: 'button', textContent: t('acc.import'), onclick: accImport }),
-        el('button', { className: 'btn', type: 'button', textContent: t('auth.cancel'), onclick: () => { ACC.files = []; accRender(); } })]));
+      el('div', { className: 'row', style: 'gap:8px;margin-top:8px' }, [el('button', { className: 'btn pri', type: 'button', textContent: t('acc.import'), onclick: () => accImport(out, redraw) }),
+        el('button', { className: 'btn', type: 'button', textContent: t('auth.cancel'), onclick: () => { ACC.files = []; redraw(); } })]));
   }
-  body.append(up);
-  if (!ACC.ready) return;
-  const tile = (n, k, tab, warn) => el('button', { className: 'acctile' + (warn && n ? ' warn' : ''), type: 'button', onclick: () => { ACC.tab = tab; accRender(); } },
-    [el('b', { textContent: fmtInt(n) }), el('span', { textContent: t(k) })]);
+  return up;
+}
+// The Reconciliation home under the upload: the tiles, the history of the imports.
+function accHomeTiles(body, s, tile) {
   const booked = ACC.assets.filter(a => a.fin_status === 'booked').length, linked = ACC.assets.filter(a => a.fin_status === 'linked').length;
   const old = s.queue.filter(a => accAge(a) >= 3).length;
   body.append(el('div', { className: 'acctiles' }, [tile(s.queue.length, 'acc.k.queue', 'queue', true), tile(old, 'acc.k.old3', 'queue', true),
