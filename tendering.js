@@ -379,18 +379,8 @@ async function tdPut(path, file) {
     headers: { apikey: CFG.key, Authorization: 'Bearer ' + tok, 'Content-Type': file.type || 'application/octet-stream', 'x-upsert': 'false' }, body: file });
   if (!r.ok) { let m = r.statusText; try { m = (await r.json()).message || m; } catch {} throw new Error(m); }
 }
-async function tdFile(f, bucket = 'pm-tender') {
-  try {
-    const tok = await authToken();
-    const r = await fetch(`${CFG.url}/storage/v1/object/authenticated/${bucket}/${f.path.split('/').map(encodeURIComponent).join('/')}`,
-      { headers: { apikey: CFG.key, Authorization: 'Bearer ' + tok } });
-    if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
-    const url = URL.createObjectURL(await r.blob());
-    const a = el('a', { href: url, download: f.name || 'file', target: '_blank', rel: 'noopener' });
-    document.body.append(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-  } catch (e) { msg(TD.ctx ? TD.ctx.out : '#tdMsg', 'err', e.message); }
-}
+// A stored file opens in the in-app viewer (docview.js); its download button is there (user 29/09/2026).
+function tdFile(f, bucket = 'pm-tender') { dvFile(f, bucket); }
 const tdSafe = n => (n.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').replace(/[^A-Za-z0-9._-]+/g, '_').slice(-80)) || 'file';
 function tdFilesBox(x, tn) {
   const wrap = el('div');
@@ -631,6 +621,11 @@ function tdOpenedTable(x, tn, op) {
         onclick: ev => { ev.preventDefault(); tdFile(f); } }))))]));
     return c;
   });
+  // Every quotation of the opened bids in one window, vendor after vendor (user 29/09/2026).
+  const allFiles = op.flatMap(o => (o.bid.files || []).map(f => ({ label: o.inv.name || '', sub: (f.kind === 'quotation' ? '★ ' : '') + (f.name || 'file'), name: f.name,
+    get: () => dvStored('pm-tender', f.path) })));
+  if (allFiles.length) wrap.append(el('div', { className: 'row', style: 'margin:4px 0' }, el('button', { className: 'btn tiny', type: 'button',
+    textContent: '👁 ' + t('dv.allBids', { n: allFiles.length }), onclick: () => dvOpen(`${tn.title || ''} — ${t('dv.bidsH')}`, allFiles) })));
   wrap.append(el('div', { className: 'wrap' }, tb));
   const pick = () => { const p = op.filter((o, i) => checks[i].checked); if (!p.length || p.length > 3) { msg(x.out, 'warn', t('td.pick3')); return null; } return p; };
   if (x.mode === 'qc') {

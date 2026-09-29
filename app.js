@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260928j';
+const APP_VERSION = '20260929a';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -11174,7 +11174,8 @@ async function wfCaptureForms(code, fmt, out, onlyId, opts = {}) {
     if (!code) await lqPhotosLoad(docs);
     const live = docs.filter(d => !['cancelled', 'rejected'].includes(d.status) && WF_FORMS[d.doc_type])
       .sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type) || a.id - b.id);
-    const todo = onlyId ? docs.filter(d => d.id === onlyId) : live;
+    // opts.approved: only the approved forms (the signed file shown in the viewer).
+    const todo = onlyId ? docs.filter(d => d.id === onlyId) : opts.approved ? live.filter(d => d.status === 'approved') : live;
     if (!project || !todo.length) throw new Error(t('wf.cap.none'));
     const pids = [...new Set(docs.map(d => d.pkg_id).filter(Boolean))];
     const [steps, years, line] = await Promise.all([
@@ -11201,6 +11202,7 @@ async function wfCaptureForms(code, fmt, out, onlyId, opts = {}) {
       }
     }
     if (fmt === 'shots') return shots;                   // several projects in one file (wfCaptureMany)
+    if (fmt === 'blob') return wfCapPdf(shots).output('blob');   // for the in-app viewer (docview.js)
     msg(out, 'info', t('wf.cap.building', { n: shots.length }));
     const base = opts.base || (onlyId ? todo[0].doc_no : `${code} - ${t('wf.cap.file')}`);
     await wfCapOut(shots, fmt, base);
@@ -11208,6 +11210,7 @@ async function wfCaptureForms(code, fmt, out, onlyId, opts = {}) {
                           : t(fmt === 'preview' ? 'wf.cap.shown' : 'wf.cap.done', { n: shots.length, d: todo.length }));
   } catch (e) {
     if (fmt === 'shots') { console.warn('capture', code, e); return []; }
+    if (fmt === 'blob') throw e;
     msg(out, 'err', t('wf.cap.fail') + ' ' + (e && e.message || e));
   } finally {
     host.remove();

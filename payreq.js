@@ -219,8 +219,11 @@ async function pqView(id) {
     r.approved_at ? el('div', { className: 'pqmark' }, [el('b', { textContent: '✔ ' + t('pq.approvedBy', { n: r.approved_name || '', d: fmtDateTime(r.approved_at) }) }),
       r.approved_sig && r.approved_sig.png ? el('img', { src: r.approved_sig.png, alt: '' }) : '']) : '',
     el('dl', { className: 'aodl' }, [
-      el('dt', { textContent: t('pm.col.code') }), el('dd', {}, el('a', { href: '#', className: 'aolink', textContent: `${r.project_code} — ${p.name || ''}`, onclick: e => { e.preventDefault(); pqDrawerClose(); PM.prj.open = r.project_code; showView('projects'); } })),
-      ...(r.amount_contract != null ? [el('dt', { textContent: t('pq.amtCt') }), el('dd', { textContent: fmtMoney(r.amount_contract) })] : []),
+      // The project's signed forms and the contract, viewed here without leaving the request (user 29/09/2026).
+      el('dt', { textContent: t('pm.col.code') }), el('dd', {}, [el('a', { href: '#', className: 'aolink', textContent: `${r.project_code} — ${p.name || ''}`, onclick: e => { e.preventDefault(); pqDrawerClose(); PM.prj.open = r.project_code; showView('projects'); } }), ' ',
+        el('button', { className: 'btn tiny', type: 'button', textContent: '📄 ' + t('pq.dv.forms'), title: t('pq.dv.formsT'), onclick: () => pqViewForms(r, p) })]),
+      ...(r.amount_contract != null || r.contract_id ? [el('dt', { textContent: t('pq.amtCt') }), el('dd', {}, [r.amount_contract != null ? fmtMoney(r.amount_contract) : '—', ' ',
+        el('button', { className: 'btn tiny', type: 'button', textContent: '📄 ' + t('pq.dv.contract'), onclick: () => pqViewContract(r) })])] : []),
       el('dt', { textContent: adj ? t('pq.amtAdj') : t('pq.c.amount') }), el('dd', { className: adj ? 'pqadj' : '', textContent: `${fmtMoney(r.amount)}${r.pct != null ? ' (' + Number(r.pct) + '%)' : ''}`
         + (adj ? ` · ${t('pq.adjBy', { d: fmtMoney(Number(r.amount) - Number(r.amount_contract)) })}` : '') }),
       ...(adj ? [el('dt', { textContent: t('pq.adjNote') }), el('dd', { textContent: r.adjust_note || '—' })] : []),
@@ -302,7 +305,10 @@ async function pqPut(path, file) {
 }
 function pqFiles(r, out, canAdd) {
   const wrap = el('div');
-  wrap.append(el('h3', { textContent: t('pq.files', { n: (r.files || []).length + (r.links || []).length }) }));
+  // "View full document": the payment documents, the contract and the signed forms in one window.
+  wrap.append(el('div', { className: 'row', style: 'align-items:center;gap:8px;margin-top:14px' }, [
+    el('h3', { style: 'margin:0', textContent: t('pq.files', { n: (r.files || []).length + (r.links || []).length }) }),
+    el('button', { className: 'btn tiny pri', type: 'button', textContent: '👁 ' + t('pq.dv.all'), title: t('pq.dv.allT'), onclick: () => pqViewAll(r) })]));
   const ul = el('ul', { className: 'tgfiles' });
   for (const f of r.files || []) ul.append(el('li', {}, [el('span', { className: 'tdchip' + (f.kind === 'vendor_letter' ? ' ok' : ''), textContent: t('pq.f.' + (f.kind || 'other')) }), ' ',
     el('a', { href: '#', textContent: '📎 ' + (f.name || 'file'), onclick: e => { e.preventDefault(); tdFile(f, 'pm-payreq'); } }),
@@ -350,6 +356,39 @@ function pqFiles(r, out, canAdd) {
   return wrap;
 }
 
+/* ------------------------------------------------------------ in-app viewer (docview.js)
+   What the Chief Accountant checks, seen without downloading (user 29/09/2026): the payment
+   documents (the vendor's letter first, then the invoice and the rest), the contract's files,
+   the project's approved forms with their signatures (marked "Approved by CA" once approved). */
+const PQ_FK = { vendor_letter: 0, invoice: 1, other: 2 };
+function pqPayItems(r) {
+  return [...(r.files || [])].sort((a, b) => (PQ_FK[a.kind] ?? 2) - (PQ_FK[b.kind] ?? 2))
+    .map(f => ({ label: t('pq.f.' + (f.kind || 'other')), sub: f.name || '', name: f.name, get: () => dvStored('pm-payreq', f.path) }))
+    .concat((r.links || []).map(l => ({ label: t('pq.dv.link'), sub: l.label || l.url, url: l.url })));
+}
+async function pqCtItems(r) {
+  if (!can('contract', 'view')) return [];
+  const [c] = r.contract_id ? await SB.select('pm_contract', `select=id,no,contract_no&id=eq.${r.contract_id}`).catch(() => [])
+    : await SB.select('pm_contract', `select=id,no,contract_no&project_code=eq.${encodeURIComponent(r.project_code)}&status=not.in.(cancelled,rejected)&order=id.desc&limit=1`).catch(() => []);
+  if (!c) return [];
+  const fs = await SB.select('pm_contract_file', `select=id,kind,name,source,storage_path,url&contract_id=eq.${c.id}&order=id`).catch(() => []);
+  fs.sort((a, b) => (a.kind === 'contract' ? 0 : 1) - (b.kind === 'contract' ? 0 : 1) || a.id - b.id);
+  const lbl = `${t('pq.dv.contract')} ${c.contract_no || c.no}`;
+  return fs.map(f => f.source === 'link' ? { label: lbl, sub: f.name || f.url, url: f.url }
+    : { label: lbl, sub: [t('ct.fk.' + f.kind), f.name].filter(Boolean).join(' · '), name: f.name, get: () => dvStored('pm-contract', f.storage_path) });
+}
+const pqFormsItem = r => ({ label: t('pq.dv.forms'), sub: `${r.project_code} · ${t('pq.dv.formsSub')}`, name: `${r.project_code} - ${t('wf.cap.file')}.pdf`,
+  get: () => wfCaptureForms(r.project_code, 'blob', null, null, { approved: true }) });
+const pqViewForms = (r, p) => dvOpen(`${r.project_code} — ${p.name || ''} · ${t('pq.dv.forms')}`, [pqFormsItem(r)]);
+async function pqViewContract(r) {
+  const items = await pqCtItems(r);
+  if (!items.length) return msg('#pqMsg', 'warn', t('pq.dv.noCt'));
+  dvOpen(`${r.no} · ${t('pq.dv.contract')}`, items);
+}
+async function pqViewAll(r) {
+  dvOpen(`${r.no} — ${t('pq.dv.allH')}`, [...pqPayItems(r), ...await pqCtItems(r), pqFormsItem(r)]);
+}
+
 /* The project's whole file for the accountant: every approved form (open one, or all
    of them as one PDF), the contract and its schedule, the handovers, earlier requests,
    and what accounting has recorded as paid. */
@@ -365,14 +404,18 @@ async function pqDossier(r, p, box) {
   const tb = el('table', { className: 'tdtbl' });
   tb.append(el('tr', {}, [t('wf.i.doc'), t('wf.i.type'), t('pq.c.value'), t('pq.c.approvedAt')].map(h => el('th', { textContent: h }))));
   for (const d of docs.sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type) || a.id - b.id))
-    tb.append(el('tr', {}, [el('td', {}, el('a', { href: '#', className: 'aolink', textContent: d.doc_no, onclick: e => { e.preventDefault(); pqDrawerClose(); wfOpen(d.id); } })),
+    // 👁: the signed form in the viewer, the request staying open; the number opens the form's screen.
+    tb.append(el('tr', {}, [el('td', {}, [el('a', { href: '#', className: 'aolink', textContent: d.doc_no, onclick: e => { e.preventDefault(); pqDrawerClose(); wfOpen(d.id); } }), ' ',
+      el('button', { className: 'btn tiny', type: 'button', textContent: '👁', title: t('dv.view'),
+        onclick: () => dvOpen(d.doc_no, [{ label: d.doc_no, sub: wfTypeName(d.doc_type), name: d.doc_no + '.pdf', get: () => wfCaptureForms(r.project_code, 'blob', null, d.id) }]) })]),
       el('td', { textContent: wfTypeName(d.doc_type) + (d.doc_type === 'AH' && (d.final === true || d.final === 'true') ? ' · ' + t('pq.finalAh') : '') }),
       el('td', { className: 'n', textContent: d.total_value != null ? fmtMoney(d.total_value) : '' }), el('td', { textContent: fmtDate(String(d.decided_at || '').slice(0, 10)) })]));
   box.append(el('div', { className: 'wrap' }, tb));
   const c = ctr[0];
   if (c) {
     box.append(el('h3', { textContent: t('pq.contract') }), el('div', { className: 'ctpanelrow' }, [el('a', { href: '#', className: 'aolink', textContent: `${c.no}${c.contract_no ? ' · ' + c.contract_no : ''}`,
-      onclick: e => { e.preventDefault(); pqDrawerClose(); ctOpen(c.id); } }), document.createTextNode(` · ${c.supplier || ''} · ${fmtMoney(c.value_pre_vat)} `), ctChip(c.status)]));
+      onclick: e => { e.preventDefault(); pqDrawerClose(); ctOpen(c.id); } }), document.createTextNode(` · ${c.supplier || ''} · ${fmtMoney(c.value_pre_vat)} `), ctChip(c.status),
+      ' ', el('button', { className: 'btn tiny', type: 'button', textContent: '👁', title: t('dv.view'), onclick: () => pqViewContract(Object.assign({}, r, { contract_id: c.id })) })]));
     if ((c.pay_terms || []).length && window.ctPayTable) {
       const tbl = ctPayTable(c, c.pay_terms);
       (c.pay_terms || []).forEach((x, i) => { if (x.paid && tbl.rows[i + 1]) tbl.rows[i + 1].classList.add('pqpaid'); });
