@@ -279,7 +279,7 @@ en: {
   'pq.dv.all': 'View full document', 'pq.dv.allT': 'The payment documents, the contract and the approved forms in one window', 'pq.dv.allH': 'full document',
   'pq.dv.link': 'Link', 'pq.dv.noCt': 'No contract file for this project yet.',
   'pq.files': 'Payment documents ({n})', 'pq.noFiles': 'No document attached.', 'pq.addFile': 'Attach files', 'pq.addLink': 'Add a OneDrive link', 'pq.linkQ': 'OneDrive / SharePoint link (https://…):',
-  'pq.filesHint': 'Invoice, delivery note, acceptance minutes, bonds…', 'pq.dossier': 'The project file', 'pq.allForms': 'Every approved form of the project:',
+  'pq.filesHint': 'Invoice, delivery note, acceptance minutes, bonds…', 'pq.dossier': 'Project file', 'pq.allForms': 'Every approved form of the project:',
   'pq.finalAh': 'final', 'pq.others': 'Other payment requests of the project', 'pq.acc': 'Accounting records: invoiced {inv} · paid {paid} · last payment {d}',
   'pq.yourTurn.check': 'Your turn: check the documents', 'pq.yourTurn.approve': 'Your turn: approve the payment', 'pq.yourTurn.process': 'Your turn: make the payment',
   'pq.turnHint.check': 'Compare the request with the contract schedule, the invoice and the approved forms below. Return it with a note if something is missing.',

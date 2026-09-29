@@ -249,9 +249,8 @@ async function pqView(id) {
         try { await SB.rpc('pm_payreq_cancel', { p_id: r.id, p_comment: why }); await pqReload(t('pq.cancelled')); pqDrawerClose(); } catch (e) { msg(out, 'err', e.message); } } })]));
   }
   body.append(pqFiles(r, out, prep || mineStep));
-  // Everything the accountant checks, on one page.
-  body.append(el('h2', { style: 'margin-top:16px', textContent: t('pq.dossier') }));
-  const dos = el('div', { textContent: t('table.loading') });
+  // Everything the accountant checks, on one page: the contract, then the approved forms (pqDossier).
+  const dos = el('div', { className: 'dim', textContent: t('table.loading') });
   body.append(dos);
   pqDossier(r, p, dos).catch(e => { dos.textContent = e.message; });
 }
@@ -308,7 +307,7 @@ function pqFiles(r, out, canAdd) {
   // "View full document": the payment documents, the contract and the signed forms in one window.
   wrap.append(el('div', { className: 'row', style: 'align-items:center;gap:8px;margin-top:14px' }, [
     el('h3', { style: 'margin:0', textContent: t('pq.files', { n: (r.files || []).length + (r.links || []).length }) }),
-    el('button', { className: 'btn tiny pri', type: 'button', textContent: '👁 ' + t('pq.dv.all'), title: t('pq.dv.allT'), onclick: () => pqViewAll(r) })]));
+    el('button', { className: 'btn tiny pri', type: 'button', style: 'margin-left:auto', textContent: '👁 ' + t('pq.dv.all'), title: t('pq.dv.allT'), onclick: () => pqViewAll(r) })]));
   const ul = el('ul', { className: 'tgfiles' });
   for (const f of r.files || []) ul.append(el('li', {}, [el('span', { className: 'tdchip' + (f.kind === 'vendor_letter' ? ' ok' : ''), textContent: t('pq.f.' + (f.kind || 'other')) }), ' ',
     el('a', { href: '#', textContent: '📎 ' + (f.name || 'file'), onclick: e => { e.preventDefault(); tdFile(f, 'pm-payreq'); } }),
@@ -398,19 +397,9 @@ async function pqDossier(r, p, box) {
     can('contract', 'view') ? SB.select('pm_contract', `select=*&project_code=eq.${encodeURIComponent(r.project_code)}&status=not.in.(cancelled,rejected)&order=id.desc`).catch(() => []) : [],
     Promise.resolve(PQ.rows.filter(x => x.project_code === r.project_code && x.id !== r.id)),
     SB.select('pm_project_money', `select=invoiced_gross,paid_gross,last_paid&project_code=eq.${encodeURIComponent(r.project_code)}`).catch(() => [])]);
-  box.innerHTML = '';
-  const capOut = el('div');
-  box.append(el('div', { className: 'row', style: 'gap:6px;align-items:center' }, [el('span', { className: 'tdnote', textContent: t('pq.allForms') }), ...wfCapButtons(r.project_code, capOut)]), capOut);
-  const tb = el('table', { className: 'tdtbl' });
-  tb.append(el('tr', {}, [t('wf.i.doc'), t('wf.i.type'), t('pq.c.value'), t('pq.c.approvedAt')].map(h => el('th', { textContent: h }))));
-  for (const d of docs.sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type) || a.id - b.id))
-    // 👁: the signed form in the viewer, the request staying open; the number opens the form's screen.
-    tb.append(el('tr', {}, [el('td', {}, [el('a', { href: '#', className: 'aolink', textContent: d.doc_no, onclick: e => { e.preventDefault(); pqDrawerClose(); wfOpen(d.id); } }), ' ',
-      el('button', { className: 'btn tiny', type: 'button', textContent: '👁', title: t('dv.view'),
-        onclick: () => dvOpen(d.doc_no, [{ label: d.doc_no, sub: wfTypeName(d.doc_type), name: d.doc_no + '.pdf', get: () => wfCaptureForms(r.project_code, 'blob', null, d.id) }]) })]),
-      el('td', { textContent: wfTypeName(d.doc_type) + (d.doc_type === 'AH' && (d.final === true || d.final === 'true') ? ' · ' + t('pq.finalAh') : '') }),
-      el('td', { className: 'n', textContent: d.total_value != null ? fmtMoney(d.total_value) : '' }), el('td', { textContent: fmtDate(String(d.decided_at || '').slice(0, 10)) })]));
-  box.append(el('div', { className: 'wrap' }, tb));
+  box.innerHTML = ''; box.classList.remove('dim');
+  // In the order of the documents (user 29/09/2026): the payment documents above, then the contract,
+  // then the project's approved forms — both as a small title over a compact table.
   const c = ctr[0];
   if (c) {
     box.append(el('h3', { textContent: t('pq.contract') }), el('div', { className: 'ctpanelrow' }, [el('a', { href: '#', className: 'aolink', textContent: `${c.no}${c.contract_no ? ' · ' + c.contract_no : ''}`,
@@ -422,11 +411,25 @@ async function pqDossier(r, p, box) {
       box.append(tbl);
     }
   }
+  const capOut = el('div');
+  box.append(el('h3', { textContent: t('pq.dossier') }),
+    el('div', { className: 'row', style: 'gap:6px;align-items:center;margin-bottom:6px' }, [el('span', { className: 'tdnote', textContent: t('pq.allForms') }), ...wfCapButtons(r.project_code, capOut)]), capOut);
+  const tb = el('table', { className: 'lqbt ctmini' });
+  tb.append(el('tr', {}, [t('wf.i.doc'), t('wf.i.type'), t('pq.c.value'), t('pq.c.approvedAt')].map(h => el('th', { textContent: h }))));
+  for (const d of docs.sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type) || a.id - b.id))
+    // 👁: the signed form in the viewer, the request staying open; the number opens the form's screen.
+    tb.append(el('tr', {}, [el('td', {}, [el('a', { href: '#', className: 'aolink', textContent: d.doc_no, onclick: e => { e.preventDefault(); pqDrawerClose(); wfOpen(d.id); } }), ' ',
+      el('button', { className: 'btn tiny', type: 'button', textContent: '👁', title: t('dv.view'),
+        onclick: () => dvOpen(d.doc_no, [{ label: d.doc_no, sub: wfTypeName(d.doc_type), name: d.doc_no + '.pdf', get: () => wfCaptureForms(r.project_code, 'blob', null, d.id) }]) })]),
+      el('td', { textContent: wfTypeName(d.doc_type) + (d.doc_type === 'AH' && (d.final === true || d.final === 'true') ? ' · ' + t('pq.finalAh') : '') }),
+      el('td', { className: 'num', textContent: d.total_value != null ? fmtMoney(d.total_value) : '' }), el('td', { textContent: fmtDate(String(d.decided_at || '').slice(0, 10)) })]));
+  if (!docs.length) tb.append(el('tr', {}, el('td', { colSpan: 4, className: 'dim', textContent: t('wf.cap.none') })));
+  box.append(tb);
   if (others.length) box.append(el('h3', { textContent: t('pq.others') }), ...others.map(o => el('div', { className: 'ctpanelrow' }, [
     el('a', { href: '#', className: 'aolink', textContent: o.no, onclick: e => { e.preventDefault(); pqView(o.id); } }),
     document.createTextNode(` · ${t('pq.kind.' + o.kind)} · ${fmtMoney(pqAmt(o))} `), pqChip(o.status)])));
   const m = money[0];
-  if (m) box.append(el('div', { className: 'tdnote', textContent: t('pq.acc', { inv: fmtMoney(m.invoiced_gross || 0), paid: fmtMoney(m.paid_gross || 0), d: fmtDate(String(m.last_paid || '').slice(0, 10)) }) }));
+  if (m) box.append(el('div', { className: 'tdnote', style: 'margin-top:8px', textContent: t('pq.acc', { inv: fmtMoney(m.invoiced_gross || 0), paid: fmtMoney(m.paid_gross || 0), d: fmtDate(String(m.last_paid || '').slice(0, 10)) }) }));
 }
 
 /* ------------------------------------------------------------ project drawer, To-do, bell */
