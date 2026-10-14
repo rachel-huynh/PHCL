@@ -609,7 +609,7 @@ function kkEditor(body) {
     } catch (e) { aoErr(out, e); }
   };
   body.append(el('div', { className: 'card' }, [el('h2', { textContent: E.id ? t('ao.kk.editH') : t('ao.kk.newH') }),
-    el('div', { className: 'row', style: 'gap:12px;flex-wrap:wrap;align-items:flex-end' }, [aoFld(t('ao.kk.c.title'), title, 'min-width:280px;flex:1'), aoFld(t('ao.kk.c.date'), date, 'max-width:170px')]),
+    el('div', { className: 'row', style: 'gap:12px;flex-wrap:wrap;align-items:flex-end' }, [aoFld(t('ao.kk.c.title'), title, 'min-width:min(280px,100%);flex:1'), aoFld(t('ao.kk.c.date'), date, 'max-width:170px')]),
     el('h3', { textContent: t('ao.kk.c.depts') }), depts,
     el('h3', { textContent: t('ao.kk.locsH') }), el('div', { className: 'tdnote', textContent: t('ao.kk.locsHint') }), locs.length ? locBox : el('div', { className: 'dim', textContent: '—' }),
     el('h3', { textContent: t('ao.kk.membersH') }), mem,

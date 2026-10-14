@@ -125,7 +125,7 @@ function prSearchTab(body) {
   grp.onchange = () => { PR.f.grp = grp.value; run(); };
   body.append(el('div', { className: 'card' }, [
     el('div', { className: 'row', style: 'gap:10px;align-items:flex-end;flex-wrap:wrap' }, [
-      el('div', { className: 'fld', style: 'flex:1;min-width:260px' }, [el('label', { textContent: t('pr.q') }), q]),
+      el('div', { className: 'fld', style: 'flex:1;min-width:min(260px,100%)' }, [el('label', { textContent: t('pr.q') }), q]),
       el('button', { className: 'btn pri', type: 'button', textContent: t('pr.find'), onclick: run }),
       el('div', { className: 'fld', style: 'max-width:170px' }, [el('label', { textContent: t('pr.year') }), yr]),
       el('div', { className: 'fld', style: 'max-width:220px' }, [el('label', { textContent: t('pr.group') }), grp]),

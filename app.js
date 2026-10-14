@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20260929i';
+const APP_VERSION = '20261014b';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -42,7 +42,8 @@ const LS_KEY = 'asset-intake.sb';
 let CFG = { url: '', key: '' };
 /* Tablet / phone mode (tbDetect): declared up here because showView and firstView read it from the start. */
 const TB_VIEWS = ['pmdash', 'amdash', 'inbox', 'doc', 'lqcount', 'stockcount', 'engchk', 'recv', 'meetings', 'contracts', 'flows', 'settings', 'setup'];
-const TB = { on: false, pages: [], i: 0, key: null, busy: false };
+// ask: a tap on a notice is opening a screen — offer the full view when tablet mode does not have it (showView).
+const TB = { on: false, pages: [], i: 0, key: null, busy: false, ask: false };
 
 function loadCfg() {
   const m = /[#&]sbcfg=([^&]+)/.exec(location.hash);
@@ -1976,7 +1977,12 @@ const canView = v => { if (v === 'pmimport') return ['budget', 'project', 'payme
 
 /* Where to land after signing in: the register for anyone allowed to see it,
    otherwise the first screen the menu offers them. */
+// ?view=…: the screen the Settings device preview (stPreview) opens on — used once.
+let PV_VIEW = new URLSearchParams(location.search).get('view');
 function firstView() {
+  const v = PV_VIEW;
+  PV_VIEW = null;
+  if (v && canView(v) && (!TB.on || TB_VIEWS.includes(v))) return v;
   if (TB.on) return canView('inbox') ? 'inbox' : 'pmdash';
   if (canView('register')) return 'register';
   return navViews().find(v => v !== 'setup' && canView(v)) || 'setup';
@@ -2345,7 +2351,15 @@ function showView(view) {
   // of the previous person) falls back to one they may.
   if (!canView(view)) view = ME ? firstView() : 'setup';
   // Tablet / phone: only the dashboard, the to-do list and the package to sign (tbDetect).
-  if (TB.on && ME && !TB_VIEWS.includes(view)) view = canView('inbox') ? 'inbox' : 'pmdash';
+  if (TB.on && ME && !TB_VIEWS.includes(view)) {
+    // Opened from a notice: rather than dropping the tap, offer the full view, where that screen is.
+    if (TB.ask && canView(view) && confirm(t('tb.needFull'))) {
+      try { localStorage.setItem(TB_KEY, 'off'); } catch {}
+      tbDetect();
+      TB.key = null;
+      setTimeout(tbBarRender, 0);
+    } else view = canView('inbox') ? 'inbox' : 'pmdash';
+  }
   if (VIEW && VIEW !== 'setup' && view !== VIEW && ME) navPush(navSnap());
   if (viewTable(VIEW) && view !== VIEW && CUR) {
     const n = CUR.rows.filter(r => r.isNew || r.dirty || r.del).length;
@@ -2525,6 +2539,9 @@ function init() {
   $('#appVer').textContent = 'v' + APP_VERSION;
   helpLoad();
   $('#stHelp').onchange = e => helpSet(e.target.checked);
+  // No preview inside the preview.
+  if (window.top !== window.self) $('#stPvRow').style.display = 'none';
+  else $('#btnStPv').onclick = stPreview;
   tbInit();
   $$('#langSeg button').forEach(b => { b.onclick = () => switchLang(b.dataset.lang); });
   buildNav();
@@ -3909,6 +3926,13 @@ function msSetup(id, opts) {
         el('div', { className: 'ms-acts' })
       ]));
     host.querySelector('.ms-q').oninput = ev => { st.q = ev.target.value; msList(id); };
+    // A box near the right edge opens its list leftwards, so the list stays on screen.
+    host.addEventListener('toggle', () => {
+      if (!host.open) return;
+      host.classList.remove('rt');
+      const lim = Math.min(innerWidth, (host.closest('section') || document.body).getBoundingClientRect().right);
+      if (host.querySelector('.ms-body').getBoundingClientRect().right > lim - 4) host.classList.add('rt');
+    });
   }
   msRender(id);
 }
@@ -7832,7 +7856,7 @@ function ppNew(preCode, preYear) {
   const free = (PM.prj.finalLines || []).filter(l => l.year === y && !taken.has(l.project_code));
   const card = el('div', { className: 'pmdet' });
   const row = el('div', { className: 'row', style: 'align-items:flex-end;flex-wrap:wrap' });
-  const lineSel = el('select', { style: 'min-width:360px;max-width:100%' });
+  const lineSel = el('select', { style: 'min-width:min(360px,100%)' });
   lineSel.append(el('option', { value: '', textContent: free.length ? t('pm.prj.pickLine') : t('pm.prj.noFreeLine') }));
   free.forEach((l, i) => lineSel.append(el('option', { value: i,
     textContent: `${l.project_code} — ${l.name || ''} — ${fmtM(l.estimated_value)}` })));
@@ -8133,7 +8157,9 @@ function gantt(W, items, year) {
   const y0 = Date.UTC(year, 0, 1), y1 = Date.UTC(year + 1, 0, 1);
   const pos = d => { if (!d) return null; const v = Date.parse(d + 'T00:00:00Z'); return Math.max(0, Math.min(100, (v - y0) / (y1 - y0) * 100)); };
   const ax = el('div', { className: 'gax' }, [el('div'), el('div')]);
-  for (let m = 0; m < 12; m += 1) ax.lastChild.append(el('span', { style: `left:${(m + .5) / 12 * 100}%`, textContent: pmMonthName(m + 1) }));
+  // The month name, and its number for a phone, where twelve names do not fit (CSS picks one).
+  for (let m = 0; m < 12; m += 1) ax.lastChild.append(el('span', { style: `left:${(m + .5) / 12 * 100}%` },
+    [el('i', { className: 'mlong', textContent: pmMonthName(m + 1) }), el('i', { className: 'mshort', textContent: String(m + 1) })]));
   wrap.append(ax);
   const today = new Date().toISOString().slice(0, 10);
   const tpos = today.slice(0, 4) === String(year) ? pos(today) : null;
@@ -10716,7 +10742,8 @@ function qcBuild(x) {
     head(title, scoreKey);
     const subs = d[subsKey];
     subs.forEach((s, si) => {
-      const lab = x.edit ? el('div', { className: 'fsubl' }, [wfInput({ k: 'label', t: 'text' }, s, true, x.rr, []),
+      // A box that wraps: a long bilingual criterion name stays readable instead of being cut off.
+      const lab = x.edit ? el('div', { className: 'fsubl' }, [wfInput({ k: 'label', t: 'area' }, s, true, x.rr, []),
         el('button', { className: 'xbtn', textContent: '×', onclick: () => { subs.splice(si, 1); x.rr(); } })]) : fsR(qcLabel(s.label));
       ap.append(el('tr', {}, [span(el('td', { className: 'fsub' }, lab), 2), el('td', { className: 'fvbox n' }, pct(s, 'w')),
         ...V.map(v => { v[sKey] = v[sKey] || {}; v[nKey] = v[nKey] || {};
@@ -11674,18 +11701,21 @@ async function ntOpen(r) {
     try { await SB.patch('pm_notice', `id=eq.${r.id}`, { read_at: new Date().toISOString() }); } catch {}
   }
   const h = window.ntHook ? window.ntHook(r) : null;
-  if (h && h.open) h.open();
-  // "Your turn to draw up the QC": to the project, whose panel has the button.
-  else if (r.kind === 'next' && r.project_code) { PM.prj.open = r.project_code; showView('projects'); }
-  // Transfer slips and incidents (assetops.js) carry their number, not a document id.
-  else if (r.doc_type === 'TF' && window.AO) { AO.tf.tab = 'all'; AO.tf.open = null; AO.tf.q = r.doc_no || ''; showView('transfer'); }
-  else if (r.doc_type === 'SC' && window.AO) { AO.inc.tab = 'all'; AO.inc.open = null; AO.inc.q = r.doc_no || ''; showView('incident'); }
-  // Project meetings (meetings.js): the minutes, or my actions.
-  else if (r.doc_type === 'HD' && window.ctOpenNo) ctOpenNo(r.doc_no);     // contracts (contracts.js)
-  else if (r.doc_type === 'MT' && window.mtOpenNo) mtOpenNo(r.doc_no);
-  else if (r.doc_type === 'CK' && window.enOpenRun) enOpenRun(r.doc_no);   // shift checklist with abnormal readings (eng.js)
-  else if (r.doc_type === 'MA' && window.mtOpenActions) mtOpenActions();
-  else if (r.doc_id) wfOpen(r.doc_id);
+  TB.ask = true;          // a screen tablet mode lacks: showView offers the full view
+  try {
+    if (h && h.open) h.open();
+    // "Your turn to draw up the QC": to the project, whose panel has the button.
+    else if (r.kind === 'next' && r.project_code) { PM.prj.open = r.project_code; showView('projects'); }
+    // Transfer slips and incidents (assetops.js) carry their number, not a document id.
+    else if (r.doc_type === 'TF' && window.AO) { AO.tf.tab = 'all'; AO.tf.open = null; AO.tf.q = r.doc_no || ''; showView('transfer'); }
+    else if (r.doc_type === 'SC' && window.AO) { AO.inc.tab = 'all'; AO.inc.open = null; AO.inc.q = r.doc_no || ''; showView('incident'); }
+    // Project meetings (meetings.js): the minutes, or my actions.
+    else if (r.doc_type === 'HD' && window.ctOpenNo) ctOpenNo(r.doc_no);     // contracts (contracts.js)
+    else if (r.doc_type === 'MT' && window.mtOpenNo) mtOpenNo(r.doc_no);
+    else if (r.doc_type === 'CK' && window.enOpenRun) enOpenRun(r.doc_no);   // shift checklist with abnormal readings (eng.js)
+    else if (r.doc_type === 'MA' && window.mtOpenActions) mtOpenActions();
+    else if (r.doc_id) wfOpen(r.doc_id);
+  } finally { TB.ask = false; }
   ntLoad();
 }
 
@@ -13128,7 +13158,13 @@ function initPay() {
    bar: approve / check (the signature pad takes a finger or a stylus), return,
    reject. After signing, straight back to the list for the next task. */
 const TB_KEY = 'asset-intake.tablet';
-const tbPref = () => { try { return localStorage.getItem(TB_KEY) || 'auto'; } catch { return 'auto'; } };
+// ?touch=1: the app inside the Settings device preview (stPreview) behaves as on a touch screen.
+const TB_TOUCH = new URLSearchParams(location.search).get('touch') === '1';
+const tbPref = () => {
+  let p = 'auto';
+  try { p = localStorage.getItem(TB_KEY) || 'auto'; } catch {}
+  return p === 'auto' && TB_TOUCH ? 'on' : p;
+};
 function tbDetect() {
   const p = tbPref();
   const on = p === 'on' || (p === 'auto' && (matchMedia('(pointer: coarse)').matches || innerWidth <= 820));
@@ -13151,6 +13187,67 @@ function tbInit() {
     if (e.key === 'ArrowRight') tbFlip(1); else if (e.key === 'ArrowLeft') tbFlip(-1);
   });
 }
+/* Device preview (Settings, user 14/10/2026): the app itself in a frame at a phone or tablet's
+   real width, so the media queries and the tablet mode react as they would on the device; the
+   frame is scaled down to fit the window. Same browser, so the same session — it is the live app. */
+const PV_DEVICES = [['phone', 390, 844], ['phoneL', 430, 932], ['tablet', 820, 1180], ['tabletL', 1180, 820]];
+function stPreview() {
+  const old = $('#pvWin');
+  if (old) old.remove();
+  let dev = PV_DEVICES[0], turned = false, touch = true, view = ['settings', 'setup'].includes(VIEW) ? '' : VIEW;
+  const size = () => turned ? [dev[2], dev[1]] : [dev[1], dev[2]];
+  const frame = el('iframe', { title: t('st.pv.title') });
+  const box = el('div', { className: 'pvdev' }, frame);
+  const label = el('div', { className: 'pvsize' });
+  const stage = el('div', { className: 'pvstage' }, [box, label]);
+  const fit = () => {
+    const [w, h] = size(), pad = dev[1] > 600 ? 40 : 28;
+    const s = Math.min(1, (stage.clientWidth - 32) / (w + pad), (stage.clientHeight - 40) / (h + pad));
+    box.style.transform = `translate(-50%, calc(-50% - 10px)) scale(${s})`;
+    label.textContent = `${w} × ${h} px · ${Math.round(s * 100)}%`;
+  };
+  const load = () => {
+    const [w, h] = size();
+    box.classList.toggle('tabl', dev[1] > 600);
+    frame.style.width = w + 'px';
+    frame.style.height = h + 'px';
+    const q = new URLSearchParams();
+    if (view) q.set('view', view);
+    if (touch) q.set('touch', '1');
+    frame.src = location.pathname + '?' + q;
+    fit();
+  };
+  const seg = el('div', { className: 'seg' }, PV_DEVICES.map(d => el('button', { type: 'button', className: d === dev ? 'on' : '',
+    textContent: t('st.pv.' + d[0]), onclick: e => {
+      dev = d; turned = false;
+      for (const b of seg.children) b.classList.toggle('on', b === e.currentTarget);
+      load();
+    } })));
+  const screens = [];
+  const walk = list => { for (const [id, key, ch] of list || []) { if (id && id !== 'setup' && canView(id)) screens.push([id, t(key)]); walk(ch); } };
+  for (const [, items] of NAV) walk(items);
+  const pick = el('select', { onchange: e => { view = e.target.value; load(); } },
+    [el('option', { value: '', textContent: t('st.pv.home') }), ...screens.map(([id, l]) => el('option', { value: id, textContent: l }))]);
+  pick.value = view;
+  const tch = el('input', { type: 'checkbox', checked: true, onchange: e => { touch = e.target.checked; load(); } });
+  const close = () => { win.remove(); removeEventListener('resize', fit); removeEventListener('keydown', esc); };
+  const esc = e => { if (e.key === 'Escape') close(); };
+  const win = el('div', { className: 'pvwin', id: 'pvWin' }, [
+    el('div', { className: 'pvbar' }, [
+      el('b', { textContent: t('st.pv.title') }), seg,
+      el('button', { className: 'btn', type: 'button', textContent: '⟳ ' + t('st.pv.rotate'), onclick: () => { turned = !turned; load(); } }),
+      el('label', { className: 'chk' }, [tch, el('span', { textContent: t('st.pv.touch') })]),
+      el('label', { className: 'chk' }, [el('span', { textContent: t('st.pv.screen') }), pick]),
+      el('button', { className: 'btn', type: 'button', textContent: '↻ ' + t('st.pv.reload'), onclick: load }),
+      el('button', { className: 'btn pvx', type: 'button', textContent: '✕ ' + t('st.pv.close'), onclick: close }),
+      el('div', { className: 'pvnote', textContent: t('st.pv.note') })]),
+    stage]);
+  document.body.append(win);
+  addEventListener('resize', fit);
+  addEventListener('keydown', esc);
+  load();
+}
+
 // The mode changed (a turned device, the Settings switch): redraw the screen in the new mode.
 function tbApply() {
   tbDetect();
@@ -13203,7 +13300,10 @@ function tbInboxCards(rows) {
     const what = r.what ? r.what : r.kind === 'tf' ? t('ao.tf.i.act') : r.kind === 'tfret' ? t('wf.i.returned') : r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'draft' ? t('lq.i.draft') : r.kind === 'returned' ? t('wf.i.returned')
       : r.owner_prep ? t(r.returned_to === 'am' ? 'wf.i.redoOwner' : 'wf.i.checkPrep', { t: owners })
       : t(r.step_kind === 'check' ? 'wf.i.check' : 'wf.i.approve');
-    const c = el('button', { className: 'tbcard band-' + band, type: 'button', onclick: () => { if (r.open) r.open(); else if (r.tf_id) { TB.on && alert(t('ao.tf.onPc')); if (!TB.on) aoOpenTransfer(r.tf_id); } else if (r.doc_id) wfOpen(r.doc_id); } }, [
+    // Same targets as the desktop to-do list (wiRender): contracts and meeting actions open on the tablet too.
+    // A task whose screen tablet mode lacks (payment requests, liquidation, tendering) offers the full view (TB.ask).
+    const c = el('button', { className: 'tbcard band-' + band, type: 'button', onclick: () => { TB.ask = true; try { if (r.open) r.open(); else if (r.ct_id && window.ctOpen) ctOpen(r.ct_id);
+      else if (r.kind === 'mtact' && window.mtOpenActions) mtOpenActions(); else if (r.tf_id) { TB.on && alert(t('ao.tf.onPc')); if (!TB.on) aoOpenTransfer(r.tf_id); } else if (r.doc_id) wfOpen(r.doc_id); } finally { TB.ask = false; } } }, [
       el('div', { className: 'r1' }, [el('span', { className: 'stg band-' + band, textContent: what }),
         el('span', { className: 'when', textContent: r.submitted_at ? fmtDate(String(r.submitted_at).slice(0, 10)) : '' })]),
       el('div', { className: 'nos', textContent: r.docLabel != null ? r.docLabel : String(r.doc_no || '').replace(/ \+ /g, ' · ') }),
@@ -14468,7 +14568,7 @@ async function lqCouncilTab(panel) {
 }
 function lqCouncilNew(card, out) {
   card.querySelector('.lqbnew')?.remove();
-  const no = el('input', { placeholder: 'L01/2026', style: 'max-width:140px' }), date = el('input', { type: 'date' }), url = el('input', { placeholder: 'https://…', style: 'min-width:260px' });
+  const no = el('input', { placeholder: 'L01/2026', style: 'max-width:140px' }), date = el('input', { type: 'date' }), url = el('input', { placeholder: 'https://…', style: 'min-width:min(260px,100%)' });
   const copy = el('input', { type: 'checkbox', checked: LQ.councils.some(c => c.active) });
   card.querySelector('.chead').after(el('div', { className: 'lqbnew row', style: 'align-items:flex-end;gap:12px;flex-wrap:wrap' }, [
     el('div', { className: 'fld' }, [el('label', { textContent: t('lqc.no') }), no]), el('div', { className: 'fld' }, [el('label', { textContent: t('lqc.date') }), date]),
