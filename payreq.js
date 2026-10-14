@@ -52,7 +52,9 @@ function pqRender() {
   if (!body) return;
   const mine = new Set(PQ.todo.filter(r => /^pay_(check|approve|process|returned)$/.test(r.kind)).map(r => r.ref_id));
   const toMake = PQ.todo.filter(r => ['pay_first', 'pay_final'].includes(r.kind));
-  const list = [['mine', t('pq.t.mine', { n: mine.size + toMake.length })], ['open', t('pq.t.open', { n: PQ.rows.filter(r => ['check', 'approve', 'process', 'returned', 'draft'].includes(r.status)).length })],
+  if (TB.on) return pqRenderTab(body, tabs, mine);
+  tabs.parentElement.style.display = '';
+  const list =[['mine', t('pq.t.mine', { n: mine.size + toMake.length })], ['open', t('pq.t.open', { n: PQ.rows.filter(r => ['check', 'approve', 'process', 'returned', 'draft'].includes(r.status)).length })],
                 ['paid', t('pq.t.paid', { n: PQ.rows.filter(r => r.status === 'paid').length })], ['all', t('pq.t.all', { n: PQ.rows.length })]];
   tabs.innerHTML = '';
   for (const [v, label] of list) { const b = el('button', { type: 'button', textContent: label, className: PQ.tab === v ? 'on' : '' }); b.onclick = () => { PQ.tab = v; pqRender(); }; tabs.append(b); }
@@ -107,7 +109,26 @@ function pqRender() {
   body.append(card);
 }
 
-const pqHasCheck = () => !!(PQ.route && (PQ.route.check || []).length);
+/* Tablet / phone (user 14/10/2026): sign only — the requests waiting for my check, approval or payment, as cards.
+   One opens to read its documents and sign; drawing up, editing and uploading stay on the computer. */
+function pqRenderTab(body, tabs, mine) {
+  tabs.innerHTML = '';
+  tabs.parentElement.style.display = 'none';      // the tab switcher's card
+  body.innerHTML = '';
+  const rows = PQ.rows.filter(r => mine.has(r.id) && ['check', 'approve', 'process'].includes(r.status) && pqCan(r.status, (PQ.prj.get(r.project_code) || {}).dept_code));
+  body.append(el('p', { className: 'lead', textContent: t('pq.tabLead') }));
+  if (!rows.length) return body.append(el('div', { className: 'tbempty', textContent: t('pq.mineEmpty') }));
+  body.append(el('div', { className: 'tbcards' }, rows.map(r => {
+    const p = PQ.prj.get(r.project_code) || {};
+    return el('button', { className: 'tbcard band-' + (r.status === 'approve' ? 'jvc' : 'op'), type: 'button', onclick: () => pqView(r.id) }, [
+      el('div', { className: 'r1' }, [pqChip(r.status), el('span', { className: 'when', textContent: fmtDate(String(r.submitted_at || '').slice(0, 10)) })]),
+      el('div', { className: 'nos', textContent: r.no }),
+      el('div', { className: 'pn', textContent: `${r.project_code} — ${p.name || ''}` }),
+      el('div', { className: 'r3' }, [el('span', { textContent: t('pq.kind.' + r.kind) + (r.milestone ? ' · ' + r.milestone : '') }), el('b', { textContent: fmtMoney(pqAmt(r)) })])]);
+  })));
+}
+
+const pqHasCheck = () =>!!(PQ.route && (PQ.route.check || []).length);
 // The bar over the list, on every tab (user 29/09/2026): tick all, what is ticked, print them all in one file;
 // for the Accountant also "Confirm paid" — for the ticked requests that are approved and waiting to be paid.
 function pqPayBar(list, payable) {
@@ -219,7 +240,8 @@ async function pqView(id) {
   $('#pqDrTitle').textContent = `${r.no} — ${p.name || ''}`;
   const out = el('div'); body.append(out);
   const mineStep = ['check', 'approve', 'process'].includes(r.status) && pqCan(r.status, p.dept_code) && (r.created_by !== (ME && ME.id) || PQ.selfOk);
-  const prep = ['draft', 'returned'].includes(r.status) && (r.created_by === (ME && ME.id) || pqCan('prep', p.dept_code));
+  // Drawing up and sending stay on the computer: a tablet / phone only signs (pqRenderTab).
+  const prep = !TB.on && ['draft', 'returned'].includes(r.status) && (r.created_by === (ME && ME.id) || pqCan('prep', p.dept_code));
   // The amount as the contract has it, and as asked when Purchasing changed it (with the reason).
   const adj = r.amount_contract != null && r.amount != null && Math.abs(Number(r.amount) - Number(r.amount_contract)) >= 1;
   const letter = (r.files || []).find(f => f.kind === 'vendor_letter');
@@ -230,7 +252,8 @@ async function pqView(id) {
       r.approved_sig && r.approved_sig.png ? el('img', { src: r.approved_sig.png, alt: '' }) : '']) : '',
     el('dl', { className: 'aodl' }, [
       // The project's signed forms and the contract, viewed here without leaving the request (user 29/09/2026).
-      el('dt', { textContent: t('pm.col.code') }), el('dd', {}, [el('a', { href: '#', className: 'aolink', textContent: `${r.project_code} — ${p.name || ''}`, onclick: e => { e.preventDefault(); pqDrawerClose(); PM.prj.open = r.project_code; showView('projects'); } }), ' ',
+      el('dt', { textContent: t('pm.col.code') }), el('dd', {}, [TB.on ? el('span', { textContent: `${r.project_code} — ${p.name || ''}` })
+        : el('a', { href: '#', className: 'aolink', textContent: `${r.project_code} — ${p.name || ''}`, onclick: e => { e.preventDefault(); pqDrawerClose(); PM.prj.open = r.project_code; showView('projects'); } }), ' ',
         el('button', { className: 'btn tiny', type: 'button', textContent: '📄 ' + t('pq.dv.forms'), title: t('pq.dv.formsT'), onclick: () => pqViewForms(r, p) })]),
       ...(r.amount_contract != null || r.contract_id ? [el('dt', { textContent: t('pq.amtCt') }), el('dd', {}, [r.amount_contract != null ? fmtMoney(r.amount_contract) : '—', ' ',
         el('button', { className: 'btn tiny', type: 'button', textContent: '📄 ' + t('pq.dv.contract'), onclick: () => pqViewContract(r) })])] : []),
@@ -259,7 +282,7 @@ async function pqView(id) {
         const why = prompt(t('pq.cancelQ')); if (why === null) return;
         try { await SB.rpc('pm_payreq_cancel', { p_id: r.id, p_comment: why }); await pqReload(t('pq.cancelled')); pqDrawerClose(); } catch (e) { msg(out, 'err', e.message); } } })]));
   }
-  body.append(pqFiles(r, out, prep || mineStep));
+  body.append(pqFiles(r, out, !TB.on && (prep || mineStep)));
   // Everything the accountant checks, on one page: the contract, then the approved forms (pqDossier).
   const dos = el('div', { className: 'dim', textContent: t('table.loading') });
   body.append(dos);
@@ -482,7 +505,14 @@ async function pqTodos() {
   return rows.map(r => ({ kind: 'x:' + r.kind, x: true, what: t('pq.i.' + r.kind), band: r.kind === 'pay_returned' ? 'bad' : r.kind === 'pay_approve' ? 'jvc' : 'op',
     docLabel: r.ref_no || '', typeLabel: t('pq.it'), doc_no: '', project_code: r.project_code, project_name: r.project_name, dept_code: r.dept_code,
     submitted_at: r.at, total_value: r.amount != null ? Number(r.amount) : null,
-    open: () => { if (['pay_first', 'pay_final'].includes(r.kind)) PQ.newFor = r.project_code; else PQ.open = r.ref_id; showView('payreq'); } }));
+    open: () => {
+      // Drawing up or redoing a request is computer work: a tablet / phone offers the full view first.
+      if (TB.on && ['pay_first', 'pay_final', 'pay_returned'].includes(r.kind)) {
+        if (!confirm(t('tb.needFull'))) return;
+        try { localStorage.setItem(TB_KEY, 'off'); } catch {}
+        tbApply();
+      }
+      if (['pay_first', 'pay_final'].includes(r.kind)) PQ.newFor = r.project_code; else PQ.open = r.ref_id; showView('payreq'); } }));
 }
 // Bell: payment request notices (doc_type TT, comment = the new status or "returned: why").
 function pqNotice(r) {

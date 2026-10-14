@@ -187,6 +187,12 @@ async function dmCard() {
         el('p', { className: 'adedit', textContent: t('dm.reset.p') }),
         el('div', { className: 'row', style: 'flex-wrap:wrap;align-items:flex-end' }, [
           el('div', { className: 'fld' }, [el('label', { textContent: t('dm.reset.type') }), word]), reset]));
+      // The sample project: every form filled, to look at (user 14/10/2026).
+      const fin = el('button', { type: 'button', className: 'btn', textContent: t('dm.sample.btn') });
+      fin.onclick = () => dmSample(fin);
+      box.append(el('h3', { textContent: t('dm.sample.h') }), el('p', { className: 'adedit', textContent: t('dm.sample.p') }),
+        el('div', { className: 'row', style: 'flex-wrap:wrap' }, [
+          el('button', { type: 'button', className: 'btn pri', textContent: t('dm.sample.open'), onclick: () => { PM.prj.open = DM_SAMPLE; showView('projects'); } }), fin]));
     }
   }
   await dmFbList();
@@ -222,9 +228,163 @@ async function dmReset(btn) {
     const r = await SB.rpc('am_demo_reset');
     const parts = r && typeof r === 'object' ? Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(' · ') : '';
     msg('#adDemoMsg', 'ok', t('dm.reset.done') + (parts ? ' ' + parts : ''));
+    // The sample project was rebuilt with stand-in signatures and file paths only: finish it now.
+    if (r && r.sample_project === DM_SAMPLE) await dmSample(null, t('dm.reset.done') + ' ');
   } catch (e) {
     msg('#adDemoMsg', 'err', /am_demo_reset|PGRST202|404/.test(e.message) ? t('dm.reset.missing') : e.message);
   } finally { btn.disabled = false; }
+}
+
+/* ---------------------------------------------------------- sample project
+   The sample project (am_demo_sample, DEMO_SETUP.sql 3b — user 14/10/2026) goes through every step on
+   the server with a stand-in signature and file paths only. This finishes it in the browser: each demo
+   person's signature, drawn in a handwriting style, goes into the boxes they signed; every attachment it
+   refers to gets a sample scan (PDF) or photo, so the forms, the document viewer and the photos look like
+   the real thing. Runs by itself after "Refresh demo data"; the button is for a demo built from the SQL Editor. */
+const DM_SAMPLE = 'FFE.KIT.07.2026';
+async function dmSample(btn, lead = '') {
+  if (btn) btn.disabled = true;
+  const out = '#adDemoMsg';
+  msg(out, 'info', lead + t('dm.sample.running'));
+  try {
+    const people = await SB.select('app_user', 'select=email,full_name&email=like.*%40plaza-demo.test');
+    const sigs = Object.fromEntries(people.map(p => [p.email, dmSigPng(p.full_name || p.email)]));
+    const s = await SB.rpc('am_demo_sample_finish', { p_sigs: sigs });
+    const files = (await SB.rpc('am_demo_sample_files')) || [];
+    let n = 0, bad = 0;
+    for (const f of files) {
+      msg(out, 'info', lead + t('dm.sample.files', { n: n + bad + 1, of: files.length }));
+      try { await dmPut(f.bucket, f.path, await dmSampleFile(f)); n++; } catch (e) { bad++; console.warn('sample file', f.path, e); }
+    }
+    msg(out, bad ? 'warn' : 'ok', lead + t('dm.sample.done', { s: (s && s.signatures) || 0, n, bad }));
+  } catch (e) {
+    msg(out, 'err', /am_demo_sample|PGRST202/.test(e.message) ? t('dm.sample.missing') : e.message);
+  } finally { if (btn) btn.disabled = false; }
+}
+
+// A signature in a handwriting style: the given name and an initial, a flourish under it.
+function dmSigPng(fullName) {
+  const base = String(fullName).replace(/\s*\(.*$/, '').trim(), w = base.split(/\s+/);
+  const latin = w.length === 2 && !/[À-ỹĐđ]/.test(base);
+  const txt = latin ? `${w[0][0]}. ${w[1]}` : `${w[w.length - 1]} ${w[0][0]}.`;
+  let seed = [...base].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) % 233280, 7);
+  const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  const c = el('canvas', { width: 220, height: 70 }), g = c.getContext('2d');
+  g.strokeStyle = g.fillStyle = '#1d3a8a'; g.lineWidth = 1.8; g.lineCap = 'round';
+  g.font = 'italic 30px "Segoe Script", "Brush Script MT", "Lucida Handwriting", cursive';
+  g.save(); g.translate(12 + rnd() * 6, 44); g.rotate(-0.04 - rnd() * 0.05); g.fillText(txt, 0, 0); g.restore();
+  const tw = Math.min(195, g.measureText(txt).width);
+  g.beginPath(); g.moveTo(8 + rnd() * 10, 56); g.bezierCurveTo(60, 64 + rnd() * 5, 110 + rnd() * 30, 44, 16 + tw, 50 + rnd() * 8); g.stroke();
+  return c.toDataURL('image/png');
+}
+
+async function dmPut(bucket, path, blob) {
+  const tok = await authToken();
+  const r = await fetch(`${CFG.url}/storage/v1/object/${bucket}/${String(path).split('/').map(encodeURIComponent).join('/')}`, {
+    method: 'POST', headers: { apikey: CFG.key, Authorization: 'Bearer ' + tok, 'Content-Type': blob.type }, body: blob });
+  if (!r.ok && r.status !== 409) throw new Error(r.status + ' ' + (await r.text()).slice(0, 120));
+}
+
+const dmBlob = (c, type, q) => new Promise(ok => c.toBlob(ok, type, q));
+async function dmSampleFile(f) {
+  if (String(f.kind).startsWith('photo-')) return dmBlob(dmPhoto(f), 'image/jpeg', 0.8);
+  // A scan: the page drawn on a canvas (any language shows), placed on an A4 PDF page.
+  const jpg = await dmBlob(dmScan(f), 'image/jpeg', 0.72);
+  const L = await dvLib(), doc = await L.PDFDocument.create();
+  const img = await doc.embedJpg(new Uint8Array(await jpg.arrayBuffer()));
+  doc.addPage([595.28, 841.89]).drawImage(img, { x: 0, y: 0, width: 595.28, height: 841.89 });
+  return new Blob([await doc.save()], { type: 'application/pdf' });
+}
+
+const DM_TITLES = {
+  quotation: 'BÁO GIÁ / QUOTATION', vendor_letter: 'THƯ ĐỀ NGHỊ THANH TOÁN / PAYMENT REQUEST', invoice: 'HOÁ ĐƠN GIÁ TRỊ GIA TĂNG / VAT INVOICE',
+  contract: 'HỢP ĐỒNG MUA BÁN / SALES CONTRACT', other: 'BIÊN BẢN NGHIỆM THU / ACCEPTANCE MINUTES', minutes: 'BIÊN BẢN HỌP HỘI ĐỒNG THANH LÝ (02)',
+  decision: 'QUYẾT ĐỊNH THANH LÝ TÀI SẢN (03)', sitecheck: 'BIÊN BẢN KIỂM TRA HIỆN TRƯỜNG (04)', reval: 'BIÊN BẢN ĐÁNH GIÁ LẠI (05)',
+  award: 'KẾT QUẢ BÁN THANH LÝ (06)', handover: 'BIÊN BẢN GIAO NHẬN / HANDOVER MINUTES', gatepass: 'GATE PASS — PHIẾU RA CỔNG' };
+// One scanned page: letterhead, title, faint text lines, a small table, signatures and a red stamp.
+function dmScan(f) {
+  const W = 1240, H = 1754, c = el('canvas', { width: W, height: H }), g = c.getContext('2d');
+  let seed = [...String(f.path)].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) % 233280, 11);
+  const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  g.fillStyle = '#fbfaf5'; g.fillRect(0, 0, W, H);
+  g.save(); g.translate(W / 2, H / 2); g.rotate((rnd() - 0.5) * 0.008); g.translate(-W / 2, -H / 2);
+  g.fillStyle = '#222'; g.font = 'bold 30px Arial'; g.fillText(f.label || 'PLAZA HOTEL', 110, 150);
+  g.font = '22px Arial'; g.fillStyle = '#555'; g.fillText('Số / No: ' + String(f.path).split('/').pop().replace(/\.\w+$/, '').toUpperCase(), 110, 190);
+  g.strokeStyle = '#444'; g.lineWidth = 2; g.beginPath(); g.moveTo(110, 215); g.lineTo(W - 110, 215); g.stroke();
+  g.textAlign = 'center'; g.fillStyle = '#111'; g.font = 'bold 38px Arial'; g.fillText(DM_TITLES[f.kind] || DM_TITLES.other, W / 2, 300);
+  g.font = 'italic 24px Arial'; g.fillStyle = '#444'; g.fillText(f.name || '', W / 2, 345); g.textAlign = 'left';
+  g.fillStyle = '#c9c6bd';
+  for (let i = 0; i < 9; i++) g.fillRect(110, 410 + i * 42, (W - 220) * (0.55 + rnd() * 0.45), 12);
+  const ty = 810, cols = [110, 200, 640, 800, 960, W - 110];
+  g.strokeStyle = '#777'; g.lineWidth = 1.5;
+  for (let r = 0; r <= 5; r++) { g.beginPath(); g.moveTo(cols[0], ty + r * 50); g.lineTo(cols[5], ty + r * 50); g.stroke(); }
+  for (const x of cols) { g.beginPath(); g.moveTo(x, ty); g.lineTo(x, ty + 250); g.stroke(); }
+  g.fillStyle = '#bdb9ae';
+  for (let r = 0; r < 5; r++) for (let k = 0; k < 5; k++) g.fillRect(cols[k] + 14, ty + r * 50 + 20, (cols[k + 1] - cols[k] - 28) * (0.4 + rnd() * 0.5), 10);
+  g.fillStyle = '#c9c6bd';
+  for (let i = 0; i < 4; i++) g.fillRect(110, 1110 + i * 42, (W - 220) * (0.5 + rnd() * 0.5), 12);
+  g.fillStyle = '#222'; g.font = 'bold 24px Arial';
+  g.fillText('ĐẠI DIỆN BÊN A', 170, 1360); g.fillText('ĐẠI DIỆN BÊN B', 790, 1360);
+  g.strokeStyle = '#1d3a8a'; g.lineWidth = 3;
+  for (const x0 of [190, 810]) { g.beginPath(); g.moveTo(x0, 1470); for (let i = 1; i < 9; i++) g.lineTo(x0 + i * 26, 1450 + (rnd() - 0.5) * 50); g.stroke(); }
+  // Red company stamp, half over the right-hand signature.
+  const sx = 900, sy = 1450;
+  g.strokeStyle = 'rgba(200,30,30,.78)'; g.fillStyle = 'rgba(200,30,30,.78)';
+  g.lineWidth = 6; g.beginPath(); g.arc(sx, sy, 105, 0, Math.PI * 2); g.stroke();
+  g.lineWidth = 3; g.beginPath(); g.arc(sx, sy, 72, 0, Math.PI * 2); g.stroke();
+  g.font = 'bold 26px Arial'; g.textAlign = 'center'; g.fillText('★', sx, sy - 18); g.font = 'bold 22px Arial'; g.fillText('[DEMO]', sx, sy + 14);
+  g.font = 'bold 15px Arial'; g.fillText('CÔNG TY', sx, sy + 40); g.textAlign = 'left';
+  g.restore();
+  // "Sample document" across the page, faint.
+  g.save(); g.translate(W / 2, H / 2); g.rotate(-0.6); g.textAlign = 'center'; g.font = 'bold 92px Arial'; g.fillStyle = 'rgba(200,40,40,.10)';
+  g.fillText('TÀI LIỆU MẪU — DEMO', 0, 0); g.restore();
+  return c;
+}
+
+// A sample photo: the label close up, the whole asset, or its worn condition (for the liquidation request).
+function dmPhoto(f) {
+  const W = 1200, H = 900, c = el('canvas', { width: W, height: H }), g = c.getContext('2d');
+  const what = String(f.label || ''), code = String(f.name || '');
+  let seed = [...code + f.kind].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) % 233280, 5);
+  const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  const steel = (x, y, w, h) => { const gr = g.createLinearGradient(x, y, x + w, y); gr.addColorStop(0, '#9aa3ab'); gr.addColorStop(0.5, '#e4e8eb'); gr.addColorStop(1, '#8c959d'); g.fillStyle = gr; g.fillRect(x, y, w, h); };
+  if (f.kind === 'photo-label') {
+    steel(0, 0, W, H);
+    g.fillStyle = 'rgba(0,0,0,.08)'; for (let i = 0; i < 30; i++) g.fillRect(0, i * 31, W, 2);
+    g.save(); g.translate(W / 2, H / 2); g.rotate(-0.03); g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(-372, -182, 760, 380); g.fillStyle = '#fff'; g.fillRect(-380, -190, 760, 380);
+    g.fillStyle = '#0b1f3a'; g.font = 'bold 34px Arial'; g.fillText('PLAZA HOTEL — ASSET', -340, -130);
+    g.font = 'bold 40px Consolas, monospace'; g.fillText(code, -340, -70);
+    for (let i = 0, x = -340; x < 340; i++) { const w = 2 + Math.floor(rnd() * 6); if (i % 2 === 0) g.fillRect(x, -30, w, 150); x += w + 2; }
+    g.font = '26px Arial'; g.fillText(what.split(' · ')[0], -340, 160); g.restore();
+  } else {
+    // Kitchen: tiles, floor, then the asset.
+    g.fillStyle = '#e9ecef'; g.fillRect(0, 0, W, H * 0.72);
+    g.strokeStyle = '#d3d8dd'; g.lineWidth = 2;
+    for (let x = 0; x < W; x += 60) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H * 0.72); g.stroke(); }
+    for (let y = 0; y < H * 0.72; y += 60) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+    g.fillStyle = '#7d858c'; g.fillRect(0, H * 0.72, W, H * 0.28);
+    if (/Chảo|Pan/i.test(what)) {
+      steel(150, 470, 900, 30);
+      for (let i = 0; i < 6; i++) { const x = 230 + i * 140; g.fillStyle = '#2b2f33'; g.beginPath(); g.ellipse(x, 430, 62, 26, 0, 0, Math.PI * 2); g.fill(); g.fillStyle = '#4a5056'; g.fillRect(x + 55, 424, 70, 10); }
+    } else if (/Tủ lạnh|Refrigerator/i.test(what)) {
+      steel(420, 110, 360, 560); g.strokeStyle = '#6c757d'; g.lineWidth = 4; g.strokeRect(420, 110, 360, 560); g.beginPath(); g.moveTo(600, 110); g.lineTo(600, 670); g.stroke();
+      g.fillStyle = '#495057'; g.fillRect(580, 300, 8, 150); g.fillRect(612, 300, 8, 150);
+    } else {
+      steel(170, 330, 860, 340); g.strokeStyle = '#6c757d'; g.lineWidth = 4; g.strokeRect(170, 330, 860, 340);
+      g.fillStyle = '#ced4da'; g.fillRect(150, 300, 900, 34);
+      for (const x of [200, 610]) { g.strokeRect(x, 370, 390, 270); g.fillStyle = '#495057'; g.fillRect(x + 20, 390, 120, 10); }
+      g.fillStyle = '#222'; g.fillRect(960, 350, 50, 24); g.fillStyle = '#4caf50'; g.font = 'bold 18px Consolas, monospace'; g.fillText('3°C', 963, 368);
+    }
+    if (f.kind === 'photo-condition') {
+      for (let i = 0; i < 26; i++) { g.fillStyle = `rgba(${120 + rnd() * 60},${60 + rnd() * 30},20,${0.35 + rnd() * 0.3})`; g.beginPath(); g.ellipse(200 + rnd() * 800, 340 + rnd() * 320, 8 + rnd() * 30, 5 + rnd() * 18, rnd() * 3, 0, Math.PI * 2); g.fill(); }
+      g.fillStyle = 'rgba(40,30,20,.18)'; g.fillRect(0, 0, W, H);
+    } else {
+      g.fillStyle = '#fff'; g.fillRect(890, 560, 120, 46); g.fillStyle = '#0b1f3a'; g.font = 'bold 13px Consolas, monospace'; g.fillText(code.slice(0, 15), 896, 590);
+    }
+  }
+  g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(0, H - 54, W, 54);
+  g.fillStyle = '#fff'; g.font = '24px Arial'; g.fillText(`ẢNH MẪU — DEMO · ${what}`, 20, H - 18);
+  return c;
 }
 
 /* -------------------------------------------------------------- feedback */

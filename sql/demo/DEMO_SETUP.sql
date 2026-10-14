@@ -163,7 +163,7 @@ begin
     'pm_doc_event', 'pm_doc_step', 'pm_doc', 'pm_pkg_event', 'pm_pkg_step', 'pm_pkg', 'pm_vendor_score',
     'pm_project', 'pm_budget_line', 'pm_budget_round', 'pm_budget_year',
     'am_asset_photo', 'am_alr_line', 'am_alr', 'am_asset', 'am_shipment', 'am_counter_log', 'am_data_source',
-    'pm_vendor', 'app_audit'] loop
+    'pm_vendor', 'app_audit', 'am_acc_link', 'am_acc_change', 'am_acc_line', 'am_acc_stage', 'am_acc_import'] loop
     if to_regclass('public.' || t) is not null then execute format('truncate table %I restart identity cascade', t); end if;
   end loop;
   update am_asset_seq set next_seq = 1;
@@ -755,7 +755,778 @@ begin
                             'actions', (select count(*) from pm_mt_action), 'transfers', (select count(*) from am_transfer), 'incidents', (select count(*) from am_incident),
                             'count_lines', (select count(*) from am_count_line))
     into v_out;
+  -- Dự án mẫu đi hết quy trình (3b), cuối cùng: dùng chính dữ liệu vừa sinh. Lỗi ở đây (vd chuỗi duyệt đã bị sửa)
+  -- không làm hỏng cả lần làm mới: phần của dự án mẫu được huỷ, kết quả nói lý do.
+  begin
+    v_out := v_out || am_demo_sample();
+  exception when others then
+    v_out := v_out || jsonb_build_object('sample_project', 'lỗi / error: ' || sqlerrm);   -- the "act as" settings roll back with it
+  end;
   return v_out;
+end $$;
+
+-- =====================================================================
+-- 3b. DỰ ÁN MẪU ĐẦY ĐỦ (user 14/10/2026)
+--     Một dự án Bếp (FFE.KIT.07.2026) đi trọn quy trình bằng CHÍNH các hàm của app, mỗi bước do đúng
+--     người demo làm (am_demo_as): PR + RR + PA → gọi báo giá, 3 nhà cung cấp nộp → QC + MC → PO → CT
+--     (hợp đồng) → đề nghị thanh toán đợt 1 → nhập tài sản, AL → nhận hàng, ảnh → AH cuối → ghi sổ kế
+--     toán → quyết toán → LR các tài sản cũ → đợt thanh lý tới khi đóng. Để XEM các phiếu đã điền đủ;
+--     muốn thử cơ chế duyệt thì lập dự án khác. Ngày giờ được lùi về theo kế hoạch (am_demo_tick), nên
+--     lịch sử trông như đã diễn ra trong ~5 tháng. Chữ ký tay và tệp mẫu (PDF, ảnh) do Công cụ quản trị
+--     vẽ / tải lên sau (demo.js: am_demo_sample_finish, am_demo_sample_files).
+-- =====================================================================
+
+-- Chữ ký tạm (ảnh 1×1) khi chạy: được thay bằng chữ ký vẽ tay ở bước hoàn thiện; nhờ nó, mẫu chạy được cả
+-- khi project bật "bắt buộc ký" (pm_require_signature).
+create or replace function am_demo_sig0()
+returns jsonb language sql immutable as $$
+  select '{"png": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}'::jsonb
+$$;
+
+-- Làm các bước tiếp theo với tư cách một người demo: auth.uid() / app_claims() của server là người đó,
+-- nên mọi kiểm tra quyền của app áp dụng như khi người đó bấm.
+create or replace function am_demo_as(p_email text)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare v uuid := am_demo_uid(p_email);
+begin
+  if v is null then raise exception 'Dự án mẫu: chưa có tài khoản demo %.', p_email; end if;
+  perform set_config('request.jwt.claim.sub', v::text, true);
+  perform set_config('request.jwt.claims', json_build_object('sub', v, 'email', p_email, 'role', 'authenticated')::text, true);
+  return v;
+end $$;
+
+-- Người demo đứng ở một vai trò (dự án mẫu thuộc Bếp).
+create or replace function am_demo_role_mail(p_role text)
+returns text language sql immutable as $$
+  select case p_role when 'DEPT_STAFF' then 'demo.staff' when 'DEPT_HEAD' then 'demo.kithead' when 'DOF' then 'demo.dof' when 'HOTEL_GM' then 'demo.gm'
+                     when 'AM_COORD' then 'demo.amc' when 'AM_EXEC' then 'demo.amx' when 'CHIEF_ACC' then 'demo.chiefacc' when 'JVC_GM' then 'demo.jvcgm'
+                     when 'PURCHASING' then 'demo.purchasing' when 'HOTEL_AM' then 'demo.hotelam' when 'ACCOUNTANT' then 'demo.accountant'
+                     when 'LEGAL' then 'demo.legal' when 'CP_HEAD' then 'demo.cphead' else 'demo.admin' end || '@plaza-demo.test'
+$$;
+
+-- Thời điểm "n ngày trước, h giờ" (giờ Việt Nam).
+create or replace function am_demo_at(p_days int, p_hour numeric default 9)
+returns timestamptz language sql stable as $$
+  select ((current_date - p_days)::timestamp + make_interval(secs => p_hour * 3600)) at time zone 'Asia/Ho_Chi_Minh'
+$$;
+
+/* Đồng hồ của dự án mẫu: mọi hàm ghi now() (cùng một giá trị trong cả lần chạy), nên sau mỗi bước, các
+   dấu thời gian còn bằng now() của dự án mẫu được đặt về thời điểm đã định của bước đó. Thông báo do các
+   bước sinh ra được đánh dấu đã đọc (lịch sử, không làm đầy chuông). */
+create or replace function am_demo_tick(p_t timestamptz, p_project text, p_nmark bigint)
+returns void language plpgsql security definer set search_path = public as $$
+declare r record;
+begin
+  for r in select c.table_name t, c.column_name c from information_schema.columns c
+           where c.table_schema = 'public' and c.data_type = 'timestamp with time zone' and c.column_name not in ('expires_at', 'deadline', 'call_deadline')
+             and c.table_name = any (array['pm_pkg', 'pm_pkg_step', 'pm_pkg_event', 'pm_doc', 'pm_doc_event', 'pm_doc_step', 'pm_tender', 'pm_tender_invitee',
+                                           'pm_tender_bid', 'pm_tender_consent', 'pm_tender_event', 'pm_payreq', 'pm_lq_batch', 'pm_lq_item', 'pm_lq_sign',
+                                           'pm_lq_quote', 'pm_lq_buyer', 'pm_lq_event', 'am_recv', 'am_shipment', 'am_alr', 'am_asset_photo', 'pm_contract_file',
+                                           'pm_vendor_score', 'pm_po_send']) loop
+    execute format('update %I set %I = $1 where %I = $2', r.t, r.c, r.c) using p_t, now();
+  end loop;
+  -- Times kept inside records too (a request's step history, the "uploaded at" of files…).
+  for r in select c.table_name t, c.column_name c from information_schema.columns c
+           where c.table_schema = 'public' and c.data_type = 'jsonb'
+             and c.table_name = any (array['pm_payreq', 'pm_lq_batch', 'pm_tender', 'pm_tender_bid', 'pm_lq_quote', 'pm_contract', 'pm_doc']) loop
+    execute format('update %I set %I = replace(%I::text, $1, $2)::jsonb where strpos(%I::text, $1) > 0', r.t, r.c, r.c, r.c)
+      using to_jsonb(now()) #>> '{}', to_jsonb(p_t) #>> '{}';
+  end loop;
+  for r in select c.column_name c from information_schema.columns c
+           where c.table_schema = 'public' and c.table_name = 'pm_contract' and c.data_type = 'timestamp with time zone' loop
+    execute format('update pm_contract set %I = $1 where %I = $2 and project_code = $3', r.c, r.c) using p_t, now(), p_project;
+  end loop;
+  update pm_notice set created_at = p_t, read_at = p_t + interval '2 hours' where id > p_nmark and created_at = now();
+end $$;
+
+-- Một gói hồ sơ qua hết chuỗi duyệt, mỗi bước đúng người ký; ở bước AM soạn (owner_prep) thì lập phiếu của AM (PA / MC).
+create or replace function am_demo_drive(p_pkg bigint, p_days int, p_project text, p_nmark bigint, p_owner text default null, p_owner_data jsonb default null)
+returns text language plpgsql security definer set search_path = public as $$
+declare k pm_pkg; s pm_pkg_step; i int := 0;
+begin
+  loop
+    select * into k from pm_pkg where id = p_pkg;
+    exit when k.status <> 'in_review' or i > 14;
+    select * into s from pm_pkg_step where pkg_id = p_pkg and step = k.current_step;
+    perform am_demo_as(am_demo_role_mail(s.role_code));
+    if s.owner_prep and p_owner is not null
+       and not exists (select 1 from pm_doc where pkg_id = p_pkg and doc_type = p_owner and status not in ('rejected', 'cancelled')) then
+      perform pm_doc_create(k.project_code, p_owner, p_owner_data);
+    end if;
+    perform pm_pkg_act(p_pkg, 'approve', null, am_demo_sig0(), null);
+    perform am_demo_tick(am_demo_at(p_days - i / 2, 9 + (i % 2) * 5), p_project, p_nmark);
+    i := i + 1;
+  end loop;
+  select * into k from pm_pkg where id = p_pkg;
+  if k.status <> 'approved' then raise exception 'Dự án mẫu: gói % (%) dừng ở "%".', p_pkg, k.grp, k.status; end if;
+  return k.status;
+end $$;
+
+/* Ký hết bước hiện tại của đợt thanh lý, mỗi ô đúng người. Khi chạy từ SQL Editor (tin cậy), một lần ký
+   ký luôn mọi ô của lượt; nên cuối cùng mỗi ô ghi lại đúng tên người của ô đó. */
+create or replace function am_demo_lq_sign(p_batch bigint, p_days int, p_project text, p_nmark bigint)
+returns text language plpgsql security definer set search_path = public as $$
+declare v_st text := (select status from pm_lq_batch where id = p_batch); v_now text; x record; i int := 0;
+begin
+  loop
+    select status into v_now from pm_lq_batch where id = p_batch;
+    exit when v_now <> v_st or i > 12;
+    select * into x from pm_lq_pending(p_batch) limit 1;
+    exit when x.slot is null;
+    perform am_demo_as(coalesce((select email from app_user where id = x.uid), am_demo_role_mail(x.roles[1])));
+    perform pm_lq_act(p_batch, 'approve', null, am_demo_sig0());
+    perform am_demo_tick(am_demo_at(p_days - i / 3, 9 + (i % 3) * 2), p_project, p_nmark);
+    i := i + 1;
+  end loop;
+  select status into v_now from pm_lq_batch where id = p_batch;
+  if v_now = v_st then raise exception 'Dự án mẫu: đợt thanh lý dừng ở "%".', v_st; end if;
+  update pm_lq_sign g set user_id = m.user_id, name = m.full_name
+    from pm_lq_member m where g.batch_id = p_batch and g.slot = 'M' || m.id and g.user_id is distinct from m.user_id;
+  update pm_lq_sign g set user_id = m.user_id, name = m.full_name
+    from pm_lq_batch b join pm_lq_member m on m.council_id = b.council_id and m.role = 'chair'
+   where b.id = p_batch and g.batch_id = p_batch and g.slot = 'CHAIR';
+  update pm_lq_sign g set user_id = am_demo_uid(am_demo_role_mail(v.r)), name = am_demo_nm(am_demo_role_mail(v.r))
+    from (values ('DOF', 'DOF'), ('HOTEL_GM', 'HOTEL_GM'), ('AM_COORD', 'AM_COORD'), ('AM_EXEC', 'AM_EXEC'), ('AM', 'AM_EXEC'),
+                 ('ACCOUNTANT', 'ACCOUNTANT'), ('CHIEF_ACC', 'CHIEF_ACC')) v(slot, r)
+   where g.batch_id = p_batch and g.slot = v.slot;
+  return v_now;
+end $$;
+
+create or replace function am_demo_sample()
+returns jsonb language plpgsql security definer set search_path = public, extensions as $$
+declare
+  c_sc     constant text := 'FFE.KIT.07.2026';
+  c_loc    constant text := 'S0203B2';               -- Mezz hot kitchen
+  v_claims text := current_setting('request.jwt.claims', true);
+  v_sub    text := current_setting('request.jwt.claim.sub', true);
+  v_nm     bigint := coalesce((select max(id) from pm_notice), 0);
+  v_sig    jsonb := am_demo_sig0();
+  p1 record; p2 record; p3 record;                    -- bàn lạnh, tủ lạnh, chảo (danh mục thật)
+  v_vn text[]; v_vc text[]; v_vt text[];              -- 3 nhà cung cấp: tên, mã, MST
+  -- Báo giá: đơn giá 3 mặt hàng + vận chuyển & lắp đặt, theo nhà cung cấp A (chọn), B, C.
+  v_u1 numeric[] := array[58500000, 61000000, 63500000];
+  v_u2 numeric[] := array[32000000, 33500000, 31000000];
+  v_u3 numeric[] := array[850000, 950000, 900000];
+  v_oh numeric[] := array[4500000, 5000000, 6000000];
+  v_br text[] := array['Electrolux', 'Berjaya', 'Turbo Air'];
+  v_la text[] := array['Vốn điều lệ/Capital', 'SL hợp đồng tương tự/Similar contract', 'Giá trị hợp đồng tương tự/Similar contract value', 'Năng lực thiết bị/Equipment', 'Uy tín/Rating'];
+  v_lt text[] := array['Tiến độ nhập hàng/Progress', 'Điều khoản lắp đặt/Installation term', 'Bảo hành/Warranty', 'Bảo trì/Maintenance',
+                       'Yếu tố bền vững/Sustainability', 'Chứng nhận CO, CQ/CO, CQ', 'Dịch vụ hậu mãi/After-sales service'];
+  v_sa int[] := array[[90, 85, 85, 90, 90], [85, 85, 80, 85, 85], [80, 80, 80, 80, 80]];
+  v_st int[] := array[[90, 90, 95, 90, 85, 95, 90], [85, 90, 85, 85, 85, 85, 85], [80, 85, 90, 80, 85, 85, 80]];
+  v_tot numeric[] := array[[88, 90.72, 100, 98, 92.62], [84, 85.71, 95.23, 93.18, 87.38], [80, 83.57, 93.65, 90.92, 85.43]];
+  v_pay int[] := array[90, 85, 80];
+  v_amt numeric[]; v_sub1 numeric; v_total numeric; v_vat numeric;
+  v_old bigint[] := '{}'; v_oldc text[] := '{}'; v_new bigint[] := '{}'; v_seq int; v_bc bigint; v_round bigint;
+  v_pr bigint; v_rr bigint; v_pkg bigint; v_qc bigint; v_po bigint; v_ct bigint; v_al bigint; v_ah bigint; v_lr bigint; v_lrpkg bigint;
+  v_tid bigint; v_tok text[] := '{}'; v_key text; v_ship bigint; v_cid bigint; v_pq bigint; v_council bigint; v_b bigint;
+  v_items bigint[]; v_btok text[] := '{}'; v_recv bigint[]; v_ph bigint; v_line bigint;
+  v_lines jsonb; v_vend jsonb := '[]'; v_specx jsonb; v_data jsonb; x record; k int; v_alno text; v_inv text;
+begin
+  perform am_demo_guard();
+  if exists (select 1 from pm_project where code = c_sc) then return jsonb_build_object('sample_project', c_sc || ' (đã có)'); end if;
+  select pr.std_name_vi || '/' || pr.std_name_en lab, pr.std_name_vi vi, pr.std_name_en en, c.code cat, c.group_code grp, c.label_letters let into p1
+    from am_product pr join am_category c on c.code = pr.default_category where pr.std_name_vi = 'Bàn lạnh' and c.active limit 1;
+  select pr.std_name_vi || '/' || pr.std_name_en lab, pr.std_name_vi vi, pr.std_name_en en, c.code cat, c.group_code grp, c.label_letters let into p2
+    from am_product pr join am_category c on c.code = pr.default_category where pr.std_name_vi = 'Tủ lạnh' and c.active limit 1;
+  select pr.std_name_vi || '/' || pr.std_name_en lab, pr.std_name_vi vi, pr.std_name_en en, c.code cat, c.group_code grp, c.label_letters let into p3
+    from am_product pr join am_category c on c.code = pr.default_category where pr.std_name_vi = 'Chảo' and c.active limit 1;
+  if p1.lab is null or p2.lab is null or p3.lab is null or not exists (select 1 from am_location where code = c_loc) then
+    return jsonb_build_object('sample_project', 'bỏ qua: danh mục thiếu Bàn lạnh / Tủ lạnh / Chảo hoặc vị trí ' || c_loc);
+  end if;
+  select array_agg(name order by ord), array_agg(code order by ord), array_agg(coalesce(tax_code, '0312345678') order by ord) into v_vn, v_vc, v_vt
+    from (select distinct on (ord) * from (select v.*, case when v.name like '%Bếp Công nghiệp Sao Việt' then 1 when v.name like '%Kho lạnh Bắc Nam' then 2
+                                                       when v.name like '%Dụng cụ Bếp Á Châu' then 3 end ord from pm_vendor v) y
+            where ord is not null order by ord, code) x;
+  if coalesce(array_length(v_vn, 1), 0) < 3 then
+    select array_agg(name order by code), array_agg(code order by code), array_agg(coalesce(tax_code, '0312345678') order by code) into v_vn, v_vc, v_vt
+      from (select * from pm_vendor order by code limit 3) x;
+  end if;
+  v_amt := array[2 * v_u1[1] + v_u2[1] + 12 * v_u3[1] + v_oh[1], 2 * v_u1[2] + v_u2[2] + 12 * v_u3[2] + v_oh[2], 2 * v_u1[3] + v_u2[3] + 12 * v_u3[3] + v_oh[3]];
+  v_sub1 := 2 * v_u1[1] + v_u2[1] + 12 * v_u3[1];
+  v_total := v_amt[1];                                   -- 163.700.000 trước VAT
+  v_vat := round(v_total * 1.08);
+
+  ---------------------------------------------------------------- tài sản cũ được thay (đã có trong sổ, đã khấu hao hết)
+  perform am_demo_as('demo.amc@plaza-demo.test');
+  v_seq := am_alloc_asset_seq('KIT', p1.let, 2, null, 'demo-sample');
+  v_bc := am_alloc_barcode('unique', 3, null, 'demo-sample');
+  for k in 0 .. 1 loop
+    insert into am_asset (asset_code, barcode, asset_kind, category_code, group_code, letters, seq, purchase_year, company_code, dept_code, location_code,
+                          name_vi, name_en, unit_code, qty, serial, unit_price, currency, origin_iso2, supplier, manufacturer, invoice_no, purchase_date, in_use_date,
+                          depreciate, depreciate_months, spec_brand, spec_model, status_code, label_printed, note, warranty_until)
+    values (format('KIT.%s.%s.2014.%s', p1.grp, p1.let, lpad((v_seq + k)::text, 5, '0')), 'JVC.' || lpad((v_bc + k)::text, 9, '0'), 'unique', p1.cat, p1.grp, p1.let,
+            v_seq + k, 2014, 'SOF', 'KIT', c_loc, p1.vi, p1.en, 'pcs', 1, 'RT14-0' || (381 + k), 42000000, 'VND', (select iso2 from am_origin where iso2 = 'IT'),
+            'Công ty TNHH Thiết bị Bếp Á Âu [DEMO]', 'Electrolux', 'HD0001402', date '2014-05-12', date '2014-05-20', true, 96, 'Electrolux', 'RCSN2M', '1', true,
+            '[DEMO] Dự án mẫu: bàn lạnh cũ, được thay bởi ' || c_sc, date '2015-05-20')
+    returning id into v_line;
+    v_old := v_old || v_line;
+  end loop;
+  v_seq := am_alloc_asset_seq('KIT', p2.let, 1, null, 'demo-sample');
+  insert into am_asset (asset_code, barcode, asset_kind, category_code, group_code, letters, seq, purchase_year, company_code, dept_code, location_code,
+                        name_vi, name_en, unit_code, qty, serial, unit_price, currency, origin_iso2, supplier, manufacturer, invoice_no, purchase_date, in_use_date,
+                        depreciate, depreciate_months, spec_brand, spec_model, status_code, label_printed, note, warranty_until)
+  values (format('KIT.%s.%s.2016.%s', p2.grp, p2.let, lpad(v_seq::text, 5, '0')), 'JVC.' || lpad((v_bc + 2)::text, 9, '0'), 'unique', p2.cat, p2.grp, p2.let,
+          v_seq, 2016, 'SOF', 'KIT', c_loc, p2.vi, p2.en, 'pcs', 1, 'RF16-1102', 19500000, 'VND', (select iso2 from am_origin where iso2 = 'KR'),
+          'Công ty TNHH Điện máy Phương Đông [DEMO]', 'Samsung', 'HD0002219', date '2016-08-03', date '2016-08-10', false, null, 'Samsung', 'RR39M7140',
+          '1', true, '[DEMO] Dự án mẫu: tủ lạnh cũ, chuyển làm dự phòng', date '2017-08-10')
+  returning id into v_line;
+  v_old := v_old || v_line;
+  select array_agg(asset_code order by id) into v_oldc from am_asset where id = any (v_old);
+
+  ---------------------------------------------------------------- ngân sách + dự án
+  select id into v_round from pm_budget_round where year = 2026 and is_final order by id desc limit 1;
+  if v_round is not null then
+    insert into pm_budget_line (round_id, line_no, project_code, category, dept_code, request_date, investment_type, reason, name, estimated_value, gm_approved,
+                                possibility, impact, assessment, risk_level, start_date, end_date, asset_item, rationale, quantity, unit_price, amount, m05, note)
+    values (v_round, (select coalesce(max(line_no), 0) + 1 from pm_budget_line where round_id = v_round), c_sc, 'FFE', 'KIT', date '2025-10-15', 'Replacement',
+            'Bàn lạnh bếp nóng mua 2014 hỏng máy nén nhiều lần, chi phí sửa chữa cao', 'Thay bàn lạnh & tủ lạnh bếp nóng Mezz', 185000000, 185000000,
+            4, 3, 12, 'High', date '2026-05-01', date '2026-08-31', 'Bàn lạnh, tủ lạnh, dụng cụ bếp', 'Đề xuất của bộ phận KIT [DEMO]', 1, 185000000, 185000000,
+            185000000, '[DEMO] Dự án mẫu');
+    update pm_budget_round r set line_count = (select count(*) from pm_budget_line where round_id = r.id),
+                                 total_value = coalesce((select sum(estimated_value) from pm_budget_line where round_id = r.id), 0) where id = v_round;
+  end if;
+  insert into pm_project (code, main_code, year, dept_code, name, category, budgeted, investment_type, estimated_value, possibility, impact, assessment,
+                          risk_level, asset_item, reason, rationale, planned_start, planned_end, source, comment)
+  values (c_sc, c_sc, 2026, 'KIT', '★ Dự án mẫu — Thay bàn lạnh & tủ lạnh bếp nóng Mezz', 'FFE', true, 'Replacement', 185000000, 4, 3, 12, 'High',
+          'Bàn lạnh, tủ lạnh, dụng cụ bếp', 'Bàn lạnh mua 2014 hỏng máy nén nhiều lần [DEMO]', 'Theo kế hoạch ngân sách 2026',
+          date '2026-05-01', date '2026-08-31', 'budget', '[DEMO] Dự án mẫu đã đi hết quy trình — để xem các phiếu. Muốn thử duyệt, lập dự án khác.');
+
+  ---------------------------------------------------------------- 1. PR + RR (NV Bếp), PA (AM)
+  perform am_demo_as('demo.staff@plaza-demo.test');
+  v_pr := pm_doc_create(c_sc, 'PR', jsonb_build_object(
+    'request_date', (current_date - 165)::text, 'project_type', 'Non-consultancy', 'share_pct', 1, 'category', 'FFE', 'budget', 'Budgeted',
+    'investment_type', 'Replacement', 'currency', 'VND', 'possibility', '4', 'impact', '3', 'assessment', 12, 'risk_level', 'High',
+    'reason', 'Hai bàn lạnh bếp nóng Mezz (mua 2014) hỏng máy nén 2 lần trong 12 tháng, không giữ được 2–4 °C; chi phí sửa chữa đã vượt 40% giá trị mua mới. Tủ lạnh 2016 xuống cấp, chuyển làm dự phòng.',
+    'cost_benchmark', 'Quotation', 'supplier', v_vn[1],
+    'notes', E'- Warranty time: 24 tháng\n- Delivery time: 4–6 tuần kể từ ngày đặt hàng\n- Other: giao, lắp đặt, chạy thử và hướng dẫn vận hành tại bếp',
+    'procurement_type', 'Competitive Quotation', 'evidence', '[]'::jsonb,
+    'lines', jsonb_build_array(
+      jsonb_build_object('asset_item', p1.lab, 'unit', 'pcs', 'rationale', 'Thay 2 bàn lạnh hỏng máy nén', 'tech_standard', 'Inox 304, 2 cánh, 1.800 mm, 2–8 °C, gas R290', 'location', c_loc, 'qty', 2, 'unit_price', 60000000, 'amount', 120000000),
+      jsonb_build_object('asset_item', p2.lab, 'unit', 'pcs', 'rationale', 'Tủ lạnh đứng mới cho khu sơ chế', 'tech_standard', '2 cánh, 650 L, inverter', 'location', c_loc, 'qty', 1, 'unit_price', 34000000, 'amount', 34000000),
+      jsonb_build_object('asset_item', p3.lab, 'unit', 'pcs', 'rationale', 'Bổ sung chảo cho line nóng', 'tech_standard', 'Chảo gang/inox đáy từ Ø 32 cm', 'location', c_loc, 'qty', 12, 'unit_price', 900000, 'amount', 10800000)),
+    'total', 164800000));
+  v_pkg := (select pkg_id from pm_doc where id = v_pr);
+  v_rr := pm_doc_create(c_sc, 'RR', jsonb_build_object(
+    'replacement_level', 'Full replacement', 'after_replacement', 'Liquidation', 'currency', 'VND', 'request_date', (current_date - 165)::text,
+    'evidence', '[]'::jsonb, 'total_qty', 3, 'total', 103500000,
+    'lines', jsonb_build_array(
+      jsonb_build_object('asset_item', p1.lab, 'asset_code', v_oldc[1], 'condition', 'Damaged', 'reason', 'High repair cost', 'after', 'Liquidation', 'qty', 1, 'unit', 'pcs', 'original_value', 42000000),
+      jsonb_build_object('asset_item', p1.lab, 'asset_code', v_oldc[2], 'condition', 'Damaged', 'reason', 'Irreparable', 'after', 'Liquidation', 'qty', 1, 'unit', 'pcs', 'original_value', 42000000),
+      jsonb_build_object('asset_item', p2.lab, 'asset_code', v_oldc[3], 'condition', 'Poor', 'reason', 'Obsolete', 'after', 'Spare', 'qty', 1, 'unit', 'pcs', 'original_value', 19500000))));
+  perform am_demo_tick(am_demo_at(165, 10), c_sc, v_nm);
+  perform pm_pkg_submit(v_pkg, v_sig);
+  perform am_demo_tick(am_demo_at(163, 15), c_sc, v_nm);
+  perform am_demo_drive(v_pkg, 162, c_sc, v_nm, 'PA', jsonb_build_object(
+    'date', (current_date - 160)::text, 'comparability', 'Comparable', 'risk_category', 'Technical Issues', 'possibility', 4, 'impact', 3, 'hide_ref', false,
+    'evidence', '[]'::jsonb,
+    'lines', jsonb_build_array(
+      jsonb_build_object('asset_item', p1.lab, 'picture', 'Ảnh hiện trạng trong RR', 'qty', 2, 'location', c_loc, 'specs', 'Inox 304, 2 cánh, 1.800 mm', 'condition', 'Damaged', 'notes', 'Máy nén thay 2 lần; gioăng cửa rách, mặt inox rỉ'),
+      jsonb_build_object('asset_item', p2.lab, 'picture', 'Ảnh hiện trạng kèm RR', 'qty', 1, 'location', c_loc, 'specs', '2 cánh, 650 L', 'condition', 'Poor', 'notes', 'Còn chạy, làm dự phòng'),
+      jsonb_build_object('asset_item', p3.lab, 'picture', 'Không áp dụng — mua bổ sung', 'qty', 12, 'location', c_loc, 'specs', 'Ø 32 cm, đáy từ', 'condition', 'Full operational', 'notes', 'Bổ sung'))));
+
+  ---------------------------------------------------------------- 2. Gọi báo giá: 3 nhà cung cấp nộp, mở thầu
+  perform am_demo_as('demo.purchasing@plaza-demo.test');
+  v_tid := pm_tender_create_prj(c_sc, jsonb_build_object(
+    'title', 'Cung cấp, lắp đặt bàn lạnh, tủ lạnh và chảo bếp nóng Mezz', 'scope', 'Cung cấp, vận chuyển, lắp đặt, chạy thử, hướng dẫn vận hành',
+    'terms', 'Báo giá đã gồm VAT tách riêng; hiệu lực tối thiểu 30 ngày; bảo hành tối thiểu 24 tháng cho thiết bị lạnh.',
+    'deadline', (now() + interval '10 days')::text, 'address', 'Phòng Thu mua, tầng B1 — 17 Lê Duẩn, Phường Sài Gòn, TP.HCM', 'min_bids', 3,
+    'items', jsonb_build_array(jsonb_build_object('item', p1.lab, 'qty', 2, 'unit', 'pcs', 'spec', 'Inox 304, 2 cánh, 1.800 mm, 2–8 °C'),
+                               jsonb_build_object('item', p2.lab, 'qty', 1, 'unit', 'pcs', 'spec', '2 cánh, 650 L, inverter'),
+                               jsonb_build_object('item', p3.lab, 'qty', 12, 'unit', 'pcs', 'spec', 'Ø 32 cm, đáy từ')),
+    'crit', jsonb_build_array(jsonb_build_object('label', v_la[2], 'grp', 'ability'), jsonb_build_object('label', v_la[5], 'grp', 'ability'),
+                              jsonb_build_object('label', v_lt[1], 'grp', 'technique'), jsonb_build_object('label', v_lt[3], 'grp', 'technique'))));
+  perform am_demo_tick(am_demo_at(155, 9), c_sc, v_nm);
+  for k in 1 .. 3 loop
+    v_tok := v_tok || pm_tender_invite_add(array[v_tid], v_vc[k], v_vn[k], 'sales.' || lower(v_vc[k]) || '@vendor-demo.test', 14);
+  end loop;
+  perform am_demo_tick(am_demo_at(155, 10), c_sc, v_nm);
+  for k in 1 .. 3 loop
+    v_specx := jsonb_build_object('0', jsonb_build_object('brand', v_br[k], 'model', (array['RCDR2M18', 'BS2DC6', 'TST-72SD'])[k], 'origin', (array['Italy', 'Malaysia', 'Korea'])[k], 'capacity', '2–8 °C, 2 cánh', 'material', 'Inox 304'),
+                                  '1', jsonb_build_object('brand', (array['Samsung', 'Hitachi', 'LG'])[k], 'model', (array['RS64R5331B4', 'R-FM800GPGV', 'GR-X257JS'])[k], 'origin', (array['Thailand', 'Thailand', 'Korea'])[k], 'capacity', '650 L'),
+                                  '2', jsonb_build_object('brand', (array['Vollrath', 'Lodge', 'Matfer'])[k], 'origin', (array['USA', 'USA', 'France'])[k], 'capacity', 'Ø 32 cm'));
+    perform vp_save(v_tok[k], v_tid, jsonb_build_object(
+      'prices', jsonb_build_object('0', v_u1[k], '1', v_u2[k], '2', v_u3[k]), 'qtys', '{}'::jsonb, 'units', jsonb_build_object('0', 'pcs', '1', 'pcs', '2', 'pcs'),
+      'specx', v_specx, 'specs', '{}'::jsonb,
+      'olines', jsonb_build_array(jsonb_build_object('label', 'Vận chuyển & lắp đặt/Transport & installation', 'qty', 1, 'unit', 'package', 'price', v_oh[k])),
+      'pay_sched', jsonb_build_array(jsonb_build_object('pct', 30, 'when', 'deposit'), jsonb_build_object('pct', 70, 'when', 'acceptance', 'days', 15)),
+      'delivery', (array['4 tuần', '5 tuần', '6 tuần'])[k], 'warranty', (array['24 tháng', '24 tháng', '18 tháng'])[k], 'validity', '30 ngày',
+      'crit', jsonb_build_object(v_la[2], (array['14 bếp khách sạn 4–5 sao', '9 bếp khách sạn', '6 nhà hàng'])[k], v_la[5], (array['Đối tác 8 năm', 'Đối tác mới', 'Đối tác 3 năm'])[k],
+                                 v_lt[1], (array['Hàng có sẵn 60%', 'Nhập theo đơn', 'Nhập theo đơn'])[k], v_lt[3], (array['24 tháng, đổi mới 30 ngày', '24 tháng', '18 tháng'])[k])));
+    v_key := vp_upload_key(v_tok[k], v_tid);
+    perform vp_file_add(v_tok[k], v_tid, v_key || '/bao-gia-' || lower(v_vc[k]) || '.pdf', 'Báo giá ' || v_vn[k] || '.pdf', 186000, 'quotation');
+    perform vp_submit(v_tok[k], v_tid);
+    perform am_demo_tick(am_demo_at(152 - k, 11), c_sc, v_nm);
+  end loop;
+  perform am_demo_as('demo.purchasing@plaza-demo.test'); perform pm_tender_consent_give(v_tid, 'PURCHASING');
+  perform am_demo_tick(am_demo_at(148, 9), c_sc, v_nm);
+  perform am_demo_as('demo.kithead@plaza-demo.test'); perform pm_tender_consent_give(v_tid, 'DEPT_HEAD');
+  perform am_demo_tick(am_demo_at(148, 10), c_sc, v_nm);
+  perform am_demo_as('demo.dof@plaza-demo.test'); perform pm_tender_consent_give(v_tid, 'DOF');
+  perform am_demo_tick(am_demo_at(148, 11), c_sc, v_nm);
+  update pm_tender set deadline = am_demo_at(149, 17) where id = v_tid;
+
+  ---------------------------------------------------------------- 3. QC (Thu mua, từ 3 báo giá) + MC (AM)
+  for k in 1 .. 3 loop
+    select b.id bid, b.invitee_id inv into x from pm_tender_bid b join pm_tender_invitee i on i.id = b.invitee_id
+     where b.tender_id = v_tid and i.vendor_name = v_vn[k] order by b.id desc limit 1;
+    v_vend := v_vend || jsonb_build_array(jsonb_build_object(
+      'name', v_vn[k], 'vendor_code', v_vc[k], 'tender_bid', x.bid, 'tender_invitee', x.inv,
+      'prices', jsonb_build_object('0', v_u1[k], '1', v_u2[k], '2', v_u3[k]),
+      'specx', (select data -> 'specx' from pm_tender_bid where id = x.bid), 'specs', '{}'::jsonb,
+      'oprices', jsonb_build_object('0', v_oh[k]),
+      's_ability', (select jsonb_object_agg(v_la[j], v_sa[k][j]) from generate_series(1, 5) j),
+      's_technique', (select jsonb_object_agg(v_lt[j], v_st[k][j]) from generate_series(1, 7) j),
+      'n_ability', jsonb_build_object(v_la[2], (array['14 bếp khách sạn 4–5 sao', '9 bếp khách sạn', '6 nhà hàng'])[k], v_la[5], (array['Đối tác 8 năm', 'Đối tác mới', 'Đối tác 3 năm'])[k]),
+      'n_technique', jsonb_build_object(v_lt[1], (array['Hàng có sẵn 60%', 'Nhập theo đơn', 'Nhập theo đơn'])[k], v_lt[3], (array['24 tháng, đổi mới 30 ngày', '24 tháng', '18 tháng'])[k]),
+      'pay_score', v_pay[k], 'pay_term', '30% deposit on order; 70% after acceptance (within 15 days)',
+      'pay_sched', jsonb_build_array(jsonb_build_object('pct', 30, 'when', 'deposit'), jsonb_build_object('pct', 70, 'when', 'acceptance', 'days', 15)),
+      'delivery', (array['4 tuần', '5 tuần', '6 tuần'])[k], 'warranty', (array['24 tháng', '24 tháng', '18 tháng'])[k], 'validity', '30 ngày',
+      'amount', v_amt[k], 'ability', v_tot[k][1], 'technique', v_tot[k][2], 'price_score', v_tot[k][3], 'finance', v_tot[k][4], 'total', v_tot[k][5]));
+  end loop;
+  perform am_demo_as('demo.purchasing@plaza-demo.test');
+  v_qc := pm_doc_create(c_sc, 'QC', jsonb_build_object(
+    'date', (current_date - 147)::text, 'project_type', 'Mua sắm/Equipment', 'procurement_type', 'Competitive Quotation',
+    'w_ability', 10, 'w_technique', 60, 'w_finance', 30, 'w_price', 80, 'w_pay', 20,
+    'sub_ability', (select jsonb_agg(jsonb_build_object('label', v_la[j], 'w', 20) order by j) from generate_series(1, 5) j),
+    'sub_technique', (select jsonb_agg(jsonb_build_object('label', v_lt[j], 'w', case when j = 7 then 14.32 else 14.28 end) order by j) from generate_series(1, 7) j),
+    'qlines', jsonb_build_array(jsonb_build_object('item', p1.lab, 'qty', 2), jsonb_build_object('item', p2.lab, 'qty', 1), jsonb_build_object('item', p3.lab, 'qty', 12)),
+    'olines', jsonb_build_array(jsonb_build_object('label', 'Vận chuyển & lắp đặt/Transport & installation')),
+    'vendors', v_vend, 'chosen_vendor', v_vn[1], 'total_vendors', 3, 'tender_submitted', 3, 'tender_id', v_tid,
+    'comments', 'Nhận đủ 3 báo giá hợp lệ qua cổng báo giá. Nhà cung cấp A điểm cao nhất (kỹ thuật, bảo hành, có sẵn hàng) và giá thấp nhất.',
+    'estimated', v_amt[1], 'total', v_amt[1], 'evidence', '[]'::jsonb));
+  perform pm_tender_link_qc(v_tid, v_qc);
+  perform am_demo_tick(am_demo_at(147, 10), c_sc, v_nm);
+  perform pm_pkg_submit((select pkg_id from pm_doc where id = v_qc), v_sig);
+  perform am_demo_tick(am_demo_at(146, 15), c_sc, v_nm);
+  perform am_demo_drive((select pkg_id from pm_doc where id = v_qc), 145, c_sc, v_nm, 'MC', jsonb_build_object(
+    'date', (current_date - 143)::text, 'b_vendor', 'Công ty TNHH Thiết bị Bếp Á Âu (mua 2014, 2016)', 'c_vendor', 'Giá niêm yết nhà phân phối (website, 09/2026)',
+    'note', 'So với giá mua cũ đã quy đổi (4,6%/năm) và giá niêm yết thị trường: giá nhà cung cấp A đều thấp hơn, trong biên độ cho phép.', 'evidence', '[]'::jsonb,
+    'lines', jsonb_build_array(
+      jsonb_build_object('item', p1.lab, 'qty', 2, 'a_spec', 'Electrolux RCDR2M18, inox 304', 'a_price', v_u1[1], 'b_ref', v_oldc[1], 'b_asset', true, 'b_year', 2014, 'b_pv', 42000000,
+                         'c_spec', 'Bàn mát 2 cánh 1,8 m inox', 'c_price', 61900000),
+      jsonb_build_object('item', p2.lab, 'qty', 1, 'a_spec', 'Samsung RS64R5331B4, 650 L', 'a_price', v_u2[1], 'b_ref', v_oldc[3], 'b_asset', true, 'b_year', 2016, 'b_pv', 19500000,
+                         'c_spec', 'Tủ lạnh side-by-side 650 L', 'c_price', 33500000),
+      jsonb_build_object('item', p3.lab, 'qty', 12, 'a_spec', 'Vollrath Ø 32 cm đáy từ', 'a_price', v_u3[1], 'b_ref', 'FFE.KIT.03.2025', 'b_asset', false, 'b_year', 2025, 'b_pv', 820000,
+                         'c_spec', 'Chảo Ø 32 cm đáy từ', 'c_price', 890000))));
+
+  ---------------------------------------------------------------- 4. PO (Thu mua)
+  perform am_demo_as('demo.purchasing@plaza-demo.test');
+  v_po := pm_doc_create(c_sc, 'PO', jsonb_build_object(
+    'order_date', (current_date - 138)::text, 'supplier', v_vn[1],
+    'payment_term', 'Đặt cọc 30% khi ký hợp đồng; 70% trong 15 ngày sau nghiệm thu bàn giao (AH)',
+    'delivery_term', '4 tuần kể từ ngày đặt hàng, giao tại kho nhận hàng tầng B1', 'warranty_term', '24 tháng kể từ ngày nghiệm thu',
+    'progress', 'Lắp đặt trong 2 ngày, ngoài giờ phục vụ (14:00–17:00)', 'note', 'Báo giá ngày ' || to_char(current_date - 151, 'DD/MM/YYYY') || ', hiệu lực 30 ngày',
+    'hide_cols', '[]'::jsonb,
+    'lines', jsonb_build_array(
+      jsonb_build_object('asset_item', p1.lab, 'qty', 2, 'unit', 'pcs', 'unit_price', v_u1[1], 'amount', 2 * v_u1[1], 'origin', 'Italy', 'warranty_months', 24,
+                         'spec', jsonb_build_object('brand', 'Electrolux', 'model', 'RCDR2M18', 'capacity', '2–8 °C, 2 cánh', 'material', 'Inox 304', 'length', '1800 mm')),
+      jsonb_build_object('asset_item', p2.lab, 'qty', 1, 'unit', 'pcs', 'unit_price', v_u2[1], 'amount', v_u2[1], 'origin', 'Thailand', 'warranty_months', 24,
+                         'spec', jsonb_build_object('brand', 'Samsung', 'model', 'RS64R5331B4', 'capacity', '650 L', 'material', 'Thép sơn tĩnh điện', 'length', '912 mm')),
+      jsonb_build_object('asset_item', p3.lab, 'qty', 12, 'unit', 'pcs', 'unit_price', v_u3[1], 'amount', 12 * v_u3[1], 'origin', 'USA', 'warranty_months', 12,
+                         'spec', jsonb_build_object('brand', 'Vollrath', 'model', 'N3112', 'capacity', 'Ø 32 cm', 'material', 'Inox 3 lớp, đáy từ', 'length', 'Ø 320 mm'))),
+    'olines', jsonb_build_array(jsonb_build_object('label', 'Vận chuyển & lắp đặt/Transport & installation', 'qty', 1, 'unit', 'package', 'unit_price', v_oh[1], 'amount', v_oh[1])),
+    'total_qty', 15, 'subtotal', v_sub1, 'overheads', v_oh[1], 'total', v_total));
+  perform am_demo_tick(am_demo_at(138, 10), c_sc, v_nm);
+  perform pm_pkg_submit((select pkg_id from pm_doc where id = v_po), v_sig);
+  perform am_demo_tick(am_demo_at(137, 15), c_sc, v_nm);
+  perform am_demo_drive((select pkg_id from pm_doc where id = v_po), 136, c_sc, v_nm);
+
+  ---------------------------------------------------------------- 5. CT (hợp đồng) → sổ hợp đồng
+  perform am_demo_as('demo.purchasing@plaza-demo.test');
+  v_ct := pm_doc_create(c_sc, 'CT', jsonb_build_object(
+    'signed_date', (current_date - 130)::text, 'supplier', v_vn[1], 'contract_no', '0412/2026/HĐMB/PLZ-' || v_vc[1], 'value', v_total, 'warranty_months', 24,
+    'note', 'Phạt chậm giao 0,05%/ngày trên giá trị hàng giao chậm, tối đa 8%. Bảo hành tại chỗ trong 24 giờ.',
+    'lines', jsonb_build_array(jsonb_build_object('milestone', 'Deposit', 'pct', 30, 'amount', round(v_total * 0.3), 'due', 'Trong 10 ngày làm việc sau khi ký'),
+                               jsonb_build_object('milestone', 'Handover', 'pct', 70, 'amount', v_total - round(v_total * 0.3), 'due', 'Trong 15 ngày sau nghiệm thu (AH)')),
+    'pct_sum', 100, 'total', v_total));
+  perform am_demo_tick(am_demo_at(131, 10), c_sc, v_nm);
+  perform pm_pkg_submit((select pkg_id from pm_doc where id = v_ct), v_sig);
+  perform am_demo_tick(am_demo_at(130, 15), c_sc, v_nm);
+  perform am_demo_drive((select pkg_id from pm_doc where id = v_ct), 129, c_sc, v_nm);
+  select id into v_cid from pm_contract where doc_id = v_ct;
+  if v_cid is not null then
+    update pm_contract set kind = 'supply', vendor_code = v_vc[1], supplier_tax = v_vt[1], currency = 'VND', vat_pct = 8, value_total = v_vat,
+                           start_date = current_date - 130, delivery_due = current_date - 102, end_date = current_date - 60,
+                           delivery_text = '4 tuần kể từ ngày đặt hàng', penalty_text = 'Chậm giao: 0,05%/ngày giá trị hàng giao chậm, tối đa 8%',
+                           summary = 'Cung cấp, lắp đặt 2 bàn lạnh, 1 tủ lạnh và 12 chảo cho bếp nóng Mezz [DEMO]'
+     where id = v_cid;
+    -- The CT form's "signed contract (link)": set after approval, so the register keeps the uploaded copy below instead of a link.
+    update pm_doc set data = data || jsonb_build_object('file_link', 'https://plazahotel.sharepoint.com/sites/AM/Contracts/HD-0412-2026-ban-ky.pdf') where id = v_ct;
+    insert into pm_contract_file (contract_id, kind, name, source, storage_path, size_bytes, pages, uploaded_name)
+    values (v_cid, 'contract', 'Hợp đồng 0412-2026 (bản ký).pdf', 'storage', v_cid || '/hop-dong-0412-2026-ban-ky.pdf', 420000, 2, am_demo_nm('demo.purchasing@plaza-demo.test'));
+    perform am_demo_tick(am_demo_at(128, 16), c_sc, v_nm);
+  end if;
+
+  ---------------------------------------------------------------- 6. Đề nghị thanh toán đợt 1 (đặt cọc 30%)
+  perform am_demo_as('demo.purchasing@plaza-demo.test');
+  v_pq := pm_payreq_save(jsonb_build_object('project_code', c_sc, 'kind', 'first', 'term_idx', 0, 'milestone', 'Deposit', 'pct', 30,
+                                            'amount', round(v_total * 0.3), 'amount_contract', round(v_total * 0.3), 'vat_pct', 8,
+                                            'invoice_no', '00001284', 'note', 'Đặt cọc 30% theo hợp đồng 0412/2026'));
+  perform pm_payreq_file_add(v_pq, v_pq || '/thu-de-nghi-thanh-toan-dot-1.pdf', 'Thư đề nghị thanh toán đợt 1.pdf', 152000, 'vendor_letter');
+  perform pm_payreq_file_add(v_pq, v_pq || '/hoa-don-00001284.pdf', 'Hoá đơn GTGT 00001284.pdf', 98000, 'invoice');
+  perform am_demo_tick(am_demo_at(124, 10), c_sc, v_nm);
+  perform pm_payreq_submit(v_pq, jsonb_build_object('sig', v_sig));
+  perform am_demo_tick(am_demo_at(124, 11), c_sc, v_nm);
+  perform am_demo_as('demo.chiefacc@plaza-demo.test');
+  perform pm_payreq_act(v_pq, 'approve', null, jsonb_build_object('sig', v_sig));
+  perform am_demo_tick(am_demo_at(123, 15), c_sc, v_nm);
+  perform am_demo_as('demo.accountant@plaza-demo.test');
+  perform pm_payreq_act(v_pq, 'paid', null, jsonb_build_object('paid_at', (current_date - 121)::text, 'paid_amount', round(round(v_total * 0.3) * 1.08),
+                                                               'voucher_no', 'UNC-0921', 'sig', v_sig));
+  perform am_demo_tick(am_demo_at(121, 14), c_sc, v_nm);
+
+  ---------------------------------------------------------------- 7. Nhập tài sản mới (lô giao hàng) + AL
+  perform am_demo_as('demo.amc@plaza-demo.test');
+  insert into am_shipment (code, delivery_date, supplier, invoice_no, purpose_code, project_code, po_doc_no, contract_ref, company_code, dept_code, status, created_by)
+  values (c_sc || '/' || to_char(current_date - 96, 'YYYYMMDD') || '-091500', current_date - 96, v_vn[1], '00001462', c_sc, c_sc,
+          (select doc_no from pm_doc where id = v_po), (select doc_no from pm_doc where id = v_po), 'SOF', 'KIT', 'confirmed', am_demo_nm('demo.amc@plaza-demo.test'))
+  returning id into v_ship;
+  v_seq := am_alloc_asset_seq('KIT', p1.let, 2, v_ship, 'demo-sample');
+  v_bc := am_alloc_barcode('unique', 3, v_ship, 'demo-sample');
+  for k in 0 .. 1 loop
+    insert into am_asset (asset_code, barcode, asset_kind, category_code, group_code, letters, seq, purchase_year, company_code, dept_code, location_code,
+                          name_vi, name_en, unit_code, qty, serial, unit_price, currency, origin_iso2, supplier, manufacturer, invoice_no, purchase_date,
+                          depreciate, depreciate_months, spec_brand, spec_model, status_code, label_printed, note, warranty_until, purpose_code, shipment_id)
+    values (format('KIT.%s.%s.2026.%s', p1.grp, p1.let, lpad((v_seq + k)::text, 5, '0')), 'JVC.' || lpad((v_bc + k)::text, 9, '0'), 'unique', p1.cat, p1.grp, p1.let,
+            v_seq + k, 2026, 'SOF', 'KIT', c_loc, p1.vi, p1.en, 'pcs', 1, 'EX26-0' || (5517 + k), v_u1[1], 'VND', (select iso2 from am_origin where iso2 = 'IT'),
+            v_vn[1], 'Electrolux', '00001462', current_date - 96, true, 84, 'Electrolux', 'RCDR2M18', '120', false, '[DEMO] Dự án mẫu ' || c_sc,
+            current_date - 82 + 730, c_sc, v_ship)
+    returning id into v_line;
+    v_new := v_new || v_line;
+  end loop;
+  v_seq := am_alloc_asset_seq('KIT', p2.let, 1, v_ship, 'demo-sample');
+  insert into am_asset (asset_code, barcode, asset_kind, category_code, group_code, letters, seq, purchase_year, company_code, dept_code, location_code,
+                        name_vi, name_en, unit_code, qty, serial, unit_price, currency, origin_iso2, supplier, manufacturer, invoice_no, purchase_date,
+                        depreciate, depreciate_months, spec_brand, spec_model, status_code, label_printed, note, warranty_until, purpose_code, shipment_id)
+  values (format('KIT.%s.%s.2026.%s', p2.grp, p2.let, lpad(v_seq::text, 5, '0')), 'JVC.' || lpad((v_bc + 2)::text, 9, '0'), 'unique', p2.cat, p2.grp, p2.let,
+          v_seq, 2026, 'SOF', 'KIT', c_loc, p2.vi, p2.en, 'pcs', 1, 'SS26-77120', v_u2[1], 'VND', (select iso2 from am_origin where iso2 = 'TH'),
+          v_vn[1], 'Samsung', '00001462', current_date - 96, false, null, 'Samsung', 'RS64R5331B4', '120', false, '[DEMO] Dự án mẫu ' || c_sc,
+          current_date - 82 + 730, c_sc, v_ship)
+  returning id into v_line;
+  v_new := v_new || v_line;
+  v_seq := am_alloc_asset_seq('KIT', p3.let, 1, v_ship, 'demo-sample');
+  v_bc := am_alloc_barcode('low', 1, v_ship, 'demo-sample');
+  insert into am_asset (asset_code, barcode, asset_kind, category_code, group_code, letters, seq, purchase_year, company_code, dept_code, location_code,
+                        name_vi, name_en, unit_code, qty, unit_price, currency, origin_iso2, supplier, manufacturer, invoice_no, purchase_date,
+                        depreciate, spec_brand, status_code, label_printed, note, purpose_code, shipment_id)
+  values (format('KIT.%s.%s.2026.%s', p3.grp, p3.let, lpad(v_seq::text, 5, '0')), 'JVC.9' || lpad(v_bc::text, 8, '0'), 'low', p3.cat, p3.grp, p3.let,
+          v_seq, 2026, 'SOF', 'KIT', c_loc, p3.vi, p3.en, 'pcs', 12, v_u3[1], 'VND', (select iso2 from am_origin where iso2 = 'US'),
+          v_vn[1], 'Vollrath', '00001462', current_date - 96, false, 'Vollrath', '119', false, '[DEMO] Dự án mẫu ' || c_sc, c_sc, v_ship)
+  returning id into v_line;
+  v_new := v_new || v_line;
+  update am_asset set created_at = am_demo_at(96, 9) where id = any (v_new || v_old);
+  perform am_demo_tick(am_demo_at(96, 9), c_sc, v_nm);
+  v_al := pm_doc_create(c_sc, 'AL', jsonb_build_object(
+    'date', (current_date - 95)::text, 'shipment_id', v_ship, 'shipment_code', (select code from am_shipment where id = v_ship), 'delivery_date', (current_date - 96)::text,
+    'po_no', (select doc_no from pm_doc where id = v_po), 'dept_code', 'KIT',
+    'notes', E'1. Bộ phận nhận dán tem lên đúng tài sản ngay khi nhận hàng và chụp 2 ảnh (cận cảnh tem, toàn cảnh tài sản).\n2. Tải 2 ảnh lên hệ thống theo từng tài sản và đính kèm vào biên bản nghiệm thu (AH).',
+    'asset_ids', to_jsonb(v_new),
+    'assets', (select jsonb_agg(jsonb_build_object('id', id, 'asset_code', asset_code, 'barcode', barcode, 'name', name_vi || '/' || name_en, 'qty', qty, 'unit', unit_code,
+                                                   'unit_price', unit_price, 'location', location_code, 'kind', asset_kind) order by id) from am_asset where id = any (v_new)),
+    'total_qty', 15, 'total', v_sub1));
+  perform am_demo_tick(am_demo_at(95, 10), c_sc, v_nm);
+  perform pm_pkg_submit((select pkg_id from pm_doc where id = v_al), v_sig);
+  perform am_demo_tick(am_demo_at(95, 11), c_sc, v_nm);
+  perform am_demo_drive((select pkg_id from pm_doc where id = v_al), 94, c_sc, v_nm);
+
+  ---------------------------------------------------------------- 8. Nhận hàng, ảnh tem / toàn cảnh, AH cuối (Hotel AM)
+  perform am_demo_as('demo.hotelam@plaza-demo.test');
+  for x in select id, asset_kind, qty, asset_code from am_asset where id = any (v_new) order by id loop
+    perform am_recv_set(x.id, x.qty, 'now', 'Đủ số lượng, nguyên đai, đã dán tem', true);
+    insert into am_asset_photo (asset_id, kind, source, storage_path, pm_doc_id, taken_name)
+    values (x.id, 'label', 'storage', 'sample/' || x.asset_code || '-label.jpg', v_al, am_demo_nm('demo.hotelam@plaza-demo.test'));
+    insert into am_asset_photo (asset_id, kind, source, storage_path, pm_doc_id, taken_name)
+    values (x.id, 'overall', 'storage', 'sample/' || x.asset_code || '-overall.jpg', v_al, am_demo_nm('demo.hotelam@plaza-demo.test'))
+    returning id into v_ph;
+    update am_asset set avatar_photo_id = v_ph where id = x.id;
+  end loop;
+  select array_agg(id order by id) into v_recv from am_recv where asset_id = any (v_new);
+  perform am_demo_tick(am_demo_at(92, 10), c_sc, v_nm);
+  v_ah := pm_doc_create(c_sc, 'AH', jsonb_build_object(
+    'handover_date', (current_date - 90)::text, 'evaluation', 'Excellent', 'final', true, 'supplier', v_vn[1],
+    'evaluation_detail', 'Giao đủ, đúng chủng loại; lắp đặt gọn trong 2 ngày ngoài giờ phục vụ; chạy thử 48 giờ đạt 2–4 °C; đã hướng dẫn vận hành cho ca bếp.',
+    'warranty_term', '24 tháng kể từ ngày nghiệm thu (chảo: 12 tháng)', 'maintenance_term', 'Bảo dưỡng miễn phí 3 tháng/lần trong năm đầu', 'retained_amount', 0,
+    'note', 'Biên bản bàn giao kèm ảnh tem và ảnh toàn cảnh của từng tài sản.', 'hide_cols', '[]'::jsonb, 'evidence', '[]'::jsonb,
+    'al_ids', jsonb_build_array(v_al), 'al_nos', jsonb_build_array((select doc_no from pm_doc where id = v_al)), 'asset_ids', to_jsonb(v_new), 'recv_ids', to_jsonb(v_recv),
+    'lines', jsonb_build_array(
+      jsonb_build_object('asset_item', p1.lab, 'qty', 2, 'unit', 'pcs', 'unit_price', v_u1[1], 'amount', 2 * v_u1[1], 'location', c_loc, 'origin', 'Italy', 'warranty_months', 24,
+                         'spec', jsonb_build_object('brand', 'Electrolux', 'model', 'RCDR2M18', 'capacity', '2–8 °C, 2 cánh')),
+      jsonb_build_object('asset_item', p2.lab, 'qty', 1, 'unit', 'pcs', 'unit_price', v_u2[1], 'amount', v_u2[1], 'location', c_loc, 'origin', 'Thailand', 'warranty_months', 24,
+                         'spec', jsonb_build_object('brand', 'Samsung', 'model', 'RS64R5331B4', 'capacity', '650 L')),
+      jsonb_build_object('asset_item', p3.lab, 'qty', 12, 'unit', 'pcs', 'unit_price', v_u3[1], 'amount', 12 * v_u3[1], 'location', c_loc, 'origin', 'USA', 'warranty_months', 12,
+                         'spec', jsonb_build_object('brand', 'Vollrath', 'model', 'N3112', 'capacity', 'Ø 32 cm'))),
+    'total_qty', 15, 'total', v_sub1));
+  perform am_recv_link(v_ah, v_recv);
+  perform am_demo_tick(am_demo_at(90, 10), c_sc, v_nm);
+  perform pm_pkg_submit((select pkg_id from pm_doc where id = v_ah), v_sig);
+  perform am_demo_tick(am_demo_at(90, 15), c_sc, v_nm);
+  perform am_demo_drive((select pkg_id from pm_doc where id = v_ah), 89, c_sc, v_nm);
+
+  ---------------------------------------------------------------- 9. Ghi sổ kế toán (sổ TSCĐ / CCDC) → tài sản "đã ghi nhận"
+  if to_regclass('public.am_acc_line') is not null then
+    insert into am_acc_line (kind, line_key, acc_code, entity, dept, acct_debit, description, qty, unit, unit_price, cost, start_date, term_months, monthly, accum, nbv,
+                             docs, project_code, tax_code, supplier, first_seen, last_seen)
+    select case when a.depreciate then 'fa' else 'ccdc' end, 'DEMO-SAMPLE-' || a.asset_code, a.asset_code, 'S', 'KIT', case when a.depreciate then '2112' else '242' end,
+           a.name_vi || ' — ' || coalesce(a.spec_brand, '') || ' (' || a.asset_code || ')', a.qty, 'cái', a.unit_price, a.unit_price * a.qty,
+           coalesce(a.in_use_date, current_date - 90), case when a.depreciate then a.depreciate_months else case when a.asset_kind = 'low' then 12 else 24 end end,
+           round(a.unit_price * a.qty / case when a.depreciate then a.depreciate_months else case when a.asset_kind = 'low' then 12 else 24 end end),
+           case when a.id = any (v_old) then a.unit_price * a.qty else round(a.unit_price * a.qty / case when a.depreciate then a.depreciate_months else case when a.asset_kind = 'low' then 12 else 24 end end) * 2 end,
+           case when a.id = any (v_old) then 0 else a.unit_price * a.qty - round(a.unit_price * a.qty / case when a.depreciate then a.depreciate_months else case when a.asset_kind = 'low' then 12 else 24 end end) * 2 end,
+           case when a.id = any (v_new) then c_sc end, case when a.id = any (v_new) then c_sc end,
+           case when a.id = any (v_new) then v_vt[1] end, a.supplier, current_date - 75, current_date - 14
+      from am_asset a where a.id = any (v_new || v_old);
+    insert into am_acc_link (line_id, asset_id, method, note)
+    select l.id, a.id, 'code', '[DEMO] dự án mẫu' from am_asset a join am_acc_line l on l.line_key = 'DEMO-SAMPLE-' || a.asset_code where a.id = any (v_new || v_old);
+    perform am_acc_refresh(v_new || v_old);
+  end if;
+
+  ---------------------------------------------------------------- 10. Đề nghị quyết toán (70%) → dự án hoàn thành
+  perform am_demo_as('demo.purchasing@plaza-demo.test');
+  v_pq := pm_payreq_save(jsonb_build_object('project_code', c_sc, 'kind', 'final', 'term_idx', 1, 'milestone', 'Handover', 'pct', 70,
+                                            'amount', v_total - round(v_total * 0.3), 'amount_contract', v_total - round(v_total * 0.3), 'vat_pct', 8,
+                                            'invoice_no', '00001462', 'note', 'Quyết toán 70% sau nghiệm thu bàn giao'));
+  perform pm_payreq_file_add(v_pq, v_pq || '/thu-de-nghi-quyet-toan.pdf', 'Thư đề nghị quyết toán.pdf', 148000, 'vendor_letter');
+  perform pm_payreq_file_add(v_pq, v_pq || '/hoa-don-00001462.pdf', 'Hoá đơn GTGT 00001462.pdf', 101000, 'invoice');
+  perform pm_payreq_file_add(v_pq, v_pq || '/bien-ban-nghiem-thu.pdf', 'Biên bản nghiệm thu đã ký.pdf', 233000, 'other');
+  perform am_demo_tick(am_demo_at(86, 10), c_sc, v_nm);
+  perform pm_payreq_submit(v_pq, jsonb_build_object('sig', v_sig));
+  perform am_demo_tick(am_demo_at(86, 11), c_sc, v_nm);
+  perform am_demo_as('demo.chiefacc@plaza-demo.test');
+  perform pm_payreq_act(v_pq, 'approve', null, jsonb_build_object('sig', v_sig));
+  perform am_demo_tick(am_demo_at(85, 15), c_sc, v_nm);
+  perform am_demo_as('demo.accountant@plaza-demo.test');
+  perform pm_payreq_act(v_pq, 'paid', null, jsonb_build_object('paid_at', (current_date - 83)::text, 'paid_amount', round((v_total - round(v_total * 0.3)) * 1.08),
+                                                               'voucher_no', 'UNC-1107', 'sig', v_sig));
+  perform am_demo_tick(am_demo_at(83, 14), c_sc, v_nm);
+
+  ---------------------------------------------------------------- 11. LR các bàn lạnh cũ (tự lập từ RR khi AH cuối duyệt) → duyệt
+  select id, pkg_id, data into x from pm_doc where doc_type = 'LR' and status in ('draft', 'returned') and data ->> 'project_code' = c_sc order by id desc limit 1;
+  perform am_demo_as('demo.staff@plaza-demo.test');
+  if x.id is null then
+    v_lr := pm_lq_create('KIT', jsonb_build_object('lines', (select jsonb_agg(jsonb_build_object('key', 'r' || a.id, 'asset_id', a.id, 'asset_code', a.asset_code,
+              'name', a.name_vi || '/' || a.name_en, 'qty', 1, 'unit', a.unit_code, 'dept_code', a.dept_code, 'kind', a.asset_kind, 'location', a.location_code,
+              'original_value', a.unit_price)) from am_asset a where a.id = any (v_old[1:2]))));
+    select id, pkg_id, data into x from pm_doc where id = v_lr;
+  end if;
+  v_lr := x.id; v_lrpkg := x.pkg_id;
+  v_lines := (select jsonb_agg(l || jsonb_build_object('condition', 'Damaged', 'reason', 'High repair cost / Chi phí sửa chữa cao', 'mode', 'Sale',
+                       'unit_price', 42000000, 'original_value', 42000000, 'depreciation', 42000000, 'nbv', 0, 'in_use_date', '2014-05-20', 'warranty', '2015-05-20',
+                       'repairs', 6, 'location', c_loc, 'notes', 'Máy nén thay 2 lần trong 12 tháng; gioăng cửa rách, mặt inox rỉ. Đã khấu hao hết.')
+                       order by ord) from jsonb_array_elements(x.data -> 'lines') with ordinality t(l, ord));
+  perform pm_doc_save(v_lr, x.data || jsonb_build_object('date', (current_date - 80)::text, 'dept_code', 'KIT', 'position', 'Nhân viên bếp — phụ trách tài sản bộ phận',
+                                                        'reason', 'Hai bàn lạnh cũ được thay theo dự án ' || c_sc || '; hỏng máy nén, sửa chữa không kinh tế. Đề nghị thanh lý bán phế liệu.',
+                                                        'evidence', '[]'::jsonb, 'lines', v_lines, 'total_qty', jsonb_array_length(v_lines),
+                                                        'total_original', 42000000 * jsonb_array_length(v_lines), 'total_dep', 42000000 * jsonb_array_length(v_lines),
+                                                        'total_nbv', 0, 'total', 42000000 * jsonb_array_length(v_lines)));
+  for x in select l ->> 'key' lk, (l ->> 'asset_id')::bigint aid, l ->> 'asset_code' ac from jsonb_array_elements(v_lines) l loop
+    insert into am_asset_photo (asset_id, kind, source, storage_path, pm_doc_id, line_key, taken_name)
+    values (x.aid, 'condition', 'storage', 'sample/' || x.ac || '-condition.jpg', v_lr, x.lk, am_demo_nm('demo.staff@plaza-demo.test'));
+  end loop;
+  perform am_demo_tick(am_demo_at(80, 10), c_sc, v_nm);
+  perform pm_pkg_submit(v_lrpkg, v_sig);
+  perform am_demo_tick(am_demo_at(80, 15), c_sc, v_nm);
+  perform am_demo_drive(v_lrpkg, 79, c_sc, v_nm);
+
+  ---------------------------------------------------------------- 12. Hội đồng thanh lý + đợt thanh lý tới khi đóng
+  if not exists (select 1 from pm_lq_council where active) then
+    insert into pm_lq_council (decision_no, decision_date, active, note) values ('QĐ 01/2026/QĐ-PLZ [DEMO]', date '2026-01-05', true, '[DEMO] Hội đồng thanh lý')
+    returning id into v_council;
+    insert into pm_lq_member (council_id, sort, full_name, position_vi, position_en, role, permanent, user_id) values
+      (v_council, 1, am_demo_nm('demo.jvcgm@plaza-demo.test'), 'Tổng Giám đốc Liên doanh', 'JVC General Manager', 'chair', true, am_demo_uid('demo.jvcgm@plaza-demo.test')),
+      (v_council, 2, am_demo_nm('demo.dof@plaza-demo.test'), 'Giám đốc Tài chính khách sạn', 'Director of Finance', 'member', true, am_demo_uid('demo.dof@plaza-demo.test')),
+      (v_council, 3, am_demo_nm('demo.chiefacc@plaza-demo.test'), 'Kế toán trưởng', 'Chief Accountant', 'member', true, am_demo_uid('demo.chiefacc@plaza-demo.test')),
+      (v_council, 4, am_demo_nm('demo.cphead@plaza-demo.test'), 'Trưởng Ban quản lý cao ốc', 'Office Building Manager', 'member', true, am_demo_uid('demo.cphead@plaza-demo.test'));
+  end if;
+  perform am_demo_as('demo.hotelam@plaza-demo.test');
+  v_b := pm_lq_batch_create(null, '{}'::jsonb);
+  select array_agg(id order by id) into v_items from pm_lq_item where lr_doc_id = v_lr;
+  perform pm_lq_batch_items(v_b, v_items, '{}'::bigint[]);
+  for k in 1 .. coalesce(array_length(v_items, 1), 0) loop
+    perform pm_lq_item_map(v_items[k], (select asset_id from pm_lq_item where id = v_items[k]), null, null);
+  end loop;
+  update pm_lq_batch set meeting_date = current_date - 62, meeting_time = '14:00', meeting_place = 'Phòng họp tầng 3, khách sạn',
+         data = coalesce(data, '{}'::jsonb) || jsonb_build_object(
+           'causes_vi', 'Hai bàn lạnh bếp nóng Mezz mua năm 2014 đã khấu hao hết, hỏng máy nén nhiều lần; đã được thay mới theo dự án ' || c_sc || '.',
+           'causes_en', 'Two 2014 refrigerated tables in the Mezz hot kitchen, fully depreciated, with repeated compressor failures; replaced under project ' || c_sc || '.',
+           'plan_vi', 'Bán thanh lý theo hình thức chào giá cạnh tranh (tối thiểu 3 bên mua); bên mua tự tháo dỡ, vận chuyển.',
+           'plan_en', 'Sell by competitive quotation (at least 3 buyers); the buyer dismantles and removes the items.',
+           'conclusion_vi', 'Hội đồng thống nhất thanh lý 02 bàn lạnh, giá khởi điểm theo đánh giá lại; tiền thu nộp về tài khoản khách sạn.',
+           'conclusion_en', 'The committee agrees to dispose of the 2 refrigerated tables, starting from the revalued price; proceeds to the hotel account.')
+ where id = v_b;
+  perform am_demo_tick(am_demo_at(70, 10), c_sc, v_nm);
+  perform pm_lq_submit(v_b);
+  perform am_demo_tick(am_demo_at(69, 15), c_sc, v_nm);
+  perform am_demo_lq_sign(v_b, 68, c_sc, v_nm);         -- DOF, GM khách sạn
+  perform am_demo_lq_sign(v_b, 66, c_sc, v_nm);         -- AM team kiểm tra
+  perform am_demo_lq_sign(v_b, 62, c_sc, v_nm);         -- Hội đồng: biên bản 02, Chủ tịch: quyết định 03
+  perform am_demo_as('demo.hotelam@plaza-demo.test');
+  perform pm_lq_file_add(v_b, 'minutes', v_b || '/bien-ban-hop-hoi-dong-02.pdf', 'Biên bản họp Hội đồng (02) — bản ký.pdf', 310000, null);
+  perform pm_lq_file_add(v_b, 'decision', v_b || '/quyet-dinh-thanh-ly-03.pdf', 'Quyết định thanh lý (03) — bản ký.pdf', 205000, null);
+  perform am_demo_tick(am_demo_at(61, 10), c_sc, v_nm);
+  -- Kiểm tra thực tế (04) và đánh giá lại (05)
+  perform am_demo_as('demo.amx@plaza-demo.test');
+  for k in 1 .. coalesce(array_length(v_items, 1), 0) loop
+    perform pm_lq_count(v_items[k], true, 1, 'Còn tại bếp nóng Mezz, đúng hiện trạng biên bản');
+  end loop;
+  perform pm_lq_file_add(v_b, 'sitecheck', v_b || '/bien-ban-kiem-tra-hien-truong-04.pdf', 'Biên bản kiểm tra hiện trường (04) — bản ký.pdf', 260000, null);
+  perform pm_lq_milestone(v_b, 'count', true);
+  perform am_demo_tick(am_demo_at(58, 10), c_sc, v_nm);
+  for k in 1 .. coalesce(array_length(v_items, 1), 0) loop
+    perform pm_lq_reval(v_items[k], 2500000, 'Giá thu hồi inox 304 (≈ 70 kg) và máy nén');
+  end loop;
+  perform pm_lq_file_add(v_b, 'reval', v_b || '/danh-gia-lai-05.pdf', 'Đánh giá lại (05).pdf', 140000, null);
+  perform pm_lq_milestone(v_b, 'reval', true);
+  perform am_demo_tick(am_demo_at(56, 10), c_sc, v_nm);
+  -- Gọi báo giá mua lại: 3 bên mua nộp
+  perform pm_lq_call_open(v_b, now() + interval '7 days', 'Giá đã gồm VAT; bên mua tự tháo dỡ, vận chuyển trong 5 ngày; thanh toán 100% trước khi nhận hàng.');
+  perform am_demo_tick(am_demo_at(55, 9), c_sc, v_nm);
+  for k in 1 .. 3 loop
+    v_btok := v_btok || pm_lq_buyer_add(v_b, (array['Công ty TNHH Môi trường Xanh Việt [DEMO]', 'Cơ sở thu mua phế liệu Tân Phú [DEMO]', 'Ông Lê Văn Sáu [DEMO]'])[k],
+                                        '090' || (1234560 + k), 'buyer' || k || '@buyer-demo.test', 10);
+  end loop;
+  perform am_demo_tick(am_demo_at(55, 10), c_sc, v_nm);
+  for k in 1 .. 3 loop
+    perform vq_save(v_btok[k], jsonb_build_object('kind', case when k = 3 then 'person' else 'company' end,
+      'name', (array['Công ty TNHH Môi trường Xanh Việt [DEMO]', 'Cơ sở thu mua phế liệu Tân Phú [DEMO]', 'Lê Văn Sáu [DEMO]'])[k],
+      'phone', '090' || (1234560 + k), 'address', (array['12 Tân Thới Nhất 8, Q.12', '88 Lũy Bán Bích, Tân Phú', '41/7 Bùi Minh Trực, Q.8'])[k] || ', TP.HCM',
+      'tax_code', case when k < 3 then '03' || (19876540 + k) end, 'email', 'buyer' || k || '@buyer-demo.test', 'id_no', case when k = 3 then '079083001234' end,
+      'prices', (select jsonb_object_agg(i::text, (array[3200000, 2900000, 2600000])[k] - (i % 2) * 100000) from unnest(v_items) i),
+      'cost', 0, 'agree', true, 'note', 'Tự tháo dỡ và vận chuyển'));
+    perform vq_submit(v_btok[k]);
+    perform am_demo_tick(am_demo_at(53 - k, 11), c_sc, v_nm);
+  end loop;
+  perform am_demo_as('demo.hotelam@plaza-demo.test');
+  perform pm_lq_open(v_b, array(select m.id from pm_lq_member m join pm_lq_batch b on b.council_id = m.council_id where b.id = v_b), 'Mở báo giá tại phòng họp tầng 3; đủ thành viên Hội đồng.');
+  update pm_lq_batch set call_deadline = am_demo_at(48, 17) where id = v_b;
+  perform am_demo_tick(am_demo_at(48, 14), c_sc, v_nm);
+  perform pm_lq_award(v_b, (select jsonb_agg(jsonb_build_object('item_id', i.id, 'outcome', 'sale', 'quote_id', q.id,
+                                                                'price', (q.data -> 'prices' ->> i.id::text)::numeric, 'cost', 0, 'note', 'Giá cao nhất'))
+                              from pm_lq_item i
+                              cross join lateral (select * from pm_lq_quote q where q.batch_id = v_b and q.status <> 'draft'
+                                                  order by (q.data -> 'prices' ->> i.id::text)::numeric desc nulls last limit 1) q
+                             where i.id = any (v_items)));
+  perform pm_lq_file_add(v_b, 'award', v_b || '/ket-qua-ban-thanh-ly-06.pdf', 'Kết quả bán thanh lý (06).pdf', 150000, null);
+  perform pm_lq_award_submit(v_b);
+  perform am_demo_tick(am_demo_at(47, 10), c_sc, v_nm);
+  perform am_demo_lq_sign(v_b, 46, c_sc, v_nm);         -- Hội đồng duyệt giá
+  -- Quyết toán: hoá đơn (Kế toán), gate pass + biên bản giao nhận đã ký (Hotel AM)
+  k := 0;
+  for x in select distinct q.id, q.data ->> 'name' nm from pm_lq_quote q join pm_lq_item i on i.sale_quote_id = q.id where i.batch_id = v_b loop
+    k := k + 1;
+    v_inv := '0000' || (2101 + k);
+    perform am_demo_as('demo.accountant@plaza-demo.test');
+    perform pm_lq_buyer_doc(x.id, jsonb_build_object('invoice_no', v_inv, 'invoice_date', (current_date - 42)::text));
+    perform pm_lq_file_add(v_b, 'invoice', v_b || '/hoa-don-' || v_inv || '.pdf', 'Hoá đơn bán thanh lý ' || v_inv || '.pdf', 90000, x.id);
+    perform am_demo_as('demo.hotelam@plaza-demo.test');
+    perform pm_lq_buyer_doc(x.id, jsonb_build_object('gate_date', (current_date - 41)::text, 'handover_date', (current_date - 41)::text));
+    perform pm_lq_file_add(v_b, 'handover', v_b || '/bien-ban-giao-nhan-' || x.id || '.pdf', 'Biên bản giao nhận — ' || x.nm || '.pdf', 180000, x.id);
+    perform pm_lq_file_add(v_b, 'gatepass', v_b || '/gate-pass-' || x.id || '.pdf', 'Gate pass — ' || x.nm || '.pdf', 120000, x.id);
+  end loop;
+  perform am_demo_tick(am_demo_at(41, 15), c_sc, v_nm);
+  perform am_demo_lq_sign(v_b, 39, c_sc, v_nm);         -- AM, Kế toán, Kế toán trưởng → đóng đợt, cập nhật sổ
+
+  -- The Disposal Form's sales table (LR page 2): price and buyer of each sold line.
+  update pm_doc d set data = jsonb_set(d.data, '{lines}', (
+    select jsonb_agg(l || coalesce((select jsonb_build_object('sale_price', i.sale_price, 'buyer', i.buyer, 'buyer_id', coalesce(q.data ->> 'tax_code', q.data ->> 'id_no'))
+                                      from pm_lq_item i left join pm_lq_quote q on q.id = i.sale_quote_id
+                                     where i.lr_doc_id = d.id and i.line_key = l ->> 'key'), '{}'::jsonb) order by ord)
+      from jsonb_array_elements(d.data -> 'lines') with ordinality t(l, ord)))
+   where d.id = v_lr;
+
+  ---------------------------------------------------------------- ngày tháng theo kế hoạch
+  update pm_project set request_date = current_date - 165, approve_date = current_date - 141, purchase_date = current_date - 132,
+                        handover_date = current_date - 86 where code = c_sc;
+  update pm_project set assess_date = current_date - 158 where code = c_sc and assess_date is not null;
+  update pm_contract set signed_date = current_date - 130, approved_at = am_demo_at(125, 15), handover_date = current_date - 86,
+                         warranty_until = current_date - 86 + 730 where id = v_cid;
+  update am_alr set issue_date = current_date - 93 where pm_doc_id = v_al;
+  update am_asset set in_use_date = current_date - 86 where id = any (v_new);
+  update pm_lq_batch set decision_date = current_date - 61, count_date = current_date - 58, valuation_date = current_date - 56, liquidation_date = current_date - 38
+   where id = v_b;
+
+  perform set_config('request.jwt.claims', coalesce(v_claims, ''), true);
+  perform set_config('request.jwt.claim.sub', coalesce(v_sub, ''), true);
+  return jsonb_build_object('sample_project', c_sc, 'batch', (select code || ' · ' || status from pm_lq_batch where id = v_b),
+                            'docs', (select count(*) from pm_doc where project_code = c_sc or id = v_lr), 'project_status', (select status from pm_project where code = c_sc));
+end $$;
+
+/* Hoàn thiện dự án mẫu (Công cụ quản trị → nút, demo.js): chữ ký vẽ tay của từng người demo thay cho chữ ký
+   tạm (am_demo_sig0) ở mọi ô đã ký của dự án mẫu. p_sigs = {"email": "data:image/png;base64,…"}. */
+create or replace function am_demo_sample_finish(p_sigs jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v0 text := am_demo_sig0() ->> 'png'; n int := 0; m int;
+begin
+  perform am_demo_guard();
+  perform app_require('override', 'admin');
+  update pm_pkg_step s set signature = jsonb_build_object('png', p_sigs ->> u.email, 'at', s.acted_at)
+    from app_user u where u.id = s.acted_by and s.signature ->> 'png' = v0 and (p_sigs ->> u.email) ~ '^data:image/png;base64,' and length(p_sigs ->> u.email) < 300000;
+  get diagnostics m = row_count; n := n + m;
+  update pm_pkg k set prep_signature = jsonb_build_object('png', p_sigs ->> u.email, 'at', k.submitted_at)
+    from app_user u where u.id = k.created_by and k.prep_signature ->> 'png' = v0 and (p_sigs ->> u.email) ~ '^data:image/png;base64,' and length(p_sigs ->> u.email) < 300000;
+  get diagnostics m = row_count; n := n + m;
+  update pm_doc d set prep_signature = jsonb_build_object('png', p_sigs ->> u.email, 'at', d.submitted_at)
+    from app_user u where u.id = d.created_by and d.prep_signature ->> 'png' = v0 and (p_sigs ->> u.email) ~ '^data:image/png;base64,' and length(p_sigs ->> u.email) < 300000;
+  get diagnostics m = row_count; n := n + m;
+  -- Phiếu PA / MC: "Người lập" là AM Coordinator ở bước soạn của gói.
+  update pm_doc d set prep_signature = jsonb_build_object('png', p_sigs ->> u.email, 'at', s.acted_at)
+    from pm_pkg_step s join app_user u on u.id = s.acted_by
+   where d.pkg_id = s.pkg_id and s.owner_prep and d.doc_type in ('PA', 'MC') and d.prep_signature ->> 'png' = v0 and (p_sigs ->> u.email) ~ '^data:image/png;base64,';
+  get diagnostics m = row_count; n := n + m;
+  update pm_doc_step s set signature = jsonb_build_object('png', p_sigs ->> u.email, 'at', s.acted_at)
+    from app_user u where u.id = s.acted_by and s.signature ->> 'png' = v0 and (p_sigs ->> u.email) ~ '^data:image/png;base64,';
+  get diagnostics m = row_count; n := n + m;
+  update pm_payreq r set submitted_sig = jsonb_build_object('png', p_sigs ->> u.email, 'at', r.submitted_at)
+    from app_user u where u.id = r.created_by and r.submitted_sig ->> 'png' = v0 and (p_sigs ->> u.email) ~ '^data:image/png;base64,';
+  get diagnostics m = row_count; n := n + m;
+  update pm_payreq r set approved_sig = jsonb_build_object('png', p_sigs ->> u.email, 'at', r.approved_at)
+    from app_user u where u.id = r.approved_by and r.approved_sig ->> 'png' = v0 and (p_sigs ->> u.email) ~ '^data:image/png;base64,';
+  get diagnostics m = row_count; n := n + m;
+  update pm_payreq r set paid_sig = jsonb_build_object('png', p_sigs ->> u.email, 'at', r.updated_at)
+    from app_user u where u.id = r.paid_by and r.paid_sig ->> 'png' = v0 and (p_sigs ->> u.email) ~ '^data:image/png;base64,';
+  get diagnostics m = row_count; n := n + m;
+  update pm_lq_sign g set sig = jsonb_build_object('png', p_sigs ->> u.email, 'at', g.at)
+    from app_user u where u.id = g.user_id and g.sig ->> 'png' = v0 and (p_sigs ->> u.email) ~ '^data:image/png;base64,';
+  get diagnostics m = row_count; n := n + m;
+  return jsonb_build_object('signatures', n);
+end $$;
+
+-- Các tệp mà dự án mẫu tham chiếu nhưng chưa có trong kho lưu trữ: Công cụ quản trị vẽ tệp mẫu (PDF / ảnh) rồi tải lên đúng chỗ.
+create or replace function am_demo_sample_files()
+returns table (bucket text, path text, name text, kind text, label text)
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform am_demo_guard();
+  perform app_require('override', 'admin');
+  return query
+  with f as (
+    select 'pm-tender'::text b, x ->> 'path' p, x ->> 'name' n, 'quotation'::text k, i.vendor_name l
+      from pm_tender t join pm_tender_bid d on d.tender_id = t.id join pm_tender_invitee i on i.id = d.invitee_id, jsonb_array_elements(d.files) x
+     where t.project_code = 'FFE.KIT.07.2026'
+    union all
+    select 'pm-payreq', x ->> 'path', x ->> 'name', x ->> 'kind', r.no from pm_payreq r, jsonb_array_elements(r.files) x where r.project_code = 'FFE.KIT.07.2026'
+    union all
+    select 'pm-contract', cf.storage_path, cf.name, 'contract', c.contract_no from pm_contract_file cf join pm_contract c on c.id = cf.contract_id
+     where c.project_code = 'FFE.KIT.07.2026' and cf.source = 'storage'
+    union all
+    select 'am-photo', ph.storage_path, a.asset_code, 'photo-' || ph.kind, a.name_vi || ' · ' || a.asset_code
+      from am_asset_photo ph join am_asset a on a.id = ph.asset_id where ph.source = 'storage' and ph.storage_path like 'sample/%'
+    union all
+    select 'pm-lqdoc', x ->> 'path', x ->> 'name', x ->> 'kind', b.code from pm_lq_batch b, jsonb_array_elements(b.files) x
+     where exists (select 1 from pm_lq_item i join pm_doc d on d.id = i.lr_doc_id where i.batch_id = b.id and d.data ->> 'project_code' = 'FFE.KIT.07.2026'))
+  select f.b, f.p, f.n, f.k, f.l from f
+   where f.p is not null and (to_regclass('storage.objects') is null
+                              or not exists (select 1 from storage.objects o where o.bucket_id = f.b and o.name = f.p));
+end $$;
+
+-- Tải tệp mẫu lên: chỉ quản trị, chỉ project demo, chỉ các kho của dự án mẫu.
+do $$
+begin
+  if to_regclass('storage.objects') is not null then
+    execute 'drop policy if exists am_demo_upload on storage.objects';
+    execute $p$create policy am_demo_upload on storage.objects for insert to authenticated
+      with check (bucket_id in ('pm-tender', 'pm-payreq', 'pm-contract', 'am-photo', 'pm-lqdoc') and (select am_demo_on()) and (select app_can('override', 'admin')))$p$;
+  end if;
 end $$;
 
 -- Nút "Làm mới dữ liệu thử" (Công cụ quản trị, chỉ project demo, quyền quản trị dữ liệu).
@@ -768,8 +1539,13 @@ begin
 end $$;
 
 revoke execute on function am_demo_on(), am_demo_guard(), am_demo_people(), am_demo_accounts(text, text), am_demo_uid(text), am_demo_nm(text), am_demo_wipe(),
-  am_demo_pick(text[]), am_demo_eng(), am_demo_seed(int), am_demo_reset() from public, anon;
-grant execute on function am_demo_on(), am_demo_reset() to authenticated;
+  am_demo_pick(text[]), am_demo_eng(), am_demo_seed(int), am_demo_reset(),
+  am_demo_sig0(), am_demo_as(text), am_demo_role_mail(text), am_demo_at(int, numeric), am_demo_tick(timestamptz, text, bigint),
+  am_demo_drive(bigint, int, text, bigint, text, jsonb), am_demo_lq_sign(bigint, int, text, bigint), am_demo_sample(),
+  am_demo_sample_finish(jsonb), am_demo_sample_files() from public, anon;
+revoke execute on function am_demo_as(text), am_demo_tick(timestamptz, text, bigint), am_demo_drive(bigint, int, text, bigint, text, jsonb),
+  am_demo_lq_sign(bigint, int, text, bigint), am_demo_sample() from authenticated;
+grant execute on function am_demo_on(), am_demo_reset(), am_demo_sample_finish(jsonb), am_demo_sample_files() to authenticated;
 
 
 -- =====================================================================

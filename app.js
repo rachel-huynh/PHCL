@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20261014b';
+const APP_VERSION = '20261014d';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -41,7 +41,8 @@ function colLabel(c) {
 const LS_KEY = 'asset-intake.sb';
 let CFG = { url: '', key: '' };
 /* Tablet / phone mode (tbDetect): declared up here because showView and firstView read it from the start. */
-const TB_VIEWS = ['pmdash', 'amdash', 'inbox', 'doc', 'lqcount', 'stockcount', 'engchk', 'recv', 'meetings', 'contracts', 'flows', 'settings', 'setup'];
+// payreq: sign only on a tablet / phone (pqRenderTab, user 14/10/2026).
+const TB_VIEWS = ['pmdash', 'amdash', 'inbox', 'doc', 'payreq', 'lqcount', 'stockcount', 'engchk', 'recv', 'meetings', 'contracts', 'flows', 'settings', 'setup'];
 // ask: a tap on a notice is opening a screen — offer the full view when tablet mode does not have it (showView).
 const TB = { on: false, pages: [], i: 0, key: null, busy: false, ask: false };
 
@@ -2347,6 +2348,7 @@ function navBackBtn() {
 }
 
 function showView(view) {
+  navMenu(false);         // a screen chosen from the bottom menu (phone / tablet width): the menu folds away
   // A screen this user may not open (rights changed, or it was the last screen
   // of the previous person) falls back to one they may.
   if (!canView(view)) view = ME ? firstView() : 'setup';
@@ -2531,6 +2533,29 @@ async function checkSchema() {
   out.append(el('div', { className: 'wrap' }, tb));
 }
 
+/* Phone / tablet width, full view (user 14/10/2026): the menu sits at the bottom of the screen folded into one
+   bar, "☰ Menu · this page"; the bar opens it and folds it again, and so do choosing a screen, a tap beside it, Esc. */
+function navMenu(open) {
+  const a = $('aside'), b = $('#navTog');
+  if (!a || !b) return;
+  a.classList.toggle('open', open);
+  b.setAttribute('aria-expanded', String(open));
+  const txt = $('#navTogTxt');
+  txt.dataset.i18n = open ? 'nv.menuHide' : 'nv.menu';
+  txt.textContent = t(txt.dataset.i18n);
+  $('#navTogCur').textContent = open ? '' : ($('#pageTitle').textContent || '');
+  b.querySelector('.chev').textContent = open ? '▾' : '▴';
+}
+function navMenuInit() {
+  $('#navTog').onclick = () => navMenu(!$('aside').classList.contains('open'));
+  $('#navScrim').onclick = () => navMenu(false);
+  matchMedia('(min-width:861px)').addEventListener('change', e => { if (e.matches) navMenu(false); });   // back to the side menu
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('aside').classList.contains('open')) navMenu(false); });
+  // The bar names the screen that is open.
+  new MutationObserver(() => { if (!$('aside').classList.contains('open')) $('#navTogCur').textContent = $('#pageTitle').textContent || ''; })
+    .observe($('#pageTitle'), { childList: true, characterData: true, subtree: true });
+}
+
 /* ---------------------------------------------------------------- init */
 function init() {
   applyI18n();
@@ -2542,6 +2567,7 @@ function init() {
   // No preview inside the preview.
   if (window.top !== window.self) $('#stPvRow').style.display = 'none';
   else $('#btnStPv').onclick = stPreview;
+  navMenuInit();
   tbInit();
   $$('#langSeg button').forEach(b => { b.onclick = () => switchLang(b.dataset.lang); });
   buildNav();
@@ -13271,6 +13297,9 @@ function tbBarRender() {
   };
   if (canView('pmdash')) bar.append(item('pmdash', 'tb.dash', '▦'));
   if (canView('inbox')) bar.append(item('inbox', 'tb.todo', '✓', WF.badgeN));
+  // Payment requests to sign (payreq.js, sign only here): for whoever checks, approves or pays them.
+  const payRoles = window.PQ && PQ.route ? ['check', 'approve', 'process'].flatMap(k => PQ.route[k] || []) : ['CHIEF_ACC', 'ACCOUNTANT'];
+  if (canView('payreq') && ME.roles.some(x => payRoles.includes(x.role))) bar.append(item('payreq', 'nv.payreq', '₫'));
   // A liquidation batch waiting for its physical count: counted walking round with the tablet.
   if (LQ.countN && canView('lqcount')) bar.append(item('lqcount', 'lc.tab', '☑', LQ.countN));
   // A periodic asset count open: counted walking round with the tablet (assetops.js).
