@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20261014d';
+const APP_VERSION = '20261014f';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -1380,6 +1380,17 @@ function renderAlrList() {
         [ALR.rows.length ? all('_label', false) : null,
          el('span', { textContent: t('alr.col.label') })]))
   ]));
+  alrAutoProject();
+  // Rows sent from the intake or opened from an AL document come without the location's name, which the
+  // list and the printed receipt show next to its code: looked up once, then drawn again.
+  if (ALR.rows.some(r => r.location_code && r.location_name === undefined) && !ALR.locBusy) {
+    ALR.locBusy = true;
+    lookup('am_location').then(locs => {
+      const m = new Map(locs.map(l => [l.v, l.t]));
+      for (const r of ALR.rows) if (r.location_name === undefined) r.location_name = (m.get(r.location_code) || '').split(' — ')[1] || '';
+    }).catch(() => { for (const r of ALR.rows) if (r.location_name === undefined) r.location_name = ''; })
+      .finally(() => { ALR.locBusy = false; renderAlrList(); });
+  }
   if (!ALR.rows.length) {
     body.append(el('tr', {}, el('td', { colSpan: 9, style: 'color:var(--dim);padding:14px',
       textContent: t('alr.listEmpty') })));
@@ -1459,6 +1470,17 @@ function loadAlrDemo() {
 }
 
 const alrPicked = () => ALR.rows.filter(r => r._pick !== false);
+
+/* The receipt's project code (and so its number AL.…) comes from the ticked assets: their project
+   (purpose_code, written by the intake). Only when they all share one, and only until the person
+   types a project code themselves (user 14/10/2026). */
+function alrAutoProject() {
+  if (ALR.projTyped) return;
+  const codes = [...new Set(alrPicked().map(r => (r.purpose_code || '').trim()).filter(Boolean))];
+  if (codes.length !== 1 || $('#alProject').value === codes[0]) return;
+  $('#alProject').value = codes[0];
+  $('#alCode').value = alrCodeFromProject(codes[0]);
+}
 
 /* Company identity ranged left, document identity ranged right — the layout of
    the original ASSET LABEL RECEIPT.xlsx. The project code is deliberately not
@@ -1790,6 +1812,7 @@ async function alrOpen(id) {
     const lines = await SB.select('am_alr_line',
       `select=line_no,am_asset(*)&alr_id=eq.${id}&order=line_no`);
 
+    ALR.projTyped = true;                 // a saved receipt keeps its own project and number
     $('#alCode').value = a.code || '';
     $('#alDate').value = a.issue_date || '';
     $('#alProject').value = a.project_code || '';
@@ -1853,7 +1876,8 @@ function initAlr() {
   $('#alDate').value = new Date().toISOString().slice(0, 10);
   const sync = () => { $('#alCode').value = alrCodeFromProject($('#alProject').value); };
   sync();
-  $('#alProject').oninput = sync;
+  // Typed by hand: no longer filled from the ticked assets (emptied: it fills itself again).
+  $('#alProject').oninput = () => { ALR.projTyped = !!$('#alProject').value.trim(); sync(); };
   ['alShip', 'alDept', 'alLoc', 'alCat'].forEach(id => msSetup(id, []));
   // Picking exactly one delivery batch offers up its project code.
   MS.alShip.onChange = () => {
@@ -1868,6 +1892,7 @@ function initAlr() {
   $('#btnAlReset').onclick = () => {
     ['alShip', 'alDept', 'alLoc', 'alCat'].forEach(msClear);
     $('#alProjF').value = ''; $('#alName').value = '';
+    ALR.projTyped = false;
   };
   $('#alName').onkeydown = ev => { if (ev.key === 'Enter') loadAlrAssets(); };
   $('#alProjF').onkeydown = ev => { if (ev.key === 'Enter') loadAlrAssets(); };
@@ -2397,7 +2422,11 @@ function showView(view) {
     // The rule tester lives inside the counters screen now, so its pickers
     // load with that screen.
     if (view === 'counter' && SB.ready()) fillPickers();
-    if (view === 'alr' && SB.ready()) { fillAlrPickers(); alrHistory(); }
+    if (view === 'alr' && SB.ready()) {
+      fillAlrPickers(); alrHistory();
+      // "Prepared by": the person signed in, unless already typed (no names written into the page).
+      if (!$('#alPrep').value.trim() && ME) $('#alPrep').value = ME.full_name || ME.email || '';
+    }
     if (view === 'backup' && SB.ready()) bkCount();
     if (view === 'sources' && SB.ready()) { if (can('system', 'view')) srcLoad(); srcChecklist(); pmLookups().catch(() => {}); if (window.dsInit) dsInit(); piShow(); }
     if (view === 'settings' && SB.ready()) stLoad();
@@ -13681,6 +13710,7 @@ async function alPrintLabels(alDoc) {
   showView('alr');
   try {
     await fillAlrPickers();
+    ALR.projTyped = true;                 // the AL document's own project and number
     $('#alProject').value = WF.project.code || '';
     $('#alCode').value = alDoc.doc_no;
     const rows = [];

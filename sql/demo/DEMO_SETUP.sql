@@ -1426,14 +1426,6 @@ begin
   perform am_demo_tick(am_demo_at(41, 15), c_sc, v_nm);
   perform am_demo_lq_sign(v_b, 39, c_sc, v_nm);         -- AM, Kế toán, Kế toán trưởng → đóng đợt, cập nhật sổ
 
-  -- The Disposal Form's sales table (LR page 2): price and buyer of each sold line.
-  update pm_doc d set data = jsonb_set(d.data, '{lines}', (
-    select jsonb_agg(l || coalesce((select jsonb_build_object('sale_price', i.sale_price, 'buyer', i.buyer, 'buyer_id', coalesce(q.data ->> 'tax_code', q.data ->> 'id_no'))
-                                      from pm_lq_item i left join pm_lq_quote q on q.id = i.sale_quote_id
-                                     where i.lr_doc_id = d.id and i.line_key = l ->> 'key'), '{}'::jsonb) order by ord)
-      from jsonb_array_elements(d.data -> 'lines') with ordinality t(l, ord)))
-   where d.id = v_lr;
-
   ---------------------------------------------------------------- ngày tháng theo kế hoạch
   update pm_project set request_date = current_date - 165, approve_date = current_date - 141, purchase_date = current_date - 132,
                         handover_date = current_date - 86 where code = c_sc;

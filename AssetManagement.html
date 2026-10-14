@@ -437,6 +437,13 @@
      but on the same line, rather than costing a whole extra row of whitespace. */
   .card .row:has(.fld) > button:first-of-type{margin-left:auto}
   .fld{min-width:150px}
+  /* Label receipt (v-alr): the filters and the document fields on one shared grid of six stretched columns. */
+  .algrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:9px 12px;align-items:end}
+  .algrid > .fld{min-width:0}
+  .algrid > .fld > input,.algrid > .fld > .ms{width:100%}
+  .alacts{margin-top:10px;justify-content:flex-end}
+  @media (max-width:1100px){ .algrid{grid-template-columns:repeat(3,minmax(0,1fr))} }
+  @media (max-width:600px){ .algrid{grid-template-columns:1fr} }
   .fld.grow{flex:1}
   label{display:block;font-size:11px;font-weight:600;letter-spacing:.05em;
         text-transform:uppercase;color:var(--dim);margin-bottom:4px}
@@ -2562,21 +2569,22 @@
 
     <div class="card">
       <h2 data-i18n="alr.step1"></h2>
-      <div class="row">
-        <div class="fld" style="max-width:220px"><label data-i18n="alr.shipment"></label>
+      <!-- One row of six stretched filters (user 14/10/2026), the same grid as the document fields below. -->
+      <div class="algrid">
+        <div class="fld"><label data-i18n="alr.shipment"></label>
           <details class="ms" id="alShip"></details></div>
-        <div class="fld" style="max-width:150px"><label data-i18n="alr.dept"></label>
+        <div class="fld"><label data-i18n="alr.dept"></label>
           <details class="ms" id="alDept"></details></div>
-        <div class="fld" style="max-width:170px"><label data-i18n="alr.loc"></label>
+        <div class="fld"><label data-i18n="alr.loc"></label>
           <details class="ms" id="alLoc"></details></div>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <div class="fld" style="max-width:180px"><label data-i18n="alr.projectF"></label>
+        <div class="fld"><label data-i18n="alr.projectF"></label>
           <input id="alProjF" spellcheck="false" data-i18n-ph="alr.projectFPh"></div>
-        <div class="fld" style="max-width:200px"><label data-i18n="alr.name"></label>
+        <div class="fld"><label data-i18n="alr.name"></label>
           <input id="alName" spellcheck="false" data-i18n-ph="alr.namePh"></div>
-        <div class="fld" style="max-width:260px"><label data-i18n="alr.cat"></label>
+        <div class="fld"><label data-i18n="alr.cat"></label>
           <details class="ms" id="alCat"></details></div>
+      </div>
+      <div class="row alacts">
         <button class="btn pri" id="btnAlLoad" data-i18n="alr.load"></button>
         <button class="btn" id="btnAlReset" data-i18n="alr.reset"></button>
         <button class="btn" id="btnAlDemo" data-i18n="alr.demo"></button>
@@ -2589,18 +2597,19 @@
 
     <div class="card">
       <h2 data-i18n="alr.step2"></h2>
-      <div class="row">
-        <div class="fld" style="max-width:220px"><label data-i18n="alr.project"></label>
-          <input id="alProject" value="FFE.KIT.05.2025" spellcheck="false"></div>
-        <div class="fld" style="max-width:190px"><label data-i18n="alr.no"></label>
+      <!-- Project code and number fill themselves from the ticked assets (alrAutoProject). -->
+      <div class="algrid">
+        <div class="fld"><label data-i18n="alr.project"></label>
+          <input id="alProject" spellcheck="false" data-i18n-ph="alr.projectFPh"></div>
+        <div class="fld"><label data-i18n="alr.no"></label>
           <input id="alCode" spellcheck="false"></div>
-        <div class="fld" style="max-width:150px"><label data-i18n="alr.date"></label>
+        <div class="fld"><label data-i18n="alr.date"></label>
           <input id="alDate" type="date"></div>
-        <div class="fld" style="max-width:190px"><label data-i18n="alr.prep"></label>
-          <input id="alPrep" value="Huỳnh Thị Trúc Dịu"></div>
-        <div class="fld" style="max-width:190px"><label data-i18n="alr.appr"></label>
-          <input id="alAppr" value="Nguyễn Trung Khánh" data-i18n-ph="alr.apprPh"></div>
-        <div class="fld" style="max-width:190px"><label data-i18n="alr.recv"></label>
+        <div class="fld"><label data-i18n="alr.prep"></label>
+          <input id="alPrep"></div>
+        <div class="fld"><label data-i18n="alr.appr"></label>
+          <input id="alAppr" data-i18n-ph="alr.apprPh"></div>
+        <div class="fld"><label data-i18n="alr.recv"></label>
           <input id="alRecv" data-i18n-ph="alr.recvPh"></div>
       </div>
       <div class="fld grow" style="margin-top:11px">
@@ -3432,21 +3441,21 @@
      so without it a push can land while the page still runs yesterday's code —
      which looks exactly like the change never worked. Bump on every release;
      scripts/bump-version.ps1 does it and stamps APP_VERSION to match. -->
-<script src="i18n.js?v=20261014d"></script>
-<script src="flows.js?v=20261014d"></script>
-<script src="app.js?v=20261014d"></script>
-<script src="assetops.js?v=20261014d"></script>
-<script src="pricedb.js?v=20261014d"></script>
-<script src="meetings.js?v=20261014d"></script>
-<script src="contracts.js?v=20261014d"></script>
-<script src="demo.js?v=20261014d"></script>
-<script src="amdash.js?v=20261014d"></script>
-<script src="eng.js?v=20261014d"></script>
-<script src="docview.js?v=20261014d"></script>
-<script src="datasrc.js?v=20261014d"></script>
-<script src="tendering.js?v=20261014d"></script>
-<script src="receive.js?v=20261014d"></script>
-<script src="payreq.js?v=20261014d"></script>
-<script src="lqflow.js?v=20261014d"></script>
+<script src="i18n.js?v=20261014f"></script>
+<script src="flows.js?v=20261014f"></script>
+<script src="app.js?v=20261014f"></script>
+<script src="assetops.js?v=20261014f"></script>
+<script src="pricedb.js?v=20261014f"></script>
+<script src="meetings.js?v=20261014f"></script>
+<script src="contracts.js?v=20261014f"></script>
+<script src="demo.js?v=20261014f"></script>
+<script src="amdash.js?v=20261014f"></script>
+<script src="eng.js?v=20261014f"></script>
+<script src="docview.js?v=20261014f"></script>
+<script src="datasrc.js?v=20261014f"></script>
+<script src="tendering.js?v=20261014f"></script>
+<script src="receive.js?v=20261014f"></script>
+<script src="payreq.js?v=20261014f"></script>
+<script src="lqflow.js?v=20261014f"></script>
 </body>
 </html>
