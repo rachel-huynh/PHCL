@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20261014f';
+const APP_VERSION = '20261026a';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -2430,7 +2430,7 @@ function showView(view) {
     if (view === 'backup' && SB.ready()) bkCount();
     if (view === 'sources' && SB.ready()) { if (can('system', 'view')) srcLoad(); srcChecklist(); pmLookups().catch(() => {}); if (window.dsInit) dsInit(); piShow(); }
     if (view === 'settings' && SB.ready()) stLoad();
-    if (view === 'register' && SB.ready()) { regFillPickers(); regLoad(true); }
+    if (view === 'register' && SB.ready()) { regFillPickers(); regLoad(true); regPrjList(); }
     if (view === 'intake' && SB.ready()) inFill();
     if (view === 'pmdash' && SB.ready()) pdLoad();
     if (view === 'budget' && SB.ready()) pbLoad();
@@ -3425,7 +3425,7 @@ function regDep(r) {
   const z = n => String(n).padStart(2, '0');
   return { end: `${end.getFullYear()}-${z(end.getMonth() + 1)}-${z(end.getDate())}`, nbv: Math.round(cost * (term - used) / term), used, term, over: used >= term };
 }
-const REG_DEFAULT = ['asset_code', 'barcode', 'name', 'category_code',
+const REG_DEFAULT = ['asset_code', 'barcode', 'name', 'purpose_code', 'category_code',
                      'dept_code', 'location_code', 'qty', 'unit_code',
                      'unit_price', 'purchase_date', 'status_code', 'depreciate_months', 'dep_end', 'nbv_sl'];
 /* How each column is rendered. Only money and quantities are right-aligned —
@@ -3512,6 +3512,13 @@ function regLoadCols() {
           if (add.length) { const at = REG.cols.indexOf('depreciate_months'); if (at >= 0) REG.cols.splice(at + 1, 0, ...add); else REG.cols.push(...add); regSaveCols(); }
         }
       } catch {}
+      // Once (user 26/10/2026): a saved layout gets the project code column after the name.
+      try {
+        if (REG.cols.length && !localStorage.getItem(REG_KEY + '.prj')) {
+          localStorage.setItem(REG_KEY + '.prj', '1');
+          if (!REG.cols.includes('purpose_code')) { const at = REG.cols.indexOf('name'); REG.cols.splice(at >= 0 ? at + 1 : REG.cols.length, 0, 'purpose_code'); regSaveCols(); }
+        }
+      } catch {}
       if (REG.cols.length) return;
     }
   } catch {}
@@ -3522,6 +3529,19 @@ const regSaveCols = () => {
 };
 
 const regSafe = s => String(s).replace(/[(),*]/g, ' ').trim();
+
+// The project codes offered by the register's project filter and the asset panel's project box (user 26/10/2026).
+async function regPrjList() {
+  // Kept once read; a failed read (not signed in yet, no right to projects) is tried again next time.
+  if (!REG.prjs || !REG.prjs.length) {
+    try { REG.prjs = await SB.select('pm_project', 'select=code,name&order=code.desc&limit=3000'); } catch { return []; }
+  }
+  for (const id of ['regPrjList', 'aoPrjList']) {
+    const dl = $('#' + id);
+    if (dl && !dl.children.length) dl.append(...REG.prjs.map(p => el('option', { value: p.code, label: p.name || '' })));
+  }
+  return REG.prjs;
+}
 
 function regFilters() {
   const f = [];          // plain params, ANDed by PostgREST
@@ -3545,6 +3565,13 @@ function regFilters() {
   pick('regKind', 'asset_kind');
   const y = $('#regYear').value.trim();
   if (y) f.push('purchase_year=eq.' + Number(y));
+  // Project code (purpose_code, written by the intake): part of a code is enough (user 26/10/2026).
+  const pj = regSafe($('#regPrj').value);
+  if (pj) f.push('purpose_code=ilike.*' + pj + '*');
+  // Purchase date from / to (user 26/10/2026).
+  const d0 = $('#regFrom').value, d1 = $('#regTo').value;
+  if (d0) f.push('purchase_date=gte.' + d0);
+  if (d1) f.push('purchase_date=lte.' + d1);
 
   /* Per-column boxes under the header. Sent to PostgREST rather than applied to
      the page in hand: filtering only the 200 rows on screen would quietly lie
@@ -4085,12 +4112,14 @@ function initRegister() {
 
   $('#btnRegApply').onclick = () => regLoad(true);
   $('#btnRegReset').onclick = () => {
-    $('#regQ').value = ''; $('#regYear').value = '';
+    $('#regQ').value = ''; $('#regYear').value = ''; $('#regPrj').value = ''; $('#regFrom').value = ''; $('#regTo').value = '';
     ['regDept', 'regCat', 'regLoc', 'regKind'].forEach(msClear);
     REG.colq = {};                       // the per-column boxes are filters too
     regLoad(true);
   };
   $('#regQ').onkeydown = ev => { if (ev.key === 'Enter') regLoad(true); };
+  $('#regPrj').onchange = () => regLoad(true);     // Enter, or a project picked from the suggestions
+  $('#regFrom').onchange = $('#regTo').onchange = () => regLoad(true);
   $('#btnRegColsReset').onclick = () => {
     REG.cols = [...REG_DEFAULT]; regSaveCols(); regRenderCols(); regLoad(true);
   };

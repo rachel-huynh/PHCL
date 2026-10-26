@@ -1071,6 +1071,79 @@ function aoDrawerEl() {
 }
 function aoDrawerClose() { const d = $('#aoDrawer'); if (d) { d.hidden = true; $('#aoDrBody').innerHTML = ''; } }
 
+/* Edit an asset's facts in its panel (user 26/10/2026): name, project, location, quantity (low-value only),
+   unit, price, brand · model · serial, supplier, manufacturer, invoice, dates, depreciation, note. Not here:
+   the code, barcode, kind and category / group (the code and the printed label are built from them), the
+   department (a move between departments is a transfer slip), the status (the operations set it) and the
+   accounting values (from the books). Every change shows in "Life of the asset" (the register's change log). */
+const AO_EDIT = [['name_vi', 'text', 2], ['name_en', 'text', 2], ['purpose_code', 'project', 1], ['location_code', 'loc', 1],
+  ['qty', 'num', 1], ['unit_code', 'unit', 1], ['unit_price', 'money', 1], ['depreciate_months', 'int', 1],
+  ['spec_brand', 'text', 1], ['spec_model', 'text', 1], ['serial', 'text', 1], ['invoice_no', 'text', 1],
+  ['supplier', 'text', 2], ['manufacturer', 'text', 1], ['purchase_date', 'date', 1], ['in_use_date', 'date', 1], ['note', 'area', 2]];
+async function aoAssetEdit(a) {
+  const body = $('#aoDrBody');
+  if (body.querySelector('.aoeditcard')) return;
+  const out = el('div');
+  const [locs, units] = await Promise.all([lookup('am_location').catch(() => []), lookup('am_unit').catch(() => [])]);
+  const inputs = {};
+  const box = el('div', { className: 'aoegrid' });
+  for (const [k, ty, span] of AO_EDIT) {
+    const v = a[k] ?? '';
+    let i;
+    if (ty === 'loc' || ty === 'unit') {
+      i = el('select');
+      i.append(el('option', { value: '', textContent: '—' }));
+      for (const o of ty === 'loc' ? locs : units) i.append(el('option', { value: o.v, textContent: o.t }));
+      if (v && ![...i.options].some(o => o.value === v)) i.append(el('option', { value: v, textContent: v }));   // an old code stays visible
+      i.value = v;
+    } else if (ty === 'area') i = el('textarea', { rows: 2, value: v });
+    else {
+      i = el('input', { type: ty === 'date' ? 'date' : 'text', value: ty === 'money' && v !== '' ? fmtNum(v) : v,
+                        inputMode: ['num', 'int', 'money'].includes(ty) ? 'decimal' : 'text', spellcheck: false });
+      if (ty === 'project') { i.setAttribute('list', 'aoPrjList'); i.placeholder = 'FFE.…'; }
+    }
+    // A unique asset is one item: its quantity stays 1.
+    if (k === 'qty' && a.asset_kind === 'unique') { i.disabled = true; i.title = t('ao.e.qtyUnique'); }
+    inputs[k] = i;
+    box.append(el('div', { className: 'fld' + (span === 2 ? ' span2' : '') }, [el('label', { textContent: colLabel(k) }), i]));
+  }
+  box.append(el('datalist', { id: 'aoPrjList' }));
+  regPrjList();
+  const save = el('button', { className: 'btn pri', type: 'button', textContent: t('ao.e.save') });
+  save.onclick = async () => {
+    const patch = {};
+    for (const [k, ty] of AO_EDIT) {
+      const i = inputs[k];
+      if (i.disabled) continue;
+      let v = i.value.trim();
+      if (['num', 'int', 'money'].includes(ty)) {
+        v = v === '' ? null : numIn(v);
+        if (v != null && (!isFinite(v) || v < 0)) return msg(out, 'err', t('ao.e.badNum', { f: colLabel(k) }));
+        if (ty === 'int' && v != null) v = Math.round(v);
+        if (k === 'qty' && !(v > 0)) return msg(out, 'err', t('ao.e.badNum', { f: colLabel(k) }));
+      } else if (v === '') v = null;
+      if (k === 'purpose_code' && v) v = v.toUpperCase();
+      const old = a[k] == null || a[k] === '' ? null : a[k];
+      if (['num', 'int', 'money'].includes(ty) ? (old == null ? v != null : Number(old) !== v) : String(old ?? '') !== String(v ?? '')) patch[k] = v;
+    }
+    if (!Object.keys(patch).length) return msg(out, 'info', t('ao.e.none'));
+    if (patch.name_vi === null) return msg(out, 'err', t('ao.e.needName'));
+    save.disabled = true;
+    try {
+      await SB.patch('am_asset', `id=eq.${a.id}`, patch);
+      if (VIEW === 'register' && typeof regLoad === 'function') regLoad();
+      await aoAsset(a.id);
+      msg($('#aoDrBody').firstChild, 'ok', t('ao.e.saved', { n: Object.keys(patch).length }));
+    } catch (e) { save.disabled = false; msg(out, 'err', e.message); }
+  };
+  const card = el('div', { className: 'card aoeditcard' }, [el('h3', { textContent: t('ao.e.h') }), el('p', { className: 'hint', textContent: t('ao.e.hint') }), box,
+    el('div', { className: 'row', style: 'gap:8px;margin-top:10px' }, [save,
+      el('button', { className: 'btn', type: 'button', textContent: t('ao.e.cancel'), onclick: () => card.remove() })]), out]);
+  body.insertBefore(card, body.firstChild.nextSibling);
+  card.scrollIntoView({ block: 'start' });
+  inputs.name_vi.focus();
+}
+
 async function aoAsset(id) {
   const dr = aoDrawerEl(), body = $('#aoDrBody');
   dr.hidden = false; body.innerHTML = ''; body.scrollTop = 0;
@@ -1085,6 +1158,11 @@ async function aoAsset(id) {
       const [a] = await SB.select('am_asset', `select=*&id=eq.${id}`); H = { asset: a, events: [], incidents: [], transfers: [], old: true }; }
     const a = H.asset || {};
     $('#aoDrTitle').textContent = `${a.asset_code} — ${aoName(a)}`;
+    // ✎ in the panel's head: edit the asset's facts (aoAssetEdit), for whoever may edit assets.
+    const head = dr.querySelector('.dhead');
+    head.querySelector('.aoedit')?.remove();
+    if (!H.old && can('assets', 'edit'))
+      head.insertBefore(el('button', { className: 'dbtn aoedit', type: 'button', textContent: '✎', title: t('ao.e.btn'), onclick: () => aoAssetEdit(a) }), head.lastChild);
     if (H.old) msg(out, 'warn', t('ao.notInstalled'));
     const f = (k, v) => v == null || v === '' ? [] : [el('dt', { textContent: t(k) }), el('dd', { textContent: v })];
     const wIn = el('input', { type: 'date', value: a.warranty_until || '', disabled: !can('assets', 'edit') || H.old });
@@ -1191,10 +1269,11 @@ function aoEvText(e) {
   const lbl = { status_code: 'ao.a.status', dept_code: 'pm.col.dept', location_code: 'ao.c.loc', asset_code: 'ao.c.code', qty: 'ao.a.qty', unit_price: 'ao.a.price',
                 label_printed: 'ao.a.label', fin_status: 'ao.a.fin', fin_cost: 'col.fin_cost', warranty_until: 'ao.a.warranty', name_vi: 'ao.c.name' };
   const v = (k, x) => x == null || x === '' ? '—' : k === 'status_code' ? amStatusLabel(x) : k === 'fin_status' ? t('acc.fs.' + x) : k === 'label_printed' ? (x ? '✓' : '✗')
-    : ['unit_price', 'fin_cost'].includes(k) ? lqN(x) : String(x);
+    : ['unit_price', 'fin_cost'].includes(k) ? lqN(x) : ['purchase_date', 'in_use_date', 'warranty_until'].includes(k) ? fmtDate(x) : String(x);
   switch (e.kind) {
     case 'created': return [d.asset_code, d.dept_code, d.location_code, d.status_code && amStatusLabel(d.status_code)].filter(Boolean).join(' · ');
-    case 'change': return Object.entries(d).map(([k, x]) => `${t(lbl[k] || k)}: ${v(k, x.o)} → ${v(k, x.n)}`).join(' · ');
+    // Fields edited in the panel (46_asset_history_fields.sql) take the register's column names.
+    case 'change': return Object.entries(d).map(([k, x]) => `${lbl[k] ? t(lbl[k]) : colLabel(k)}: ${v(k, x.o)} → ${v(k, x.n)}`).join(' · ');
     case 'intake': return [d.project_code, d.po && 'PO ' + d.po, d.supplier].filter(Boolean).join(' · ');
     case 'photo': return d.photo_kind ? t('ph.k.' + d.photo_kind) : '';
     case 'transfer': return `${d.from} → ${d.to}${d.loc ? ' · ' + d.loc : ''} · ${t('ao.tf.st.' + d.status)}${d.new_code && d.new_code !== d.old_code ? ` · ${d.old_code} → ${d.new_code}` : ''}${d.qty != null ? ` · SL ${fmtNum(d.qty)}` : ''}`;
