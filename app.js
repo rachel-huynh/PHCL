@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20261026a';
+const APP_VERSION = '20261030a';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -2319,9 +2319,12 @@ function buildTools(view) {
     rel.onclick = () => regLoad();
     const x = el('button', { className: 'btn', textContent: t('reg.xlsx') });
     x.onclick = regXlsx;
+    // Beetrack's upload template (2 sheets), for the ticked assets or else all the filter finds (user 30/10/2026).
+    const bt = el('button', { className: 'btn', textContent: t('reg.bt'), title: t('reg.btHint') });
+    bt.onclick = regBeetrack;
     const p = el('button', { className: 'btn pri', textContent: t('reg.print') });
     p.onclick = regPrint;
-    box.append(cols, rel, x, p);
+    box.append(cols, rel, x, bt, p);
   }
 }
 
@@ -3940,6 +3943,28 @@ async function regXlsx() {
   } catch (e) { msg(out, 'err', e.message); }
 }
 
+/* The register in Beetrack's upload template (BT_UNIQUE / BT_LOW, the same file as the intake's export):
+   the ticked assets when any are ticked, else every asset the filter finds. */
+async function regBeetrack() {
+  const out = $('#regMsg');
+  try {
+    msg(out, 'info', t('reg.exporting'));
+    let rows;
+    if (REG.sel.size) {
+      const ids = [...REG.sel];
+      rows = [];
+      for (let i = 0; i < ids.length; i += 200) {
+        rows.push(...await SB.select('am_asset', `select=*&id=in.(${ids.slice(i, i + 200).join(',')})&order=asset_code`));
+        msg(out, 'info', t('reg.exporting') + ' ' + fmtInt(rows.length));
+      }
+      rows.sort((a, b) => String(a.asset_code).localeCompare(String(b.asset_code)));
+    } else rows = await regFetchAll(n => msg(out, 'info', t('reg.exporting') + ' ' + fmtInt(n)), true);
+    if (!rows.length) return msg(out, 'warn', t('reg.btNone'));
+    const r = btExport(rows, 'register-' + bkStamp());
+    msg(out, 'ok', t('reg.btDone', { u: fmtInt(r.u), l: fmtInt(r.l), file: r.file, how: t(REG.sel.size ? 'reg.btTicked' : 'reg.btFilter') }));
+  } catch (e) { msg(out, 'err', e.message); }
+}
+
 async function regPrint() {
   const out = $('#regMsg');
   try {
@@ -4167,8 +4192,9 @@ function regFillBulk() {
    commit to am_asset. Nothing is written until Confirm.
 
    Export format: "asset-template-file (Beetrack - original).xlsx" — the sheet
-   Beetrack actually accepts on upload. Unique asset is A..AX, Low-value is
-   A..AJ, and in BOTH the asset code sits in H and the barcode in K.
+   Beetrack actually accepts on upload (re-checked against its template of 30/10/2026).
+   Unique asset is A..AZ, Low-value is A..AL, and in BOTH the asset code sits in H
+   and the barcode in K.
    The workbook is built from scratch rather than by editing the template, so
    no sample row's Text (@) number format can survive and corrupt the numbers
    and dates. */
@@ -4188,10 +4214,13 @@ const BT_UNIQUE = [
   ['Giá Thanh Lý', null], ['Hoá Đơn Thanh Lý', null], ['Có Tính Khấu Hao', '#dep'],
   ['Thời Gian Khấu Hao', 'depreciate_months'], ['Giá Trị Còn Lại', null],
   ['Năm Sản Xuất', 'spec_mfg_year'], ['Ngày Mua', '#d:purchase_date'],
-  ['Ngày Sử Dụng', '#d:in_use_date'], ['Ngày Tính Khấu Hao', '#d:in_use_date'],
+  ['Ngày Sử Dụng', '#d:in_use_date'],
+  // Two columns Beetrack added (template of 30/10/2026): useful life in years (from the depreciation months), product life in days (not kept).
+  ['Thời Gian Sử Dụng Hữu Ích (Năm)', '#life'], ['Tuổi Thọ Sản Phẩm (Ngày)', null],
+  ['Ngày Tính Khấu Hao', '#d:in_use_date'],
   ['Mã Tình Trạng (*)', 'status_code'], ['Nguồn Mua', null],
   ['Mục đích Tài Sản', 'purpose_code'], ['Đã In Nhãn', '#lbl'],
-  ['Ngày Hết Hạn Bảo Hành', null], ['Lịch Bảo Dưỡng', null],
+  ['Ngày Hết Hạn Bảo Hành', '#d:warranty_until'], ['Lịch Bảo Dưỡng', null],
   ['Đơn Vị Thời Gian Bảo Dưỡng', null], ['Tên Người Bảo Dưỡng', null],
   ['Email Người Bảo Dưỡng', null], ['Ghi Chú', 'note']
 ];
@@ -4209,6 +4238,7 @@ const BT_LOW = [
   ['Mã Nhà Sản Xuất', null], ['Số Hóa Đơn', 'invoice_no'], ['Giá Ngoại Tệ', 'price_fx'],
   ['Ngoại Tệ', 'currency'], ['Tỉ Giá', 'fx_rate'], ['Giá Đơn Vị', 'unit_price'],
   ['Ngày Mua', '#d:purchase_date'], ['Ngày Sử Dụng', '#d:in_use_date'],
+  ['Thời Gian Sử Dụng Hữu Ích (Năm)', '#life'], ['Tuổi Thọ Sản Phẩm (Ngày)', null],
   ['Mã Tình Trạng (*)', 'status_code'], ['Nguồn Mua', null],
   ['Mục đích Tài Sản', 'purpose_code'], ['Đã In Nhãn', '#lbl'], ['Ghi Chú', 'note']
 ];
@@ -4219,6 +4249,8 @@ function btCell(spec, row, i) {
   if (spec === '#name') return [row.name_vi, row.name_en].filter(Boolean).join('/');
   if (spec === '#dep') return row.depreciate ? 1 : 0;
   if (spec === '#lbl') return row.label_printed ? 1 : 0;
+  // Useful life (years): the depreciation months ÷ 12, for a depreciated asset only.
+  if (spec === '#life') return row.depreciate && Number(row.depreciate_months) > 0 ? Math.round(Number(row.depreciate_months) / 12 * 100) / 100 : '';
   if (spec.startsWith('#d:')) {
     const v = row[spec.slice(3)];
     return v ? new Date(v + 'T00:00:00') : '';
