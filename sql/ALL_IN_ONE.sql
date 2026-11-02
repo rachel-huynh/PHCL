@@ -3960,8 +3960,7 @@ grant execute on function am_reseed_counters(boolean) to authenticated;
 --      sẽ không đọc được gì nữa sau bước 2 — nên bước 2 và 4 làm liền nhau.
 --   5. Authentication → Sign In / Providers: TẮT "Allow new users to sign up".
 --      Tài khoản chỉ do quản trị tạo ở bước 1.
---   6. Authentication → URL Configuration → Site URL:
---      https://rachel-huynh.github.io/PHCL/AssetManagement.html
+--   6. Authentication → URL Configuration → Site URL = địa chỉ app đang deploy
 --      (để link "quên mật khẩu" trong email quay về đúng app).
 --
 -- Chạy lại nhiều lần vô hại. Ma trận quyền đã sửa trong app KHÔNG bị ghi đè.
