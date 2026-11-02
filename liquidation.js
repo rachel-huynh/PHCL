@@ -45,7 +45,9 @@ const TX = {
     confirmSubmit: 'Nộp báo giá? Báo giá được niêm phong; trước hạn nộp vẫn sửa được nhưng phải nộp lại.',
     editWarn: 'Báo giá đã nộp. Nếu sửa, báo giá trở về nháp — nhớ bấm "Nộp báo giá" lại trước hạn.',
     notAccepting: 'Đợt này không còn nhận báo giá.', uploaded: 'Đã tải lên {n}.', tooBig: 'Tệp {n} lớn hơn 10 MB.', badType: 'Chỉ nhận PDF, ảnh JPG / PNG.',
-    cond_Like: 'Nguyên phẩm', cond_Poor: 'Kém phẩm', cond_Damaged: 'Mất phẩm'
+    cond_Like: 'Nguyên phẩm', cond_Poor: 'Kém phẩm', cond_Damaged: 'Mất phẩm',
+    mode: 'Cách báo giá', mode_item: 'Từng món — chào đơn giá cho món muốn mua', mode_lot: 'Trọn lô — một giá cho cả lô tài sản dưới đây',
+    lotPrice: 'Giá chào mua trọn lô (VND)', lotHint: 'Chào một giá cho TẤT CẢ các tài sản trong danh sách; không chào riêng từng món.', round: 'Vòng chào giá {n}'
   },
   en: {
     title: 'Liquidation quotation', alt: 'Thư báo giá thanh lý', who: 'Buyer: {v} · link expires {d}', loading: 'Loading…',
@@ -65,7 +67,9 @@ const TX = {
     confirmSubmit: 'Submit the quotation? It is sealed; before the deadline it can still be changed, but must then be submitted again.',
     editWarn: 'Submitted. Changing it takes it back to a draft — remember to submit again before the deadline.',
     notAccepting: 'This batch no longer accepts quotations.', uploaded: '{n} uploaded.', tooBig: 'File {n} is larger than 10 MB.', badType: 'Only PDF, JPG / PNG pictures.',
-    cond_Like: 'Like new', cond_Poor: 'Poor', cond_Damaged: 'Damaged'
+    cond_Like: 'Full operational', cond_Poor: 'Poor', cond_Damaged: 'Damaged',
+    mode: 'Quotation by', mode_item: 'Item — a unit price for each item you want', mode_lot: 'Whole lot — one price for all the items below',
+    lotPrice: 'Offered price for the whole lot (VND)', lotHint: 'Quote one price for ALL the items listed; not item by item.', round: 'Quotation round {n}'
   }
 };
 let LANG = (() => { try { return localStorage.getItem('lqbid.lang') || 'vi'; } catch { return 'vi'; } })();
@@ -126,7 +130,8 @@ function render() {
   app.innerHTML = '';
   app.append(el('div', { className: 'card' }, [el('h2', { textContent: `${t('batch')} ${s.batch}` }),
     el('dl', { className: 'kv' }, [
-      el('dt', { textContent: t('deadline') }), el('dd', { textContent: dt(s.deadline) }),
+      el('dt', { textContent: t('deadline') }), el('dd', { textContent: dt(s.deadline) + (s.round > 1 ? ' · ' + t('round', { n: s.round }) : '') }),
+      el('dt', { textContent: t('mode') }), el('dd', {}, el('b', { textContent: t(s.mode === 'lot' ? 'mode_lot' : 'mode_item') })),
       el('dt', { textContent: t('status') }), el('dd', {}, el('span', { className: 'chip ' + (open ? 'ok' : 'bad'), textContent: open ? t('accepting') : t('closed') })),
       el('dt', { textContent: t('mine') }), el('dd', { textContent: q ? `${t(q.status)}${q.submitted_at ? ' · ' + dt(q.submitted_at) : ''}` : t('none') })]),
     s.terms ? el('div', { style: 'margin-top:10px' }, [el('div', { className: 'dim', textContent: t('terms') }), el('div', { className: 'pre', textContent: s.terms })]) : '']));
@@ -148,10 +153,21 @@ function render() {
       ...(co ? [fld(t('rep'), inp('representative'))] : [])]),
     el('div', { className: 'row', style: 'margin-top:8px' }, [fld(t('address'), inp('address')), fld(t('phone'), inp('phone')), fld(t(co ? 'email_c' : 'email_p'), inp('email'))])]));
 
-  const tb = el('table');
-  tb.append(el('tr', {}, [t('no'), t('item'), t('code'), t('qty'), t('unit'), t('cond'), t('price'), t('amount')].map((h, i) => el('th', { className: i === 3 || i >= 6 ? 'n' : '', textContent: h }))));
+  const tb = el('table'), lot = s.mode === 'lot';
+  // By the lot (49_lq_bid_rounds.sql): the items without prices, one price for all of them.
+  if (lot) {
+    tb.append(el('tr', {}, [t('no'), t('item'), t('code'), t('qty'), t('unit'), t('cond')].map((h, i) => el('th', { className: i === 3 ? 'n' : '', textContent: h }))));
+    (s.items || []).forEach((it, i) => tb.append(el('tr', {}, [el('td', { className: 'c', textContent: String(i + 1) }), el('td', { textContent: it.name }),
+      el('td', { textContent: it.asset_code || 'N/A' }), el('td', { className: 'n', textContent: Number(it.qty).toLocaleString('vi-VN') }),
+      el('td', { textContent: it.unit || '' }), el('td', { textContent: condTxt(it.condition) })])));
+    app.append(el('div', { className: 'card' }, [el('h2', { textContent: t('items') }), el('div', { className: 'dim', style: 'margin-bottom:6px', textContent: t('lotHint') }),
+      el('div', { className: 'wrap' }, tb),
+      el('div', { className: 'row', style: 'margin-top:10px' }, [fld(t('lotPrice'), inp('lot_price', { num: true })), fld(t('cost'), inp('cost', { num: true })), fld(t('note'), inp('note', { area: true }))]),
+      el('label', { className: 'agree' }, [el('input', { type: 'checkbox', checked: !!d.agree, disabled: !open, onchange: e => { d.agree = e.target.checked; } }), t('agree')])]));
+  }
+  if (!lot) tb.append(el('tr', {}, [t('no'), t('item'), t('code'), t('qty'), t('unit'), t('cond'), t('price'), t('amount')].map((h, i) => el('th', { className: i === 3 || i >= 6 ? 'n' : '', textContent: h }))));
   let tot = 0;
-  (s.items || []).forEach((it, i) => {
+  if (!lot) (s.items || []).forEach((it, i) => {
     const k = String(it.id), pr = Number(d.prices[k]) || 0, amt = pr * (Number(it.qty) || 0);
     tot += amt;
     const pi = el('input', { value: d.prices[k] != null && d.prices[k] !== '' ? money(d.prices[k]) : '', inputMode: 'decimal', disabled: !open });
@@ -160,8 +176,8 @@ function render() {
       el('td', { className: 'n', textContent: Number(it.qty).toLocaleString('vi-VN') }), el('td', { textContent: it.unit || '' }), el('td', { textContent: condTxt(it.condition) }),
       el('td', { className: 'n', style: 'width:170px' }, pi), el('td', { className: 'n', textContent: amt ? money(amt) : '' })]));
   });
-  tb.append(el('tr', { className: 'tot' }, [el('td', { colSpan: 7, textContent: t('total') }), el('td', { className: 'n', textContent: money(tot) })]));
-  app.append(el('div', { className: 'card' }, [el('h2', { textContent: t('items') }), el('div', { className: 'dim', style: 'margin-bottom:6px', textContent: t('skip') }),
+  if (!lot) tb.append(el('tr', { className: 'tot' }, [el('td', { colSpan: 7, textContent: t('total') }), el('td', { className: 'n', textContent: money(tot) })]));
+  if (!lot) app.append(el('div', { className: 'card' }, [el('h2', { textContent: t('items') }), el('div', { className: 'dim', style: 'margin-bottom:6px', textContent: t('skip') }),
     el('div', { className: 'wrap' }, tb),
     el('div', { className: 'row', style: 'margin-top:10px' }, [fld(t('cost'), inp('cost', { num: true })), fld(t('note'), inp('note', { area: true }))]),
     el('label', { className: 'agree' }, [el('input', { type: 'checkbox', checked: !!d.agree, disabled: !open, onchange: e => { d.agree = e.target.checked; } }), t('agree')])]));

@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20261030a';
+const APP_VERSION = '20261101e';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -42,7 +42,7 @@ const LS_KEY = 'asset-intake.sb';
 let CFG = { url: '', key: '' };
 /* Tablet / phone mode (tbDetect): declared up here because showView and firstView read it from the start. */
 // payreq: sign only on a tablet / phone (pqRenderTab, user 14/10/2026).
-const TB_VIEWS = ['pmdash', 'amdash', 'inbox', 'doc', 'payreq', 'lqcount', 'stockcount', 'engchk', 'recv', 'meetings', 'contracts', 'flows', 'settings', 'setup'];
+const TB_VIEWS = ['mhome', 'pmdash', 'amdash', 'inbox', 'doc', 'payreq', 'lqcount', 'stockcount', 'engchk', 'recv', 'meetings', 'contracts', 'flows', 'settings', 'setup'];
 // ask: a tap on a notice is opening a screen — offer the full view when tablet mode does not have it (showView).
 const TB = { on: false, pages: [], i: 0, key: null, busy: false, ask: false };
 
@@ -2009,7 +2009,7 @@ function firstView() {
   const v = PV_VIEW;
   PV_VIEW = null;
   if (v && canView(v) && (!TB.on || TB_VIEWS.includes(v))) return v;
-  if (TB.on) return canView('inbox') ? 'inbox' : 'pmdash';
+  if (TB.on) return 'mhome';                    // the phone app view opens on its Home (mobile.js)
   if (canView('register')) return 'register';
   return navViews().find(v => v !== 'setup' && canView(v)) || 'setup';
 }
@@ -2388,7 +2388,7 @@ function showView(view) {
       tbDetect();
       TB.key = null;
       setTimeout(tbBarRender, 0);
-    } else view = canView('inbox') ? 'inbox' : 'pmdash';
+    } else view = 'mhome';
   }
   if (VIEW && VIEW !== 'setup' && view !== VIEW && ME) navPush(navSnap());
   if (viewTable(VIEW) && view !== VIEW && CUR) {
@@ -2436,6 +2436,7 @@ function showView(view) {
     if (view === 'register' && SB.ready()) { regFillPickers(); regLoad(true); regPrjList(); }
     if (view === 'intake' && SB.ready()) inFill();
     if (view === 'pmdash' && SB.ready()) pdLoad();
+    if (view === 'mhome' && SB.ready() && window.mbHomeLoad) mbHomeLoad();      // mobile.js
     if (view === 'budget' && SB.ready()) pbLoad();
     if (view === 'projects' && SB.ready()) ppLoad();
     if (view === 'users' && SB.ready()) usLoad();
@@ -3480,7 +3481,9 @@ function regCell(col, v, row) {
 }
 
 const REG_KEY = 'asset-intake.regCols';
-const REG_SIZE = 100;
+// Rows per page: 100, 200 or 500, chosen under the table and remembered in this browser (user 01/11/2026).
+const REG_SIZES = [100, 200, 500];
+let REG_SIZE = (() => { try { const n = Number(localStorage.getItem('asset-intake.reg.size')); return REG_SIZES.includes(n) ? n : 100; } catch { return 100; } })();
 /* sel holds asset ids, not row indexes, so a selection survives paging,
    sorting and re-filtering — you can gather rows from four pages and act on
    them once. anchor is the last row clicked, for shift-click ranges. */
@@ -3582,6 +3585,8 @@ function regFilters() {
   for (const [col, raw] of Object.entries(REG.colq || {})) {
     const v = regSafe(raw);
     if (!v) continue;
+    // "-" finds the empty ones, e.g. assets still missing a location or status code (user 30/10/2026).
+    if (v === '-' && !REG_JOINED[col]) { f.push(`${col}=is.null`); continue; }
     const parts = REG_JOINED[col] || [col];
     const term = p => REG_NUMERIC.has(p) ? `eq.${Number(v) || 0}` : `ilike.*${v}*`;
     if (parts.length > 1) ors.push(parts.map(p => `${p}.${term(p)}`));
@@ -3660,11 +3665,14 @@ function regRender() {
   /* Tick-all applies to THIS PAGE only. Ticking 16,000 rows from one box is a
      mistake waiting to happen; the bulk bar offers the whole filtered set
      separately, in words, so choosing it has to be deliberate. */
-  const all = el('input', { type: 'checkbox', title: t('reg.bk.allPage') });
-  all.checked = REG.rows.length > 0 && REG.rows.every(r => REG.sel.has(r.id));
+  /* Tick-all (user 01/11/2026): every asset the filter finds, on every page — not only this page.
+     Unticking clears the whole selection. */
+  const all = el('input', { type: 'checkbox', title: t('reg.bk.allFilter', { n: fmtInt(REG.total) }) });
+  all.checked = REG.total > 0 && REG.sel.size >= REG.total && REG.rows.every(r => REG.sel.has(r.id));
+  all.indeterminate = !all.checked && REG.sel.size > 0;
   all.onchange = () => {
-    for (const r of REG.rows) all.checked ? REG.sel.add(r.id) : REG.sel.delete(r.id);
-    regRender();
+    if (all.checked) { regSelectAll(); return; }
+    REG.sel.clear(); REG.anchor = -1; regRender();
   };
   hr.append(el('th', { className: 'tickcol' }, all));
   hr.append(el('th', { className: 'num idx', textContent: '#' }));
@@ -3784,7 +3792,7 @@ function regBulkBar() {
   $('#regSelN').textContent = t('reg.bk.n', { n: fmtInt(n) });
   const all = $('#btnRegSelAll');
   all.textContent = t('reg.bk.all', { n: fmtInt(REG.total) });
-  all.hidden = n >= REG.total;
+  all.hidden = true;                    // the tick-all box of the table does this now (user 01/11/2026)
   $('#btnRegBulkSave').disabled = !$('#regBulkLoc').value && !$('#regBulkDept').value && !$('#regBulkSt').value;
 }
 
@@ -3961,7 +3969,7 @@ async function regBeetrack() {
     } else rows = await regFetchAll(n => msg(out, 'info', t('reg.exporting') + ' ' + fmtInt(n)), true);
     if (!rows.length) return msg(out, 'warn', t('reg.btNone'));
     const r = btExport(rows, 'register-' + bkStamp());
-    msg(out, 'ok', t('reg.btDone', { u: fmtInt(r.u), l: fmtInt(r.l), file: r.file, how: t(REG.sel.size ? 'reg.btTicked' : 'reg.btFilter') }));
+    msg(out, r.skipped.length ? 'warn' : 'ok', t('reg.btDone', { u: fmtInt(r.u), l: fmtInt(r.l), file: r.file, how: t(REG.sel.size ? 'reg.btTicked' : 'reg.btFilter') }) + btSkippedText(r.skipped));
   } catch (e) { msg(out, 'err', e.message); }
 }
 
@@ -4153,6 +4161,12 @@ function initRegister() {
 
   regFillBulk();
   $('#btnRegSelAll').onclick = regSelectAll;
+  const rs = $('#regSize');
+  if (rs) {
+    rs.append(...REG_SIZES.map(n => el('option', { value: n, textContent: String(n) })));
+    rs.value = REG_SIZE;
+    rs.onchange = () => { REG_SIZE = Number(rs.value); try { localStorage.setItem('asset-intake.reg.size', REG_SIZE); } catch {} regLoad(true); };
+  }
   $('#btnRegSelNone').onclick = () => { REG.sel.clear(); REG.anchor = -1; regRender(); };
   $('#regBulkLoc').onchange = regBulkBar;   // Apply stays dead until a target is set
   $('#regBulkDept').onchange = regBulkBar;
@@ -4207,7 +4221,7 @@ const BT_UNIQUE = [
   ['Số Lượng Ban Đầu', 'qty'], ['Số Lượng', 'qty'], ['Đơn Vị Tính', 'unit_code'],
   ['Số Seri', 'serial'], ['Mã Vị Trí (*)', 'location_code'], ['Mã Phòng', null],
   ['Mã Phòng Ban', 'dept_code'], ['Mã Phòng Ban Quản Lý', null],
-  ['Mã Công Ty Thành Viên (*)', 'company_code'], ['Mã Người Dùng', null],
+  ['Mã Công Ty Thành Viên (*)', '#company'], ['Mã Người Dùng', null],
   ['Mã Thiết Bị', null], ['Mã Xuất Xứ', 'origin_iso2'], ['Mã Nhà Cung Cấp', null],
   ['Mã Nhà Sản Xuất', null], ['Số Hóa Đơn', 'invoice_no'], ['Giá Ngoại Tệ', 'price_fx'],
   ['Ngoại Tệ', 'currency'], ['Tỉ Giá', 'fx_rate'], ['Đơn Giá', 'unit_price'],
@@ -4219,7 +4233,7 @@ const BT_UNIQUE = [
   ['Thời Gian Sử Dụng Hữu Ích (Năm)', '#life'], ['Tuổi Thọ Sản Phẩm (Ngày)', null],
   ['Ngày Tính Khấu Hao', '#d:in_use_date'],
   ['Mã Tình Trạng (*)', 'status_code'], ['Nguồn Mua', null],
-  ['Mục đích Tài Sản', 'purpose_code'], ['Đã In Nhãn', '#lbl'],
+  ['Mục đích Tài Sản', null], ['Đã In Nhãn', '#lbl'],
   ['Ngày Hết Hạn Bảo Hành', '#d:warranty_until'], ['Lịch Bảo Dưỡng', null],
   ['Đơn Vị Thời Gian Bảo Dưỡng', null], ['Tên Người Bảo Dưỡng', null],
   ['Email Người Bảo Dưỡng', null], ['Ghi Chú', 'note']
@@ -4233,18 +4247,27 @@ const BT_LOW = [
   ['Số Lượng Ban Đầu', 'qty'], ['Số Lượng', 'qty'], ['Đơn Vị Tính', 'unit_code'],
   ['Số Seri', 'serial'], ['Mã Vị Trí (*)', 'location_code'],
   ['Mã Phòng Ban', 'dept_code'], ['Mã Phòng Ban Quản Lý', null],
-  ['Mã Công Ty Thành Viên (*)', 'company_code'], ['Mã Người Dùng', null],
+  ['Mã Công Ty Thành Viên (*)', '#company'], ['Mã Người Dùng', null],
   ['Mã Thiết Bị', null], ['Mã Xuất Xứ', 'origin_iso2'], ['Mã Nhà Cung Cấp', null],
   ['Mã Nhà Sản Xuất', null], ['Số Hóa Đơn', 'invoice_no'], ['Giá Ngoại Tệ', 'price_fx'],
   ['Ngoại Tệ', 'currency'], ['Tỉ Giá', 'fx_rate'], ['Giá Đơn Vị', 'unit_price'],
   ['Ngày Mua', '#d:purchase_date'], ['Ngày Sử Dụng', '#d:in_use_date'],
   ['Thời Gian Sử Dụng Hữu Ích (Năm)', '#life'], ['Tuổi Thọ Sản Phẩm (Ngày)', null],
   ['Mã Tình Trạng (*)', 'status_code'], ['Nguồn Mua', null],
-  ['Mục đích Tài Sản', 'purpose_code'], ['Đã In Nhãn', '#lbl'], ['Ghi Chú', 'note']
+  ['Mục đích Tài Sản', null], ['Đã In Nhãn', '#lbl'], ['Ghi Chú', 'note']
 ];
+
+/* Beetrack's member-company codes where they differ from the app's (user 30/10/2026): Central Plaza is CEN
+   there, CP here. "Mục đích Tài Sản" stays empty — the project goes in "Mã Dự Án" only. */
+const BT_COMPANY = new Map([['CP', 'CEN']]);
+const BT_COMPANY_BACK = new Map([...BT_COMPANY].map(([a, b]) => [b, a]));
+// Beetrack refuses a row missing a compulsory field, and so does the register (47_asset_required.sql):
+// category, name, asset code, barcode, location, status, department (user 01/11/2026).
+const btMissing = r => ['category_code', 'name_vi', 'asset_code', 'barcode', 'location_code', 'status_code', 'dept_code'].some(k => !String(r[k] ?? '').trim());
 
 function btCell(spec, row, i) {
   if (spec === null) return '';
+  if (spec === '#company') return BT_COMPANY.get(row.company_code) || row.company_code || '';
   if (spec === '#') return i + 1;
   if (spec === '#name') return [row.name_vi, row.name_en].filter(Boolean).join('/');
   if (spec === '#dep') return row.depreciate ? 1 : 0;
@@ -4274,6 +4297,9 @@ function btSheet(cols, rows) {
 }
 
 function btExport(rows, stamp) {
+  // Rows Beetrack would refuse (no location or status code) are left out and named back to the caller.
+  const skipped = rows.filter(btMissing);
+  rows = rows.filter(r => !btMissing(r));
   const uniq = rows.filter(r => r.asset_kind === 'unique');
   const low = rows.filter(r => r.asset_kind === 'low');
   const wb = XLSX.utils.book_new();
@@ -4281,8 +4307,11 @@ function btExport(rows, stamp) {
   XLSX.utils.book_append_sheet(wb, btSheet(BT_LOW, low), 'Low-value asset');
   const file = `phcl-asset-upload-${stamp || bkStamp()}.xlsx`;
   XLSX.writeFile(wb, file);
-  return { file, u: uniq.length, l: low.length };
+  return { file, u: uniq.length, l: low.length, skipped };
 }
+// "… left out: no location / status code — KIT.….00011, …" for the messages after an export.
+const btSkippedText = sk => sk.length ? ' ' + t('bt.skipped', { n: fmtInt(sk.length),
+  list: sk.slice(0, 8).map(r => r.asset_code || r.barcode).join(', ') + (sk.length > 8 ? ', …' : '') }) : '';
 
 /* ------------------------------------------------------------ the screen */
 const IN = { lines: [], checked: null, committed: [], sugRan: false };
@@ -4497,16 +4526,20 @@ function inRender() {
     }
     tr.append(locTd);
 
-    /* Kind follows the unit price, so with no price there IS no kind. Saying
-       "Low-value asset" because an empty box reads as 0 would be a claim the
-       paperwork does not support — and on this delivery that was every line. */
-    const kind = kindOf(ln);
+    /* Kind: "Auto" follows the unit price (with no price there IS no kind — saying "Low-value asset"
+       because an empty box reads as 0 would be a claim the paperwork does not support); or chosen by
+       hand (user 01/11/2026), which also lets a line go without a price. */
+    const kind = kindOf(ln), auto = kindByPrice(ln);
     const rows = !kind ? null
                : kind === 'unique' ? (Number(ln.qty) || 0)
                : (inSerials(ln).length || 1);
-    tr.append(el('td', { className: kind ? '' : 'unsure',
-      textContent: !kind ? t('in.kindUnknown')
-                 : kind === 'unique' ? t('reg.kindUnique') : t('reg.kindLow') }));
+    const kLab = k => k === 'unique' ? t('reg.kindUnique') : t('reg.kindLow');
+    const ksel = el('select', { className: kind ? '' : 'unsure', title: t('in.kindHint') });
+    ksel.append(el('option', { value: '', textContent: t('in.kindAuto') + ' — ' + (auto ? kLab(auto) : t('in.kindUnknown')) }),
+                el('option', { value: 'unique', textContent: kLab('unique') }), el('option', { value: 'low', textContent: kLab('low') }));
+    ksel.value = ln.kind_manual || '';
+    ksel.onchange = () => { ln.kind_manual = ksel.value; IN.checked = null; alignKindCategory(ln); inRender(); };
+    tr.append(el('td', {}, ksel));
     tr.append(el('td', { className: 'num', textContent: rows == null ? '—' : String(rows) }));
 
     // Teach the catalogue: one click writes this name -> category back to
@@ -4658,7 +4691,13 @@ function inJump(i) {
 /* The office of the department currently chosen for this delivery. */
 const inDeptOffice = () => IN.deptOffice?.get($('#inDept')?.value);
 
+/* The line's kind: chosen by hand in the Kind column (user 01/11/2026), else from the unit price.
+   The price is no longer compulsory — but a line needs one or the other. */
 function kindOf(ln) {
+  if (ln.kind_manual === 'unique' || ln.kind_manual === 'low') return ln.kind_manual;
+  return kindByPrice(ln);
+}
+function kindByPrice(ln) {
   const v = ln.unit_price;
   if (v === '' || v == null) return null;
   const p = Number(v);
@@ -4672,8 +4711,8 @@ const inSerials = ln => String(ln.serials || '')
 /* Expand one entered line into the asset rows it will become. */
 function inExpand(ln) {
   const price = Number(ln.unit_price) || 0;
-  // inCheck refuses to commit a line with no price, so kindOf() cannot be null
-  // by the time this runs; 'low' is only a shape for the preview.
+  // inCheck refuses to commit a line whose kind is unknown (no price and none chosen), so kindOf() cannot
+  // be null by the time this runs; 'low' is only a shape for the preview.
   const kind = kindOf(ln) || 'low';
   const cat = (window.__CATS || []).find(c => c.code === ln.category_code);
   const serials = inSerials(ln);
@@ -4685,7 +4724,7 @@ function inExpand(ln) {
     name_vi: ln.name_vi, name_en: ln.name_en || null,
     description: ln.description || null,
     unit_code: ln.unit_code || null,
-    unit_price: price,
+    unit_price: price || null,          // no price entered: left empty, not 0
     currency: 'VND',
     // No location entered? The asset sits at its department's office.
     location_code: ln.location_code || inDeptOffice()?.code || null,
@@ -4741,8 +4780,12 @@ async function inCheck() {
     ln._review = [];
     if (!ln.name_vi?.trim()) E(n, t('in.errNoName', { i: n }));
     if (!ln.category_code) E(n, t('in.errNoCat', { i: n }));
+    // Every asset needs a location code (47_asset_required.sql): the line's own, or the department's office
+    // (inExpand fills it in). The status code is set here by the kind.
+    if (!String(ln.location_code || inDeptOffice()?.code || '').trim()) E(n, t('in.errNoLoc', { i: n }));
     const price = Number(ln.unit_price);
-    if (!price) E(n, t('in.errNoPrice', { i: n }));
+    // The price is not compulsory (user 01/11/2026), but the kind must be known: a price, or chosen by hand.
+    if (!kindOf(ln)) E(n, t('in.errNoKind', { i: n }));
 
     /* The category has to agree with what the price makes this line.
          >= 5,000,000  -> unique -> a category kept per unit  (manage_by 'code')
@@ -4761,7 +4804,9 @@ async function inCheck() {
           .map(c => c.code);
         // Two directions, two sentences — one template cannot describe both
         // without saying something false about the price or the category.
-        E(n, t(kind === 'unique' ? 'in.errKindNeedsCode' : 'in.errKindNeedsQty', {
+        // A kind chosen by hand has no price to quote.
+        E(n, t(ln.kind_manual ? (kind === 'unique' ? 'in.errKindManNeedsCode' : 'in.errKindManNeedsQty')
+                              : (kind === 'unique' ? 'in.errKindNeedsCode' : 'in.errKindNeedsQty'), {
           i: n, cat: cat.code,
           price: fmtNum(price), th: fmtNum(IN.thUnique || 5000000),
           alt: alt.length ? alt.join(' / ') : '—'
@@ -5078,7 +5123,7 @@ async function inUndo() {
 function inXlsx() {
   if (!IN.committed.length) return msg('#inMsg', 'warn', t('in.nothingYet'));
   const r = btExport(IN.committed);
-  msg('#inMsg', 'ok', t('in.exported', { u: r.u, l: r.l, file: r.file }));
+  msg('#inMsg', r.skipped.length ? 'warn' : 'ok', t('in.exported', { u: r.u, l: r.l, file: r.file }) + btSkippedText(r.skipped));
 }
 
 function inToAlr() {
@@ -5514,7 +5559,10 @@ const LEG_UPLOAD_HEAD = {
   category: 'Mã Danh Mục (*)', name: 'Tên (*)', desc: 'Mô Tả', code: 'Mã Tài Sản', barcode: 'Mã Vạch',
   location: 'Mã Vị Trí (*)', dept: 'Mã Phòng Ban', company: 'Mã Công Ty Thành Viên (*)', origin: 'Mã Xuất Xứ',
   serial: 'Số Seri', invoice: 'Số Hóa Đơn', unit: 'Đơn Vị Tính', qty: 'Số Lượng',
-  price: ['Đơn Giá', 'Giá Đơn Vị'], bought: 'Ngày Mua', status: 'Mã Tình Trạng (*)', purpose: 'Mục đích Tài Sản'
+  price: ['Đơn Giá', 'Giá Đơn Vị'], bought: 'Ngày Mua', status: 'Mã Tình Trạng (*)',
+  // The project: "Mã Dự Án" (the export leaves "Mục đích Tài Sản" empty since 30/10/2026); an older file
+  // that only filled "Mục đích Tài Sản" is still read from there (legUploadGrid, purpose2).
+  purpose: 'Mã Dự Án', purpose2: 'Mục đích Tài Sản'
 };
 function legUploadGrid(wb) {
   const norm = s => legTxt(s).normalize('NFC').toLowerCase();
@@ -5532,6 +5580,7 @@ function legUploadGrid(wb) {
     aoa.slice(1).forEach((r, ri) => {
       const row = { __line: `${name} · ${ri + 2}`, __kind: kind };
       for (const [k, i] of Object.entries(idx)) if (i >= 0 && LEG_COL[k]) row[LEG_COL[k]] = r[i];
+      if (!legTxt(row[LEG_COL.purpose]) && idx.purpose2 >= 0) row[LEG_COL.purpose] = r[idx.purpose2];
       out.push(row);
     });
   });
@@ -5571,7 +5620,7 @@ async function legRead() {
   try {
     const [cats, orgs, locs, units, origins] = await Promise.all([
       SB.select('am_category', 'select=code,group_code,label_letters'),
-      SB.select('am_org', 'select=code,is_company,is_department'),
+      SB.select('am_org', 'select=code,is_company,is_department,parent_code,level'),
       SB.select('am_location', 'select=code'),
       SB.select('am_unit', 'select=code'),
       SB.select('am_origin', 'select=iso2')
@@ -5580,6 +5629,7 @@ async function legRead() {
       cat: new Map(cats.map(c => [c.code, c])),
       dept: new Set(orgs.filter(o => o.is_department).map(o => o.code)),
       comp: new Set(orgs.filter(o => o.is_company).map(o => o.code)),
+      org: new Map(orgs.map(o => [o.code, o])),
       loc: new Set(locs.map(l => l.code)),
       unit: new Set(units.map(u => u.code)),
       origin: new Set(origins.map(o => o.iso2))
@@ -5605,13 +5655,20 @@ async function legRead() {
     const catCode = legTxt(r[G.category]);
     const cat = master.cat.get(catCode);
     const dept = legTxt(r[G.dept]);
-    const comp = legTxt(r[G.company]) || 'SOF';
+    /* The member company is not compulsory (user 01/11/2026): empty or unknown, it is the branch the
+       department sits in (as am_dept_company, 47_asset_required.sql). Beetrack's code comes back to the
+       app's (CEN → CP, BT_COMPANY) — always: CEN is also a code in am_org (the Central Plaza department,
+       under CP), but the register files Central Plaza's assets under CP. */
+    const deptCo = d => { for (let o = master.org.get(d), i = 0; o && i < 10; o = master.org.get(o.parent_code), i++) if (o.level === 'BRANCH') return o.code; return 'SOF'; };
+    const comp0 = BT_COMPANY_BACK.get(legTxt(r[G.company])) || legTxt(r[G.company]);
+    const comp = comp0 && master.comp.has(comp0) ? comp0 : deptCo(dept);
     const name = legTxt(r[G.name]);
 
     if (!name) errs.push(t('leg.eNoName'));
     if (!cat) errs.push(t('leg.eNoCat', { v: catCode || '—' }));
     if (!master.dept.has(dept)) errs.push(t('leg.eNoDept', { v: dept || '—' }));
-    if (!master.comp.has(comp)) errs.push(t('leg.eNoCompany', { v: comp }));
+    // Compulsory (user 01/11/2026): category, name, asset code, barcode, location, status, department.
+    if (!code) errs.push(t('leg.eNoCode'));
     if (code && seenCode.has(code)) errs.push(t('leg.eDupCode'));
     if (bar && seenBar.has(bar)) errs.push(t('leg.eDupBarcode'));
     // The barcode is what both "add new" and "update" match on, so a row
@@ -5657,6 +5714,9 @@ async function legRead() {
     const rawSt = legTxt(r[G.status]);
     const kindNow = r.__kind || (/cùng/i.test(legTxt(r[G.kind])) ? 'low' : 'unique');
     if (rawSt && amStatusKind(rawSt) !== kindNow) warns.push(t('leg.wStatus', { v: rawSt, k: t('reg.st.' + kindNow) }));
+    // Both are required of every asset (47_asset_required.sql): a line without them is not imported.
+    if (!loc) errs.push(t('leg.eNoLoc', { v: legTxt(r[G.location]) || '—' }));
+    if (!rawSt) errs.push(t('leg.eNoStatus'));
 
     if (errs.length) { LEG.bad.push({ line, code, why: errs.join(' · ') }); continue; }
     if (code) seenCode.add(code);
@@ -5667,7 +5727,7 @@ async function legRead() {
     const nameParts = name.split('/');
     LEG.rows.push({
       is_legacy: true,
-      asset_code: code || `LEGACY-${line}`,
+      asset_code: code,                    // compulsory: a line without one is refused above
       barcode: bar,
       // "Cung Barcode" means one barcode for the whole batch -> low-value.
       asset_kind: r.__kind || (/cùng/i.test(legTxt(r[G.kind])) ? 'low' : 'unique'),
@@ -8678,6 +8738,16 @@ const off100 = v => Math.abs(v - 100) > 0.01;
 
 const WF_COND = ['Full operational', 'Poor', 'Damaged'];     // the workbook's words (Menu!BI)
 const WF_RR_REASON = ['High repair cost', 'Obsolete', 'Irreparable', 'Breakage/loss'];
+// The evidence a reason needs (user feedback 01/11/2026): the work order of an irreparable item,
+// the incident report of a breakage / loss. Typed under the reason, printed there.
+const WF_RR_REF = { Irreparable: 'WO no.', 'Breakage/loss': 'IR no.' };
+function wfRrReason(x, l) {
+  const sel = I(x, l, 'reason', 'select', WF_RR_REASON), k = WF_RR_REF[l.reason];
+  if (!k) return sel;
+  return el('div', { className: 'rrref' }, [sel, x.edit
+    ? el('label', { className: 'rrno' + (String(l.ref_no || '').trim() ? '' : ' freq'), title: t('wf.rr.refHint') }, [el('span', { textContent: k }), I(x, l, 'ref_no', 'text')])
+    : el('small', { textContent: String(l.ref_no || '').trim() ? `${k} ${l.ref_no}` : '' })]);
+}
 const WF_RISK_CAT = ["People's Health & Safety", 'Technical Issues', 'Reputation Damage', 'Incident Acknowledgement',
                      'Periodic Internal Assessment', 'Legal Compliance', 'HACCP Fail Point', 'Public Negative Feedback',
                      "Employee's Complaint", 'Financial Efficiency', 'Operational Inconsistency',
@@ -8756,6 +8826,17 @@ const mcFv = (pv, year) => !n0(pv) ? null
    weight × criterion score. Amounts come from the appendix item lines. */
 // The vendors with a valid quotation: a name and a quoted amount.
 const qcValid = d => (d.vendors || []).filter(v => String(v.name || '').trim() && n0(v.amount) > 0).length;
+// The criteria scored above 0 with nothing written beside the score: "A: Maintenance", …
+const qcNoteMissing = (v, s, sKey, nKey) => n0((v[sKey] || {})[s.label]) > 0 && !String((v[nKey] || {})[s.label] || '').trim();
+function qcUnexplained(d) {
+  const out = [];
+  (d.vendors || []).slice(0, 3).forEach((v, i) => {
+    if (!String(v.name || '').trim()) return;
+    for (const [subs, sKey, nKey] of [[d.sub_ability, 's_ability', 'n_ability'], [d.sub_technique, 's_technique', 'n_technique']])
+      for (const s of subs || []) if (qcNoteMissing(v, s, sKey, nKey)) out.push(`${'ABC'[i]}: ${qcLabel(s.label)}`);
+  });
+  return out;
+}
 function qcScore(d) {
   const lines = d.qlines || [];
   for (const v of d.vendors || []) {
@@ -8786,6 +8867,9 @@ function qcScore(d) {
   if (off100(n0(d.w_price) + n0(d.w_pay))) problems.push(t('wf.qc.fin100'));
   // Fewer than 3 valid quotations (a name and a price): Purchasing says why in the comments (user 29/09/2026).
   if (qcValid(d) < 3 && !String(d.comments || '').trim()) problems.push(t('wf.qc.few'));
+  // A score given needs its explanation in the box beside it (user feedback 01/11/2026).
+  const bare = qcUnexplained(d);
+  if (bare.length) problems.push(t('wf.qc.noNote', { l: bare.slice(0, 4).join('; ') + (bare.length > 4 ? ' …' : '') }));
   if (!d.chosen_vendor) problems.push(t('wf.qc.noChoice'));
   else if (best && best.name !== d.chosen_vendor) problems.push(t('wf.qc.notBest', { best: best.name }));
   return { vendors: vs, best, problems };
@@ -9724,10 +9808,10 @@ function fsKv(rows) {
 
 // The column widths of a form table (percent widths scaled back up to the full row when some columns are left out:
 // an empty spec, an empty MC group). The PO overheads use the same, to stand on the table's columns.
-function fsColg(x, cols, noDel) {
+function fsColg(x, cols, noDel, noW) {
   const pct = cols.reduce((s, c) => s + (/%$/.test(c.w || '') ? parseFloat(c.w) : 0), 0);
   const k = pct > 0 && pct < 94 ? 95 / pct : 1;
-  const colg = el('colgroup', {}, [el('col', { style: 'width:34px' }), ...cols.map(c => el('col', { style: c.w ? `width:${/%$/.test(c.w) ? (parseFloat(c.w) * k).toFixed(2) + '%' : c.w}` : '' })),
+  const colg = el('colgroup', {}, [el('col', { style: `width:${noW || '34px'}` }), ...cols.map(c => el('col', { style: c.w ? `width:${/%$/.test(c.w) ? (parseFloat(c.w) * k).toFixed(2) + '%' : c.w}` : '' })),
                                    ...(x.edit && !noDel ? [el('col', { style: 'width:24px' })] : [])]);
   return { k, colg };
 }
@@ -9735,7 +9819,7 @@ function fsColg(x, cols, noDel) {
    o: { add(): new row, groups: [[label, span]], foot: [[label, colIndex, value]...], noDel } */
 function fsTable(x, cols, rows, o = {}) {
   const tb = el('table', { className: 'ftable' });
-  const { k, colg } = fsColg(x, cols, o.noDel);
+  const { k, colg } = fsColg(x, cols, o.noDel, o.noW);
   tb.append(colg);
   if (o.groups) tb.append(el('tr', { className: 'fgrp' }, [el('th'), ...o.groups.map(([g, n]) => el('th', { colSpan: n }, g)),
                                                           ...(x.edit && !o.noDel ? [el('th')] : [])]));
@@ -9848,7 +9932,7 @@ function fsLinks(x, title = 'ATTACHMENTS') {
       el('a', { href: url, target: '_blank', rel: 'noopener noreferrer', textContent: url })]));
   });
   if (x.edit) { const add = el('button', { className: 'btn tiny fadd', textContent: t('wf.addLink') }); add.onclick = () => { d.evidence.push({}); x.rr(); }; box.append(add); }
-  return el('div', {}, [fsBar(title), box]);
+  return el('div', {}, [title ? fsBar(title) : '', box]);
 }
 
 // A change on the sheet on screen: remember which document of the package to save.
@@ -10319,7 +10403,8 @@ const XS_RR_NOTE = () => el('div', {}, [
   ['', '2. Obsolete – The item is outdated and no longer meets the required needs or functions.'],
   ['', '3. Irreparable – The item is damaged beyond repair and cannot be restored to working condition.'],
   ['', '4. Breakage/loss – The item has either been broken or is missing, rendering it unusable or unaccounted for.'], [''],
-  ['i', 'Note: The reason for replacement must be supported by appropriate evidence (e.g., quotation, incident report, work order, etc.).']
+  ['i', 'Note: The reason for replacement must be supported by appropriate evidence (e.g., quotation, incident report, work order, etc.). '
+    + 'An irreparable item gives its work order number (WO no.), a breakage / loss its incident report number (IR no.), under the reason.']
 ].map(([c, s]) => el('div', { className: c, textContent: s || ' ' })));
 
 /* "Consent by": the signatures of the package, in two rows as on the workbook —
@@ -10410,10 +10495,10 @@ const WF_FORMS = {
         xsBlock(T, { 6: 21, 7: 10.75, 8: 21, 9: 10.75, 10: 21, 11: 10.75, 12: 21, 13: 10.75, 14: 10.75, 15: 21, 16: 5.15, 17: 21, 18: 10.75, 19: 15, 20: 7.95 }, [
           ['B6:U6', 'bar', 'GENERAL INFORMATION'],
           ['B7:F7', 'lbl', 'PROJECT CODE'], ['G7:H7', 'lbl', 'PROJECT TYPE'], ['I7:J7', 'lbl', 'DEPARTMENT CODE'], ['K7:L7', 'lbl', 'PROJECT NO.'],
-          ['M7:P7', 'lbl', 'BUDGET YEAR'], ['Q7:T7', 'lbl', 'SUB-PROJECT NO.'], ['U7', 'lbl', '%'],
+          ['M7:P7', 'lbl', 'BUDGET YEAR'], ['Q7:T7', 'lbl', 'SUB-PROJECT NO.'], ['U7', 'lbl', '%', 'c'],
           ['B8:E8', 'val', fsR(p.code)], ['G8', 'val', V('project_type', 'select', ['Consultancy', 'Non-consultancy'])],
           ['I8', 'val', codeBox(p.dept_code, reSel)], ['K8', 'val', codeBox(seg[2] || '', reNo)], ['M8:O8', 'val', codeBox(p.year, reYear)],
-          ['Q8:S8', 'val', fsR(seg[4] || '')], ['U8', 'val', V('share_pct', 'pct')],
+          ['Q8:S8', 'val', fsR(seg[4] || '')], ['U8', 'val', V('share_pct', 'pct'), 'c'],
           ['B9:H9', 'lbl', 'PROJECT NAME'], ['I9:U9', 'lbl', 'DEPARTMENT NAME'],
           ['B10:G10', 'val', fsR(p.name), 'fit'], ['I10:U10', 'val', fsR(deptName(p.dept_code)), 'fit'],
           ['B11:D11', 'lbl', 'CATEGORY'], ['E11:F11', 'lbl', 'BUDGET'], ['G11:H11', 'lbl', 'INVESTMENT TYPE'], ['I11:U11', 'lbl', 'ESTIMATED TOTAL VALUE'],
@@ -10478,7 +10563,7 @@ const WF_FORMS = {
           ['C', 'F', 'Asset Item', l => wfPickProduct(x, l), 'l'],
           ['G', 'H', 'Asset Code', l => x.edit ? el('div', { className: 'wfpickw' }, [wfPickAsset(x, l), wfRegPickBtn(x, l, 'RR')]) : wfPickAsset(x, l)],
           ['I', 'J', 'Current condition', l => I(x, l, 'condition', 'select', WF_COND)],
-          ['K', 'L', 'Reason', l => I(x, l, 'reason', 'select', WF_RR_REASON)],
+          ['K', 'L', 'Reason', l => wfRrReason(x, l)],
           ['M', 'N', 'After replacement', l => I(x, l, 'after', 'select', ['Reuse', 'Spare', 'Liquidation'])],
           ['O', 'P', 'Qnt', l => I(x, l, 'qty', 'num'), 'n'],
           ['Q', 'R', 'Unit', l => wfPickUnit(x, l)],
@@ -10534,6 +10619,10 @@ const WF_FORMS = {
                     { h: 'Location', k: 'location', w: '11%', cell: l => wfPickLoc(x, l) },
                     { h: 'Specifications', k: 'specs', t: 'area', w: '20%' }, { h: 'Current Condition', k: 'condition', t: 'select', opts: WF_COND, w: '11%' },
                     { h: 'Notes', k: 'notes', t: 'area', w: '19%' }], d.lines, { add: () => ({ qty: 1 }) }),
+        // The AM team's own judgement (user feedback 01/11/2026): the current condition, whether buying /
+        // replacing is justified, explained against the levels of the risk scales below.
+        fsGrid([fc('AMC ASSESSMENT — CURRENT CONDITION & OPINION ON THE PURCHASE / REPLACEMENT (BASED ON THE RISK SCALES)',
+                   I(x, d, 'amc_opinion', 'area'), 12, 'tall left' + (x.edit && !String(d.amc_opinion || '').trim() ? ' freq' : ''))]),
         fsBar('CONCLUSION'),
         // Suggestion over comparability on the left; the procurement type on the right, as tall as both,
         // its label above it (user 29/09/2026).
@@ -10602,7 +10691,7 @@ const WF_FORMS = {
       const D = [...(hasB ? [{ h: '(A-B)/B', get: l => l.diff_b, t: 'pct', w: '5%', key: 'diff_b' }] : []),
                  ...(hasC ? [{ h: '(A-C)/C', get: l => l.diff_c, t: 'pct', w: '5%', key: 'diff_c' }] : [])];
       const cols = [{ h: 'Asset Item', k: 'item', t: 'text', w: '15%', left: true }, { h: 'Weight', get: l => l.weight, t: 'pct', w: '5%' },
-        { h: 'Qnt.', k: 'qty', t: 'num', w: '4%' }, ...A, ...(hasB ? B : []), ...(hasC ? C : []), ...D];
+        { h: 'Qnt.', k: 'qty', t: 'num', w: '4%', center: true }, ...A, ...(hasB ? B : []), ...(hasC ? C : []), ...D];
       // The name of a vendor on its own line under the group's title — the part after the legal
       // form ("Công ty TNHH …", "… Cổ phần …") and wrapped, so a long name never widens the page.
       const vname = (k, ph) => x.edit ? wfInput({ k, t: 'text' }, d, true, x.rr, []) : el('b', { className: 'fvn', textContent: pmShortVendor(d[k]) || ph, title: d[k] || '' });
@@ -10615,7 +10704,8 @@ const WF_FORMS = {
         fsBar('GENERAL INFORMATION'),
         // The project on the left, the figures on the right (feedback 26/09/2026).
         el('div', { className: 'fkv2' }, [
-          fsKv([['Code:', fsR(WF.doc.doc_no)], ['Date:', fsR(d.date, 'date')], ['Project No.:', fsR(p.code)], ['Project Name:', fsR(p.name)]]),
+          // No "Code" row: the code is in the box at the top (user feedback 01/11/2026).
+          fsKv([['Date:', fsR(d.date, 'date')], ['Project No.:', fsR(p.code)], ['Project Name:', fsR(p.name)]]),
           fsKv([['Estimated Project Value:', fsR(d.est_value, 'money'), true, [...fsPair(d.est_value, c)]],
                 ['Risk Tolerance:', fsR(MC_TOL, 'pct'), true], ['Exrate:', fsR(c.fx, 'money'), true]])]),
         fsBar('DETAILED INFORMATION', 'Time Money Value: price then × (1 + 4.6%)^years'),
@@ -10627,9 +10717,12 @@ const WF_FORMS = {
           foot: [['Subtotal', 5, foot]] }),
         fsBar('CONCLUSION'),
         fsGrid([fc('', fsR(d.conclusion), 12, 'left strong ' + (d.mc_over.length ? 'badv' : 'okv'))]),
-        // A note or an attachment, under a bar like the conclusion's.
-        ...(x.edit || d.note ? [fsBar('ATTACHMENT/COMMENT (IF ANY)'), fsGrid([fc('', I(x, d, 'note', 'area'), 12, 'tall left')])] : []),
-        fsLinks(x), fsConsent(x)], 'land')];
+        // A note and the links to the price references / market check (supplier's price list, website…),
+        // under one bar like the conclusion's (user feedback 01/11/2026).
+        ...(x.edit || d.note || (d.evidence || []).some(e => wfSafeUrl(e.url)) ? [fsBar('ATTACHMENT/COMMENT (IF ANY)'),
+          ...(x.edit || d.note ? [fsGrid([fc('', I(x, d, 'note', 'area'), 12, 'tall left')])] : []),
+          fsLinks(x, '')] : []),
+        fsConsent(x)], 'land')];
     } },
 
   /* -------------------------------------------------------------- PO
@@ -10740,7 +10833,7 @@ const WF_FORMS = {
         fsGrid([fc('PROJECT CODE', fsR(x.p.code), 4),
                 fc('PROJECT COMPLETION EVALUATION', I(x, d, 'evaluation', 'select', ['Excellent', 'Satisfactory', 'Unsatisfactory']), 6),
                 fc('FINAL HANDOVER', I(x, d, 'final', 'bool'), 2),     // a small box (user 29/09/2026)
-                fc('PROJECT NAME', fsR(x.p.name), 4, 'fit'), fc('DETAILED EVALUATION', I(x, d, 'evaluation_detail', 'area'), 8, 'left rows2'),
+                fc('PROJECT NAME', fsR(x.p.name), 4, 'left'), fc('DETAILED EVALUATION', I(x, d, 'evaluation_detail', 'area'), 8, 'left rows2'),
                 fc('SUPPLIER', I(x, d, 'supplier', 'text'), 4)]),
         fsBar('DETAILED INFORMATION'), fsColBar(x),
         fsTable(x, cols, d.lines, { add: () => ({ qty: 1, spec: {} }), tail: 3 }),
@@ -10782,21 +10875,24 @@ function qcBuild(x) {
   const allW = [d.w_ability, d.w_technique, d.w_finance].every(w => n0(w) > 0);
 
   // Page 1 — the scoring summary.
-  const crit = el('table', { className: 'fqc' });
-  crit.append(el('tr', {}, [el('td'), el('td'), el('td'), ...V.map((v, i) => el('td', { className: 'fvh' }, [el('small', { textContent: L[i] }), vnEl(v, i)])), el('td')]));
+  // On the columns of the quotation summary under it (user feedback 01/11/2026): the criterion and "Ratio"
+  // over No. + Asset Item, the weight over Qnt., each vendor over its own amount, the conclusion over the differences.
+  const crit = el('table', { className: 'fqc fcrit' });
+  const span2 = (e, n) => { e.colSpan = n; return e; };
+  crit.append(el('tr', {}, [span2(el('td'), 2), el('td'), ...V.map((v, i) => el('td', { className: 'fvh' }, [el('small', { textContent: L[i] }), vnEl(v, i)])), span2(el('td'), 2)]));
   const rows = [['ABILITY & EXPERIENCE', 'w_ability', 'ability'], ['TECHNIQUES', 'w_technique', 'technique'],
                 ['FINANCE', 'w_finance', 'finance'], ['TOTAL SCORE', null, 'total']];
   // Scores on this page are read from the appendix; on screen a click opens it.
   const goApp = () => { WF.qcTab = 'appendix'; x.root.replaceWith(fsSheet(x.type, x.edit, x.mode)); };
   rows.forEach(([lbl, wk, sk], ri) => {
-    const tr = el('tr', {}, [navc(lbl), navc('Ratio', 'sm'),
+    const tr = el('tr', {}, [span2(el('td', { className: 'fnav' }, [el('span', { textContent: lbl }), el('span', { className: 'rt', textContent: 'Ratio' })]), 2),
       el('td', { className: 'fvbox n' }, wk && wk !== 'w_finance' ? pct(d, wk)
         : fsR((wk ? n0(d.w_finance) : Math.round(n0(d.w_ability) + n0(d.w_technique) + n0(d.w_finance))) + '%')),
       ...V.map(v => { const td = el('td', { className: 'fvbox n' + (sk === 'total' ? ' strong' : '') }, fsR(v.name ? v[sk] : null, 'num'));
         if (x.mode === 'screen' && sk !== 'total') { td.classList.add('flink'); td.title = t('wf.qc.fromAppendix'); td.onclick = goApp; }
         return td; })]);
     // The Conclusion box runs down beside all four rows, total score included.
-    if (ri === 0) tr.append(el('td', { rowSpan: 4, className: 'fconc' + (allW && r.best && r.best.name === d.chosen_vendor ? ' ok' : ' warn') },
+    if (ri === 0) tr.append(el('td', { rowSpan: 4, colSpan: 2, className: 'fconc' + (allW && r.best && r.best.name === d.chosen_vendor ? ' ok' : ' warn') },
       el('div', { className: 'fcw' }, [el('div', { className: 'ch', textContent: 'Conclusion' }),
         el('div', { className: 'cb', textContent: allW ? (d.chosen_vendor || '—') : 'Please assess thoroughly across all three criteria' })])));
     crit.append(tr);
@@ -10806,13 +10902,15 @@ function qcBuild(x) {
     ...V.map((v, vi) => ({ h: vn(v, vi), get: (l, i) => n0((v.prices || {})[i]) ? n0(l.qty) * n0(v.prices[i]) : null, t: 'money', w: '14%' })),   // the vendor's name alone (feedback 26/09/2026)
     { h: '(A-B)/B', get: (l, i) => diff(n0(l.qty) * n0((V[0].prices || {})[i]), n0(l.qty) * n0((V[1].prices || {})[i])), t: 'pct', w: '10%' },
     { h: '(A-C)/C', get: (l, i) => diff(n0(l.qty) * n0((V[0].prices || {})[i]), n0(l.qty) * n0((V[2].prices || {})[i])), t: 'pct', w: '10%' }];
+  crit.prepend(fsColg(x, sumCols, true).colg);
   const page1 = fsPage([
     fsHead(x, 'DATE', I(x, d, 'date', 'date')),
     fsBar('GENERAL INFORMATION'),
     // Five rows on the left, the money on the right (feedback 26/09/2026). A difference above the
     // budget is shown red and says so; the 10 % / USD 5,000 gate is warned beside the form.
     el('div', { className: 'fkv2' }, [
-      fsKv([['Code:', fsR(WF.doc.doc_no)], ['Date:', fsR(d.date, 'date')], ['Project No.:', fsR(p.code)], ['Project Name:', fsR(p.name)],
+      // No "Date" row: the date is in the box at the top (user feedback 01/11/2026).
+      fsKv([['Code:', fsR(WF.doc.doc_no)], ['Project No.:', fsR(p.code)], ['Project Name:', fsR(p.name)],
             ['Project Type:', I(x, d, 'project_type', 'select', QC_PTYPES)]]),
       fsKv([['Procurement Type:', I(x, d, 'procurement_type', 'select', PROC_OPTS)],
             ['Budget:', fsR(d.budget_value, 'money'), true, [...fsPair(d.budget_value, c)]],
@@ -10845,7 +10943,7 @@ function qcBuild(x) {
   const ap = el('table', { className: 'fqc fap' }, apCols());
   // The valid quotations: counted from the vendors priced here (or the tender's); typed only for more than the three shown.
   const tvBox = x.edit && !d.tender_id ? wfInput({ k: 'total_vendors', t: 'num' }, d, true, x.rr, []) : fsR(d.total_vendors, 'num');
-  ap.append(el('tr', {}, [span(el('td', { className: 'fnav wrap', textContent: 'Total number of vendor(s)' }), 2), el('td', { className: 'fvbox n' }, tvBox),
+  ap.append(el('tr', {}, [span(el('td', { className: 'fnav wrap', textContent: 'Total number of vendor(s)', title: t('wf.qc.tvHint') }), 2), el('td', { className: 'fvbox n' }, tvBox),
     // Each vendor's name over its three columns, wrapped: the three the same width (user 29/09/2026).
     ...V.map((v, i) => el('td', { className: 'fvh', colSpan: 3 }, [el('small', {}, [L[i] + ' ',
       ...(x.edit && i > 0 ? [el('button', { className: 'btn tiny', textContent: '⇄ A', title: t('wf.qc.makeA'),
@@ -10864,7 +10962,8 @@ function qcBuild(x) {
       ap.append(el('tr', {}, [span(el('td', { className: 'fsub' }, lab), 2), el('td', { className: 'fvbox n' }, pct(s, 'w')),
         ...V.map(v => { v[sKey] = v[sKey] || {}; v[nKey] = v[nKey] || {};
           return [el('td', { className: 'fvbox n' }, x.edit ? wfInput({ k: s.label, t: 'num' }, v[sKey], true, x.rr, []) : fsR(v[sKey][s.label], 'num')),
-                  span(el('td', { className: 'fvbox l' }, x.edit ? wfInput({ k: s.label, t: 'text' }, v[nKey], true, x.rr, []) : fsR(v[nKey][s.label])), 2)]; }).flat(),
+                  span(el('td', { className: 'fvbox l' + (x.edit && qcNoteMissing(v, s, sKey, nKey) ? ' freq' : ''),
+                                  title: qcNoteMissing(v, s, sKey, nKey) ? t('wf.qc.noteHint') : '' }, x.edit ? wfInput({ k: s.label, t: 'text' }, v[nKey], true, x.rr, []) : fsR(v[nKey][s.label])), 2)]; }).flat(),
         ...tail()]));
     });
     if (x.edit) ap.append(el('tr', {}, el('td', { colSpan: allCols }, el('button', { className: 'btn tiny fadd', textContent: t('wf.qc.addSub'),
@@ -10892,7 +10991,7 @@ function qcBuild(x) {
     .map(h => el('th', { textContent: h }))));
   d.qlines.forEach((l, i) => {
     const tr = el('tr', {}, [el('td', { textContent: String(i + 1) }),
-      el('td', { className: 'l' }, wfPickProduct(x, l, 'item')), el('td', {}, I(x, l, 'qty', 'num'))]);
+      el('td', { className: 'l' }, wfPickProduct(x, l, 'item')), el('td', { className: 'c' }, I(x, l, 'qty', 'num'))]);
     V.forEach((v, vi) => {
       v.prices = v.prices || {}; v.specs = v.specs || {}; v.specx = v.specx || {};
       const key = vi + ':' + i, open = WF.qcSpecOpen === key;
@@ -11037,12 +11136,14 @@ function wfProblems(d) {
     });
     if (!data.reason) out.push(t('wf.chk.reason'));
   }
+  if (ty === 'PA' && !String(data.amc_opinion || '').trim()) out.push(t('wf.chk.amcOpinion'));
   if (ty === 'RR') {
     if (!lines.length) out.push(t('wf.chk.noLines'));
     lines.forEach((l, i) => {
       if (!l.asset_code) out.push(t('wf.chk.assetCode', { n: i + 1 }));
       if (!l.asset_item || !wfCatHasProduct(l.asset_item)) out.push(t('wf.cat.product', { v: l.asset_item || '—' }));
       if (!l.condition || !l.reason || !l.after) out.push(t('wf.chk.condReason', { n: i + 1 }));
+      else if (WF_RR_REF[l.reason] && !String(l.ref_no || '').trim()) out.push(t('wf.chk.rrRef', { n: i + 1, k: WF_RR_REF[l.reason] }));
       if (l.unit && !WF_CAT.units.includes(l.unit)) out.push(t('wf.cat.unit', { v: l.unit }));
     });
   }
@@ -11063,6 +11164,7 @@ function wfProblems(d) {
   }
   if (ty === 'QC' && qcScore(data).problems.some(p => p === t('wf.qc.w0') || p === t('wf.qc.w100'))) out.push(t('wf.qc.cannotSubmit'));
   if (ty === 'QC' && qcScore(data).problems.includes(t('wf.qc.few'))) out.push(t('wf.qc.few'));
+  if (ty === 'QC') { const bare = qcUnexplained(data); if (bare.length) out.push(t('wf.qc.noNote', { l: bare.join('; ') })); }
   // QC / PO / AH items from the Product catalogue too, the handover's locations from the Location list.
   if (ty === 'QC') (data.qlines || []).forEach(l => { if (l.item && !wfCatHasProduct(l.item)) out.push(t('wf.cat.product', { v: l.item })); });
   if (ty === 'PO' || ty === 'AH') lines.forEach((l, i) => {
@@ -11284,8 +11386,8 @@ async function wfPdf() {
 const WF_CAP_KEYS = ['project', 'docs', 'line', 'year', 'pkg', 'steps', 'pdocs', 'doc', 'data', 'drafts', 'dirtyIds',
                      'ref', 'refs', 'qcTab', 'adminEdit', 'events', 'inRef'];
 /* The mark of the Chief Accountant's approval of a payment (42_payment_request.sql, user
-   29/09/2026): once the CA has approved (and signed) a payment request of the project, every
-   page of its printed / exported dossier carries "Approved by CA — name — time". The latest one. */
+   29/09/2026): "Approved by CA — name — time", the latest one. Since 01/11/2026 only on the
+   payment request's own page (and the vendor's letter, docview.js): the forms go without it. */
 async function wfCaStamp(code) {
   if (!code) return null;
   try {
@@ -11375,7 +11477,7 @@ async function wfCaptureForms(code, fmt, out, onlyId, opts = {}) {
     msg(out, 'info', t(onlyId ? 'wf.pdfMaking' : 'wf.cap.loading'));
     await Promise.all(['html2canvas', fmt === 'zip' ? 'JSZip' : 'jspdf'].map(snapLib));
     await wfLookups(); await wfCatLoad();
-    const stamp = opts.stamp !== undefined ? opts.stamp : await wfCaStamp(code);
+    const stamp = !opts.cover ? null : opts.stamp !== undefined ? opts.stamp : await wfCaStamp(code);
     if (opts.cover) { const s = await wfShotOf(opts.cover, opts.coverLabel || 'Cover', false); s.canvas = await wfStampCanvas(s.canvas, stamp); shots.push(s); }
     if (opts.coverOnly && fmt === 'blob') return wfCapPdf(shots).output('blob');   // a payment request's own page (payreq.js)
     const enc = encodeURIComponent(code);
@@ -11390,7 +11492,9 @@ async function wfCaptureForms(code, fmt, out, onlyId, opts = {}) {
     const live = docs.filter(d => !['cancelled', 'rejected'].includes(d.status) && WF_FORMS[d.doc_type])
       .sort((a, b) => wfSeq(a.doc_type) - wfSeq(b.doc_type) || a.id - b.id);
     // opts.approved: only the approved forms (the signed file shown in the viewer).
-    const todo = onlyId ? docs.filter(d => d.id === onlyId) : opts.approved ? live.filter(d => d.status === 'approved') : live;
+    // The contract record stays out of the dossier (user feedback 01/11/2026: the signed contract is the document); alone it still prints.
+    const dossier = live.filter(d => d.doc_type !== 'CT');
+    const todo = onlyId ? docs.filter(d => d.id === onlyId) : opts.approved ? dossier.filter(d => d.status === 'approved') : dossier;
     if (!project || !todo.length) throw new Error(t('wf.cap.none'));
     const pids = [...new Set(docs.map(d => d.pkg_id).filter(Boolean))];
     const [steps, years, line] = await Promise.all([
@@ -11412,7 +11516,8 @@ async function wfCaptureForms(code, fmt, out, onlyId, opts = {}) {
       for (let i = 0; i < pages.length; i++) {
         host.innerHTML = '';
         host.append(pages[i].box);
-        const canvas = await wfStampCanvas(await html2canvas(pages[i].box, { scale: 2, backgroundColor: '#ffffff', logging: false, useCORS: true }), stamp);
+        // The CA mark stays on the payment request's own page only: not on the forms (user feedback 01/11/2026).
+        const canvas = await html2canvas(pages[i].box, { scale: 2, backgroundColor: '#ffffff', logging: false, useCORS: true });
         shots.push({ label: pages.length > 1 ? `${d.doc_no} (${i + 1}-${pages.length})` : d.doc_no, first: i === 0, doc: d.doc_no, land: pages[i].land, canvas });
       }
     }
@@ -12200,6 +12305,8 @@ async function adReset() {
 const adValText = v => v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
 const adValParse = s => { s = s.trim(); if (s === 'true' || s === 'false') return s === 'true';
   if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s); return s; };
+// Settings with fixed choices: a list instead of a text box.
+const AD_ENUM = { lq_open_quorum: ['half', 'all'] };       // liquidation bid opening: present members (49_lq_bid_rounds.sql)
 async function adSettings() {
   const card = $('#adSetCard'), box = $('#adSetBox');
   card.hidden = !can('system', 'view');
@@ -12213,7 +12320,10 @@ async function adSettings() {
     for (const r of rows) {
       if (r.key === 'demo_cfg') continue;   // set in the Demo / training card (demo.js)
       // app_mode is written only by sql/demo/DEMO_SETUP.sql.
-      const i = el('input', { value: adValText(r.value), disabled: !edit || r.key === 'app_mode', style: 'width:180px' });
+      const i = AD_ENUM[r.key]
+        ? el('select', { disabled: !edit, style: 'width:180px' }, AD_ENUM[r.key].map(v => el('option', { value: v, textContent: t(`ad.enum.${r.key}.${v}`) })))
+        : el('input', { value: adValText(r.value), disabled: !edit || r.key === 'app_mode', style: 'width:180px' });
+      if (AD_ENUM[r.key]) i.value = adValText(r.value);
       i.dataset.key = r.key; i.dataset.was = adValText(r.value);
       tb.append(el('tr', {}, [el('td', {}, el('code', { textContent: r.key })), el('td', {}, i), el('td', { className: 'dim', textContent: r.note || '' })]));
     }
@@ -12222,7 +12332,7 @@ async function adSettings() {
     const save = el('button', { className: 'btn pri', style: 'margin-top:10px', textContent: t('tool.save') });
     save.onclick = async () => {
       try {
-        const changed = [...tb.querySelectorAll('input')].filter(i => i.value.trim() !== i.dataset.was);
+        const changed = [...tb.querySelectorAll('input, select')].filter(i => i.value.trim() !== i.dataset.was);
         for (const i of changed) await SB.patch('am_setting', `key=eq.${encodeURIComponent(i.dataset.key)}`, { value: adValParse(i.value), updated_at: new Date().toISOString() });
         await adSettings();
         msg('#adSetMsg', 'ok', t('ad.set.saved', { n: changed.length }));
@@ -13274,16 +13384,16 @@ function initPay() {
    bar: approve / check (the signature pad takes a finger or a stylus), return,
    reject. After signing, straight back to the list for the next task. */
 const TB_KEY = 'asset-intake.tablet';
-// ?touch=1: the app inside the Settings device preview (stPreview) behaves as on a touch screen.
-const TB_TOUCH = new URLSearchParams(location.search).get('touch') === '1';
 const tbPref = () => {
   let p = 'auto';
   try { p = localStorage.getItem(TB_KEY) || 'auto'; } catch {}
-  return p === 'auto' && TB_TOUCH ? 'on' : p;
+  return p;
 };
 function tbDetect() {
   const p = tbPref();
-  const on = p === 'on' || (p === 'auto' && (matchMedia('(pointer: coarse)').matches || innerWidth <= 820));
+  // The phone app view on a phone (user 01/11/2026); a 10–11" tablet shows the website, scaled down
+  // to 1024 px of layout (the viewport script in AssetManagement.html), so it is never "narrow" here.
+  const on = p === 'on' || (p === 'auto' && innerWidth < 768);
   const changed = on !== TB.on;
   TB.on = on;
   document.body.classList.toggle('tab', on);
@@ -13306,30 +13416,35 @@ function tbInit() {
 /* Device preview (Settings, user 14/10/2026): the app itself in a frame at a phone or tablet's
    real width, so the media queries and the tablet mode react as they would on the device; the
    frame is scaled down to fit the window. Same browser, so the same session — it is the live app. */
-const PV_DEVICES = [['phone', 390, 844], ['phoneL', 430, 932], ['tablet', 820, 1180], ['tabletL', 1180, 820]];
+// Phones, and the 10–11" tablets the website is laid out for (user 01/11/2026): a tablet narrower than
+// 1024 px shows 1024 px of the website, scaled down — as the viewport script makes the real device do.
+const PV_DEVICES = [['phone', 390, 844], ['phoneL', 430, 932], ['tab10', 800, 1280], ['tab11', 834, 1194], ['tab11L', 1194, 834]];
+const PV_SITE_W = 1024;
 function stPreview() {
   const old = $('#pvWin');
   if (old) old.remove();
-  let dev = PV_DEVICES[0], turned = false, touch = true, view = ['settings', 'setup'].includes(VIEW) ? '' : VIEW;
+  let dev = PV_DEVICES[0], turned = false, view = ['settings', 'setup'].includes(VIEW) ? '' : VIEW;
+  const tabl = () => /^tab/.test(dev[0]);
   const size = () => turned ? [dev[2], dev[1]] : [dev[1], dev[2]];
+  // The page's own width: the device's, or the website's 1024 px on a narrower tablet.
+  const page = () => { const [w, h] = size(); return tabl() && w < PV_SITE_W ? [PV_SITE_W, Math.round(h * PV_SITE_W / w)] : [w, h]; };
   const frame = el('iframe', { title: t('st.pv.title') });
   const box = el('div', { className: 'pvdev' }, frame);
   const label = el('div', { className: 'pvsize' });
   const stage = el('div', { className: 'pvstage' }, [box, label]);
   const fit = () => {
-    const [w, h] = size(), pad = dev[1] > 600 ? 40 : 28;
+    const [dw, dh] = size(), [w, h] = page(), pad = tabl() ? 40 : 28;
     const s = Math.min(1, (stage.clientWidth - 32) / (w + pad), (stage.clientHeight - 40) / (h + pad));
     box.style.transform = `translate(-50%, calc(-50% - 10px)) scale(${s})`;
-    label.textContent = `${w} × ${h} px · ${Math.round(s * 100)}%`;
+    label.textContent = `${dw} × ${dh} px${w !== dw ? ' · ' + t('st.pv.site', { w }) : ''} · ${Math.round(s * 100)}%`;
   };
   const load = () => {
-    const [w, h] = size();
-    box.classList.toggle('tabl', dev[1] > 600);
+    const [w, h] = page();
+    box.classList.toggle('tabl', tabl());
     frame.style.width = w + 'px';
     frame.style.height = h + 'px';
     const q = new URLSearchParams();
     if (view) q.set('view', view);
-    if (touch) q.set('touch', '1');
     frame.src = location.pathname + '?' + q;
     fit();
   };
@@ -13345,14 +13460,12 @@ function stPreview() {
   const pick = el('select', { onchange: e => { view = e.target.value; load(); } },
     [el('option', { value: '', textContent: t('st.pv.home') }), ...screens.map(([id, l]) => el('option', { value: id, textContent: l }))]);
   pick.value = view;
-  const tch = el('input', { type: 'checkbox', checked: true, onchange: e => { touch = e.target.checked; load(); } });
   const close = () => { win.remove(); removeEventListener('resize', fit); removeEventListener('keydown', esc); };
   const esc = e => { if (e.key === 'Escape') close(); };
   const win = el('div', { className: 'pvwin', id: 'pvWin' }, [
     el('div', { className: 'pvbar' }, [
       el('b', { textContent: t('st.pv.title') }), seg,
       el('button', { className: 'btn', type: 'button', textContent: '⟳ ' + t('st.pv.rotate'), onclick: () => { turned = !turned; load(); } }),
-      el('label', { className: 'chk' }, [tch, el('span', { textContent: t('st.pv.touch') })]),
       el('label', { className: 'chk' }, [el('span', { textContent: t('st.pv.screen') }), pick]),
       el('button', { className: 'btn', type: 'button', textContent: '↻ ' + t('st.pv.reload'), onclick: load }),
       el('button', { className: 'btn pvx', type: 'button', textContent: '✕ ' + t('st.pv.close'), onclick: close }),
@@ -13379,6 +13492,7 @@ function tbBarRender() {
   bar.hidden = !TB.on || !ME;
   if (bar.hidden) return;
   bar.innerHTML = '';
+  if (window.mbBar) return mbBar(bar);            // the phone app bar: Home · To do · scan · Dashboard · More (mobile.js)
   const item = (view, key, icon, n) => {
     const b = el('button', { className: 'tbitem' + (VIEW === view || (view === 'inbox' && VIEW === 'doc') ? ' on' : ''), type: 'button',
       onclick: () => showView(view) }, [el('span', { className: 'ic', textContent: icon }), el('span', { textContent: t(key) })]);
@@ -13413,7 +13527,11 @@ function tbInboxCards(rows) {
   // Rows of the new flow (tendering.js / payreq.js) show on a tablet only where the tablet can do them (receiving).
   const todo = rows.filter(r => r.kind !== 'done' && r.kind !== 'prepare' && (!r.x || r.tablet));
   if (!todo.length) box.append(el('div', { className: 'tbempty', textContent: t('tb.nothing') }));
-  for (const r of todo) {
+  for (const r of todo) box.append(tbCard(r));
+}
+// One task as a card (the to-do list, the phone Home).
+function tbCard(r) {
+  {
     const owners = wfPkgTypes(r.grp).filter(ty => wfSide(ty) === 'owner').join('/');
     const band = r.band ? r.band : ['returned', 'tfret'].includes(r.kind) ? 'bad' : ['photo', 'draft', 'tf'].includes(r.kind) ? 'op' : wfBand(r.role_code);
     const what = r.what ? r.what : r.kind === 'tf' ? t('ao.tf.i.act') : r.kind === 'tfret' ? t('wf.i.returned') : r.kind === 'photo' ? t('ph.todo', { n: r.missing }) : r.kind === 'draft' ? t('lq.i.draft') : r.kind === 'returned' ? t('wf.i.returned')
@@ -13429,7 +13547,7 @@ function tbInboxCards(rows) {
       el('div', { className: 'pn', textContent: r.project_name || (r.grp === 'LR' ? t('lq.docName') : '') }),
       el('div', { className: 'r3' }, [el('span', { textContent: [r.project_code, pmDeptName(r.dept_code)].filter(Boolean).join(' · ') }),
         el('b', { textContent: r.total_value != null ? fmtMoney(r.total_value) : '' })])]);
-    box.append(c);
+    return c;
   }
 }
 
@@ -13800,11 +13918,14 @@ async function alPrintLabels(alDoc) {
    as the project documents. Once approved its lines are in the pool (8 / 24);
    phase 2 takes them from there into a council batch. */
 const LQ = { tab: 'lr', stv: { lr: '', pool: 'pool' }, docs: [], pkgs: new Map(), steps: new Map(), items: null, orphans: [], sel: new Set(), ph: new Map(), phDraw: null };
+// "Like new" is the stored word; it reads "Full operational", as on the RR (user feedback 01/11/2026).
+const LQ_COND_EN = { 'Like new': 'Full operational' };
 const LQ_COND = [['Like new', 'Nguyên phẩm'], ['Poor', 'Kém phẩm'], ['Damaged', 'Mất phẩm']];
 const LQ_MODE = [['Sale', 'Bán thanh lý'], ['Other', 'Khác (huỷ, tiêu huỷ…)']];
 const LQ_REASONS = ['High repair cost / Chi phí sửa chữa cao', 'Obsolete / Lỗi thời', 'Irreparable / Hư hỏng không thể sửa chữa',
                     'Breakage/loss / Hư hỏng, mất mát', 'No longer suitable / Không còn phù hợp'];
-const lqBi = (list, v) => { const r = list.find(x => x[0] === v); return r ? `${r[0]}/${r[1]}` : (v || ''); };
+const lqBi = (list, v) => { const r = list.find(x => x[0] === v); return r ? `${LQ_COND_EN[r[0]] || r[0]}/${r[1]}` : (v || ''); };
+const lqEn = (list, v) => { const r = list.find(x => x[0] === v); return r ? (LQ_COND_EN[r[0]] || r[0]) : (v || ''); };
 const lqKey = () => 'k' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 // The package of an LR has no project: the screens get a stand-in carrying its department.
 const lqProject = d => ({ code: '', name: t('lq.docName'), dept_code: d.dept_code || (d.data || {}).dept_code, _lq: true });
@@ -13817,11 +13938,11 @@ function lqLists() {
   document.body.append(dl);
 }
 const lqIn = (x, l, k, ty, ro) => wfInput({ k, t: ty, ro: !!ro }, l, x.edit, x.rr, []);
-function lqSel(x, l, k, list) {
-  if (!x.edit) return fsR(lqBi(list, l[k]));
+function lqSel(x, l, k, list, en) {
+  if (!x.edit) return fsR((en ? lqEn : lqBi)(list, l[k]));
   const s = el('select');
   s.append(el('option', { value: '', textContent: '—' }));
-  for (const [v, vi] of list) s.append(el('option', { value: v, textContent: `${v} / ${vi}` }));
+  for (const [v, vi] of list) s.append(el('option', { value: v, textContent: en ? (LQ_COND_EN[v] || v) : `${LQ_COND_EN[v] || v} / ${vi}` }));
   s.value = l[k] || '';
   s.onchange = () => { l[k] = s.value || null; x.rr(); };
   return s;
@@ -13933,40 +14054,39 @@ WF_FORMS.LR = { orient: 'landscape', wide: true, title: ['Liquidation Request', 
 
 function lqSheetLR(x) {
   const d = x.d, k = WF.pkg || {};
+  // English only, no "Source" box, the room of the No. column given to the notes (user feedback 01/11/2026).
   const cols = [
-    { h: 'Item code / Mã TS', w: '9.5%', left: true, cell: l => lqPickAsset(x, l) },
-    { h: 'Item name / Tên tài sản', w: '13%', left: true, cell: l => l.asset_id || !x.edit ? fsR(l.name) : lqIn(x, l, 'name', 'text') },
-    { h: 'Qty / SL', w: '3.5%', cell: l => lqIn(x, l, 'qty', 'num', l.kind === 'unique') },
-    { h: 'Unit / ĐVT', w: '4%', cell: l => wfPickUnit(x, l) },
-    { h: 'Dept / BP', w: '4.5%', get: l => l.dept_code || d.dept_code, t: 'text' },
-    { h: 'Used from / Bắt đầu SD', w: '6%', cell: l => lqIn(x, l, 'in_use_date', 'date') },
-    { h: 'Warranty / Hạn BH', w: '5.5%', cell: l => lqIn(x, l, 'warranty', 'date') },
-    { h: 'Repairs / Số lần SC', w: '3.5%', cell: l => lqIn(x, l, 'repairs', 'num') },
-    { h: 'Condition / Hiện trạng', w: '6.5%', cell: l => lqSel(x, l, 'condition', LQ_COND) },
-    { h: 'Reason / Lý do', w: '8.5%', left: true, cell: l => lqReason(x, l) },
-    { h: 'Method / Đề xuất', w: '5.5%', cell: l => lqSel(x, l, 'mode', LQ_MODE) },
-    { h: 'Original value / Nguyên giá', w: '7%', cell: l => { const i = lqIn(x, l, 'original_value', 'money'); i.addEventListener('input', () => { l.orig_manual = true; }); return i; } },
-    { h: 'Depreciation / Hao mòn', w: '7%', cell: l => { const i = lqIn(x, l, 'depreciation', 'money'); i.addEventListener('input', () => { if (l.fin_u) l.orig_manual = true; }); return i; } },
-    { h: 'Residual / Giá trị còn lại', get: l => l.nbv, t: 'money', w: '7%' },
-    { h: 'Notes / Ghi chú', k: 'notes', t: 'text', w: '4.5%', left: true }];
-  const src = d.project_code ? `${d.rr_doc_no || 'RR'} · ${d.project_code}` : 'Department request / Bộ phận đề xuất';
+    { h: 'Item code', w: '9.5%', left: true, cell: l => lqPickAsset(x, l) },
+    { h: 'Item name', w: '12%', left: true, cell: l => l.asset_id || !x.edit ? fsR(l.name) : lqIn(x, l, 'name', 'text') },
+    { h: 'Qty', w: '3.5%', cell: l => lqIn(x, l, 'qty', 'num', l.kind === 'unique') },
+    { h: 'Unit', w: '4%', cell: l => wfPickUnit(x, l) },
+    { h: 'Dept', w: '3.5%', get: l => l.dept_code || d.dept_code, t: 'text' },
+    { h: 'Used from', w: '5.5%', cell: l => lqIn(x, l, 'in_use_date', 'date') },
+    { h: 'Warranty', w: '5%', cell: l => lqIn(x, l, 'warranty', 'date') },
+    { h: 'Repairs', w: '3.5%', cell: l => lqIn(x, l, 'repairs', 'num') },
+    { h: 'Condition', w: '6.5%', cell: l => lqSel(x, l, 'condition', LQ_COND, true) },
+    { h: 'Reason', w: '8.5%', left: true, cell: l => lqReason(x, l) },
+    { h: 'Method', w: '5%', cell: l => lqSel(x, l, 'mode', LQ_MODE, true) },
+    { h: 'Original value', w: '6.5%', cell: l => { const i = lqIn(x, l, 'original_value', 'money'); i.addEventListener('input', () => { l.orig_manual = true; }); return i; } },
+    { h: 'Depreciation', w: '6.5%', cell: l => { const i = lqIn(x, l, 'depreciation', 'money'); i.addEventListener('input', () => { if (l.fin_u) l.orig_manual = true; }); return i; } },
+    { h: 'Residual value', get: l => l.nbv, t: 'money', w: '6.5%' },
+    { h: 'Notes', k: 'notes', t: 'text', w: '9%', left: true }];
   return fsPage([
     fsHead(x, 'DATE', I(x, d, 'date', 'date')),
-    fsBar('GENERAL INFORMATION / THÔNG TIN CHUNG'),
-    fsGrid([fc('DEPARTMENT / BỘ PHẬN', fsR(`${d.dept_code || x.p.dept_code || ''} — ${pmDeptName(d.dept_code || x.p.dept_code)}`), 4, 'fit'),
-            fc('TO / KÍNH GỬI', fsR('Board of General Directors — Owner\'s Representative Office / Ban Tổng Giám đốc — Văn phòng đại diện chủ đầu tư'), 8, 'fit'),
-            fc('INITIATING PERSON / NGƯỜI LẬP', fsR(k.created_name || k.created_email || (ME && (ME.full_name || ME.email)) || ''), 4, 'fit'),
-            fc('POSITION / CHỨC VỤ', I(x, d, 'position', 'text'), 4),
-            fc('SOURCE / NGUỒN', fsR(src), 4, 'fit'),
-            fc('CURRENT CONDITION & REASON FOR LIQUIDATION / HIỆN TRẠNG VÀ LÝ DO ĐỀ NGHỊ THANH LÝ', I(x, d, 'reason', 'area'), 12, 'tall left')]),
-    fsBar('ITEMS TO BE LIQUIDATED / TÀI SẢN ĐỀ NGHỊ THANH LÝ', t('lq.count', { n: fmtInt(d.lines.length) })),
-    fsTable(x, cols, d.lines, { add: () => ({ key: lqKey(), qty: null, mode: 'Sale', dept_code: d.dept_code }),
-      foot: [['Total / Tổng cộng', 2, { 2: [d.total_qty, 'num'], 11: [d.total_original, 'money'], 12: [d.total_dep, 'money'], 13: [d.total_nbv, 'money'] }]] }),
+    fsBar('GENERAL INFORMATION'),
+    fsGrid([fc('DEPARTMENT', fsR(`${d.dept_code || x.p.dept_code || ''} — ${pmDeptName(d.dept_code || x.p.dept_code)}`), 4, 'fit'),
+            fc('TO', fsR('Board of General Directors — Owner\'s Representative Office'), 8, 'fit'),
+            fc('INITIATING PERSON', fsR(k.created_name || k.created_email || (ME && (ME.full_name || ME.email)) || ''), 6, 'fit'),
+            fc('POSITION', I(x, d, 'position', 'text'), 6),
+            fc('CURRENT CONDITION & REASON FOR LIQUIDATION', I(x, d, 'reason', 'area'), 12, 'tall left')]),
+    fsBar('ITEMS TO BE LIQUIDATED', t('lq.count', { n: fmtInt(d.lines.length) })),
+    fsTable(x, cols, d.lines, { noW: '24px', add: () => ({ key: lqKey(), qty: null, mode: 'Sale', dept_code: d.dept_code }),
+      foot: [['Total', 2, { 2: [d.total_qty, 'num'], 11: [d.total_original, 'money'], 12: [d.total_dep, 'money'], 13: [d.total_nbv, 'money'] }]] }),
     ...lqExplain(x),
-    fsNote('Current condition / Hiện trạng: Like new / Nguyên phẩm — shape and function as originally described · Poor / Kém phẩm — one or more defects, still usable · '
-      + 'Damaged / Mất phẩm — no longer usable. A photo of every item is attached (condition photos in the app).'),
-    fsLinks(x, 'ATTACHMENTS / TÀI LIỆU ĐÍNH KÈM'),
-    fsConsent(x, 'Consent by / Ký duyệt:')], 'land');
+    fsNote('Current condition: Full operational — shape and function as originally described · Poor — one or more defects, still usable · '
+      + 'Damaged — no longer usable. A photo of every item is attached (condition photos in the app).'),
+    fsLinks(x, 'ATTACHMENTS'),
+    fsConsent(x)], 'land');
 }
 
 // What the Disposal Form asks to be explained: (**) a remaining book value, (***) an item that cannot be sold.
@@ -13974,10 +14094,10 @@ function lqExplain(x) {
   const d = x.d, rows = [];
   d.lines.forEach((l, i) => {
     const tag = `${i + 1}. ${l.asset_code || 'N/A'} — ${l.name || ''}`;
-    if (n0(l.nbv) > 0 && (x.edit || l.nbv_note)) rows.push(fc(`(**) ${tag}: remaining book value / giải trình giá trị còn lại`, lqIn(x, l, 'nbv_note', 'area'), 6, 'left'));
-    if (l.mode === 'Other' && (x.edit || l.other_note)) rows.push(fc(`(***) ${tag}: why it cannot be sold / lý do không bán được`, lqIn(x, l, 'other_note', 'area'), 6, 'left'));
+    if (n0(l.nbv) > 0 && (x.edit || l.nbv_note)) rows.push(fc(`(**) ${tag}: remaining book value`, lqIn(x, l, 'nbv_note', 'area'), 6, 'left'));
+    if (l.mode === 'Other' && (x.edit || l.other_note)) rows.push(fc(`(***) ${tag}: why it cannot be sold`, lqIn(x, l, 'other_note', 'area'), 6, 'left'));
   });
-  return rows.length ? [fsBar('EXPLANATIONS / GIẢI TRÌNH'), fsGrid(rows)] : [];
+  return rows.length ? [fsBar('EXPLANATIONS'), fsGrid(rows)] : [];
 }
 
 function lqThumb(doc, l) {
@@ -13991,7 +14111,7 @@ function lqSheetDisposal(x) {
   const y = Object.assign({}, x, { edit: false, form: Object.assign({}, x.form, { title: ['Asset Disposal Form', 'Đề nghị xử lý tài sản'] }) });
   const sale = d.lines.filter(l => l.mode !== 'Other'), other = d.lines.filter(l => l.mode === 'Other');
   const cols = [{ h: 'Asset Code', get: l => l.asset_code || 'N/A', w: '13%', left: true }, { h: 'Qty', get: l => l.qty, t: 'num', w: '5%' },
-    { h: 'Description', get: l => l.name, w: '20%', left: true }, { h: 'Condition (*)', get: l => lqBi(LQ_COND, l.condition), w: '9%' },
+    { h: 'Description', get: l => l.name, w: '20%', left: true }, { h: 'Condition (*)', get: l => lqEn(LQ_COND, l.condition), w: '9%' },
     { h: 'Dept', get: l => l.dept_code || d.dept_code, w: '5%' }, { h: 'Location', get: l => l.location, w: '8%' },
     { h: 'Initial use', get: l => l.in_use_date, t: 'date', w: '7.5%' }, { h: 'Net book value (**)', get: l => l.nbv, t: 'money', w: '9%' },
     { h: 'Mode of disposal (***)', get: l => l.mode === 'Other' ? '3' : '1', w: '7%' }, { h: 'Picture', cell: l => lqThumb(doc, l), w: '11.5%' }];
@@ -14504,7 +14624,8 @@ function lqBatchDetail(panel, b) {
   const patch = {};
   const fld = (key, node, wide) => el('div', { className: 'fld' + (wide ? ' lqwide' : '') }, [el('label', { textContent: t(key) }), node]);
   const inp = (k, type = 'text', v) => { const i = el('input', { type, value: v ?? b[k] ?? '', disabled: !edit }); i.onchange = () => { patch[k] = i.value; }; return i; };
-  const txt = k => { const i = el('textarea', { rows: 2, value: d[k] || '', disabled: !edit }); i.onchange = () => { patch.data = Object.assign(patch.data || {}, { [k]: i.value }); }; return i; };
+  const dinp = k => { const i = el('input', { value: d[k] || '', disabled: !edit }); i.onchange = () => { patch.data = Object.assign(patch.data || {}, { [k]: i.value }); }; return i; };
+  const txt = (k, ph) => { const i = el('textarea', { rows: 2, value: d[k] || '', disabled: !edit, placeholder: ph || '' }); i.onchange = () => { patch.data = Object.assign(patch.data || {}, { [k]: i.value }); }; return i; };
   const csel = el('select', { disabled: !edit || !['open', 'hotel', 'amcheck'].includes(b.status) });
   csel.append(el('option', { value: '', textContent: '—' }));
   for (const c of LQ.councils) csel.append(el('option', { value: c.id, textContent: `${c.decision_no}${c.active ? ' ✓' : ''}` }));
@@ -14513,11 +14634,11 @@ function lqBatchDetail(panel, b) {
   const codeIn = inp('code'); codeIn.disabled = !edit || !['open', 'hotel', 'amcheck'].includes(b.status);
   info.append(el('div', { className: 'lqgrid' }, [
     fld('lqb.c.code', codeIn), fld('lqb.c.council', csel), fld('lqb.meetingDate', inp('meeting_date', 'date')), fld('lqb.meetingTime', inp('meeting_time')),
-    fld('lqb.place', inp('meeting_place'), true), fld('lqb.decisionDate', inp('decision_date', 'date')), fld('lqb.countDate', el('input', { type: 'date', value: b.count_date || '', disabled: true, title: t('lqf.dateByConfirm') })),
+    fld('lqb.place', inp('meeting_place'), true), fld('lqb.placeEn', dinp('place_en'), true), fld('lqb.decisionDate', inp('decision_date', 'date')), fld('lqb.countDate', el('input', { type: 'date', value: b.count_date || '', disabled: true, title: t('lqf.dateByConfirm') })),
     fld('lqb.valDate', el('input', { type: 'date', value: b.valuation_date || '', disabled: true, title: t('lqf.dateByConfirm') })), fld('lqb.liqDate', inp('liquidation_date', 'date')),
     fld('lqb.causesVi', txt('causes_vi'), true), fld('lqb.causesEn', txt('causes_en'), true),
     fld('lqb.planVi', txt('plan_vi'), true), fld('lqb.planEn', txt('plan_en'), true),
-    fld('lqb.conclVi', txt('conclusion_vi'), true), fld('lqb.conclEn', txt('conclusion_en'), true)]));
+    fld('lqb.recipients', txt('recipients', t('lqb.recipientsPh')), true)]));
   if (edit) info.append(el('div', { className: 'row', style: 'margin-top:8px' }, [el('button', { className: 'btn pri', type: 'button', textContent: t('tool.save'), onclick: async () => {
     if (!Object.keys(patch).length) return;
     try { await SB.rpc('pm_lq_batch_save', { p_id: b.id, p_patch: patch }); await lqLoad(); msg('#lqMsg', 'ok', t('lqb.saved', { c: b.code })); }
@@ -14755,14 +14876,20 @@ const lqbLrBasis = c => c.lrs.map(d => lqbBi(`Căn cứ theo Đề nghị thanh 
 const lqbSec = (vi, en) => el('div', { className: 'lqsec' }, [el('b', { textContent: vi }), en ? el('span', { className: 'en', textContent: ' / ' + en }) : '']);
 // A signature row: [[label vi/en, name]...]
 const lqbSigns = boxes => el('div', { className: 'lqsigns', style: `grid-template-columns:repeat(${boxes.length},1fr)` },
-  boxes.map(([vi, en, name]) => el('div', { className: 'lqsign' }, [el('b', { textContent: vi }), el('div', { className: 'en', textContent: en }), el('div', { className: 'sp' }), el('div', { className: 'nm', textContent: name || '' })])));
+  boxes.map(([vi, en, name, body]) => el('div', { className: 'lqsign' + (body ? ' lqrcp' : '') }, [el('b', { textContent: vi }), el('div', { className: 'en', textContent: en }),
+    body ? el('div', { className: 'rcp', textContent: body }) : el('div', { className: 'sp' }), el('div', { className: 'nm', textContent: name || '' })])));
+// A country by its name ("IT" → "Italy"), not its ISO code (user feedback 01/11/2026).
+const lqCountry = c => { const s = String(c || '').trim().toUpperCase(); if (!s) return '';
+  try { return new Intl.DisplayNames(['en'], { type: 'region' }).of(s) || s; } catch { return s; } };
 // A table: cols [[header vi/en, get(item, i), cls, width]]; groups: [[label, span]] above.
 function lqbTable(cols, rows, o = {}) {
   const tb = el('table', { className: 'lqt' });
   tb.append(el('colgroup', {}, cols.map(c => el('col', { style: c[3] ? `width:${c[3]}` : '' }))));
   if (o.groups) tb.append(el('tr', {}, o.groups.map(([g, n, rs]) => el('th', { colSpan: n, rowSpan: rs || 1, textContent: g }))));
   tb.append(el('tr', {}, cols.filter(c => !c[4]).map(c => el('th', { textContent: c[0] }))));
-  rows.forEach((r, i) => tb.append(el('tr', {}, cols.map(c => el('td', { className: c[2] || '', textContent: c[1](r, (o.start || 0) + i) ?? '' })))));
+  rows.forEach((r, i) => tb.append(el('tr', {}, cols.map(c => { const v = c[1](r, (o.start || 0) + i);
+    if (v && typeof v === 'object') return el('td', { className: c[2] || '' }, v.img ? el('img', { className: 'lqthumb', src: v.img, alt: '' }) : el('span', { textContent: '🔗 OneDrive' }));
+    return el('td', { className: c[2] || '', textContent: v ?? '' }); }))));
   if (o.total) tb.append(el('tr', { className: 'tot' }, o.total));
   return tb;
 }
@@ -14786,18 +14913,16 @@ function lqbForm(k, c) {
   const chairName = c.chair ? String(c.chair.full_name).toUpperCase() : '';
   const ref = (i) => (LQ.docs.find(x => x.id === i.lr_doc_id) || {}).doc_no || '';
   if (k === '02') {
-    const cols = [['STT / No.', (r, i) => i + 1, 'c', '6%'], ['Tên tài sản / Asset Name', r => r.name, '', '34%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '22%'],
-      ['SL / Qnt.', r => fmtNum(r.qty), 'n', '8%'], ['Bộ phận / Dept.', r => r.dept_code, 'c', '9%'], ['Đề nghị / Request', r => ref(r), '', '21%']];
     const head = [lqbHead(k, 'BIÊN BẢN HỌP HỘI ĐỒNG THANH LÝ TSCĐ', 'MINUTES OF THE ASSET LIQUIDATION COUNCIL MEETING', b.code, b.meeting_date),
       lqbSec('I. Thông tin cuộc họp', 'Meeting Information:'), lqbBi('1. Thành phần tham dự buổi họp:', 'Attendance:'), lqbMembers(c),
-      lqbBi(`2. Cuộc họp diễn ra tại: ${b.meeting_place || '…………'}`, 'The meeting took place at the address above'),
-      lqbBi(`3. Thời gian cuộc họp: ${b.meeting_time || '…………'}`, 'Meeting time'),
+      lqbBi(`2. Cuộc họp diễn ra tại: ${b.meeting_place || '…………'}`, `The meeting took place at: ${d.place_en || b.meeting_place || '…………'}`),
+      lqbBi(`3. Thời gian cuộc họp: ${b.meeting_time || '…………'}`, `Meeting time: ${b.meeting_time || '…………'}`),
       lqbSec('II. Nội dung cuộc họp', 'Meeting Details:'), ...lqbLrBasis(c),
       lqbBi('Hội đồng thanh lý tài sản và các thành viên cuộc họp xem xét nguyên nhân và các phương án thanh lý TSCĐ chi tiết như sau:',
             'The asset liquidation council and members of the meeting shall consider the causes and options for liquidation of fixed assets in detail as follows:'),
       lqbBi(`Về nguyên nhân thanh lý tài sản: ${d.causes_vi || '…………'}`, `Regarding the causes of asset liquidation: ${d.causes_en || '…………'}`),
-      lqbBi(`Về phương án thanh lý tài sản: ${d.plan_vi || '…………'}`, `Regarding the asset liquidation plan: ${d.plan_en || '…………'}`),
-      lqbBi(`Danh sách tài sản xem xét (${live.length} món):`, `Assets considered (${live.length} item(s)):`)];
+      lqbBi(`Về phương án thanh lý tài sản: ${d.plan_vi || '…………'}`, `Regarding the asset liquidation plan: ${d.plan_en || '…………'}`)];
+    // No list of the assets here: they are in the Disposal forms the minutes refer to (user feedback 01/11/2026).
     const foot = [
       ...(c.kept.length ? [lqbBi(`Hội đồng giữ lại, không thanh lý: ${c.kept.map(i => `${i.asset_code || i.name} (${i.keep_note || ''})`).join('; ')}`,
                                  `Kept by the council, not liquidated: ${c.kept.map(i => i.asset_code || i.name).join('; ')}`)] : []),
@@ -14805,14 +14930,14 @@ function lqbForm(k, c) {
       lqbBi('Hội đồng thanh lý và các thành viên cuộc họp nhất trí với các nội dung sau:', 'The liquidation council and meeting members unanimously agree on the following contents:'),
       lqbBi('- Chấp thuận với nguyên nhân thanh lý TSCĐ;', '- Approving the reasons for asset liquidation;'),
       lqbBi('- Không có ý kiến khác với phương án thanh lý TSCĐ.', '- No different opinions regarding the asset liquidation plan.'),
-      ...(d.conclusion_vi || d.conclusion_en ? [lqbBi(d.conclusion_vi || '', d.conclusion_en || '')] : []),
-      lqbSigns([['Các thành viên cuộc họp', 'Attendances', c.mem.filter(m => m.role !== 'chair').map(m => String(m.full_name).toUpperCase()).join(' · ')],
-                ['Chủ tịch hội đồng thanh lý / Chủ trì cuộc họp', 'Chairman of the Council', chairName]])];
-    return lqbPages(false, head, live, (rows, at) => lqbTable(cols, rows, { start: at }), foot, 8, 34);
+      // One row: each member in a column of their own, the chairman last (user feedback 01/11/2026).
+      lqbSigns([...c.mem.filter(m => m.role !== 'chair').map(m => ['Thành viên hội đồng', 'Council member', String(m.full_name).toUpperCase()]),
+                ['Chủ tịch hội đồng / Chủ trì cuộc họp', 'Chairman of the Council', chairName]])];
+    return [el('div', { className: 'fpage lqpage' }, [...head, ...foot])];
   }
   if (k === '03') {
     const cols = [['STT / No.', (r, i) => i + 1, 'c', '6%'], ['Tên tài sản / Asset Name', r => r.name, '', '25%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '19%'],
-      ['SL / Qnt.', r => fmtNum(r.qty), 'n', '7%'], ['Mã hiệu / Model', r => A(r.asset_id).spec_model || '', '', '11%'], ['Nước sx / Country', r => A(r.asset_id).origin_iso2 || '', 'c', '8%'],
+      ['SL / Qnt.', r => fmtNum(r.qty), 'n', '7%'], ['Mã hiệu / Model', r => A(r.asset_id).spec_model || '', '', '11%'], ['Nước sx / Country', r => lqCountry(A(r.asset_id).origin_iso2), 'c', '8%'],
       ['Năm sx / Year', r => A(r.asset_id).spec_mfg_year || '', 'c', '7%'], ['Bộ phận / Dept.', r => r.dept_code, 'c', '8%'],
       ['Năm đưa vào sd / Being used from', r => { const a = A(r.asset_id); return String(a.in_use_date || a.purchase_date || '').slice(0, 4); }, 'c', '9%']];
     const head = [lqbHead(k, 'QUYẾT ĐỊNH', 'DECISION', b.code, b.decision_date || b.meeting_date, ['Về việc thanh lý tài sản cố định', 'Regarding the Asset Liquidation']),
@@ -14826,19 +14951,20 @@ function lqbForm(k, c) {
       lqbBi('Thanh lý các tài sản sau:', 'To liquidate the following assets:')];
     const foot = [lqbSec('Điều 2', 'Article 2:'),
       lqbBi('Ban thanh lý tài sản và các phòng ban có liên quan có trách nhiệm thi hành quyết định này.', 'The Asset Liquidation Committee and related departments are responsible for implementing this decision.'),
-      lqbSigns([['Nơi nhận', 'Recipients:', ''], ['TỔNG GIÁM ĐỐC', 'GENERAL MANAGER', chairName]])];
+      lqbSigns([['Nơi nhận', 'Recipients:', '', String(d.recipients || '').trim() || ' '], ['TỔNG GIÁM ĐỐC', 'GENERAL MANAGER', chairName]])];
     return lqbPages(false, head, live, (rows, at, last) => lqbTable(cols, rows, { start: at,
       total: last ? [el('td', { colSpan: 3, textContent: 'Tổng cộng / Total' }), el('td', { className: 'n', textContent: fmtNum(pmSum(live, 'qty')) }), el('td', { colSpan: 5 })] : null }), foot, 12, 34);
   }
   if (k === '04') {
     const cq = r => r.count_found == null ? null : n0(r.count_qty), ratio = r => n0(r.qty) ? (cq(r) ?? 0) / n0(r.qty) : 0;
     const co = r => cq(r) == null ? null : n0(r.original_value) * ratio(r), cr = r => cq(r) == null ? null : n0(r.nbv) * ratio(r);
-    const cols = [['A', (r, i) => i + 1, 'c', '4%', 1], ['B', r => r.name, '', '17%', 1], ['C', r => r.asset_code || 'N/A', '', '13%', 1], ['D', r => r.dept_code, 'c', '5%', 1],
-      ['SL / Qnt.', r => fmtNum(r.qty), 'n', '5%'], ['Nguyên giá / Original Cost', r => lqN(r.original_value), 'n', '8%'], ['Giá trị còn lại / Residual Value', r => lqN(r.nbv), 'n', '8%'],
-      ['SL / Qnt.', r => cq(r) == null ? '' : fmtNum(cq(r)), 'n', '5%'], ['Nguyên giá / Original Cost', r => lqN(co(r)), 'n', '8%'], ['Giá trị còn lại / Residual Value', r => lqN(cr(r)), 'n', '8%'],
-      ['SL / Qnt.', r => cq(r) == null ? '' : fmtNum(cq(r) - n0(r.qty)), 'n', '5%'], ['Nguyên giá / Original Cost', r => co(r) == null ? '' : lqN(co(r) - n0(r.original_value)), 'n', '7%'],
+    // Widths adding up to 100 %, the notes included: every column whole on the page (user feedback 01/11/2026).
+    const cols = [['A', (r, i) => i + 1, 'c', '3%', 1], ['B', r => r.name, '', '14%', 1], ['C', r => r.asset_code || 'N/A', '', '12%', 1], ['D', r => r.dept_code, 'c', '4%', 1],
+      ['SL / Qnt.', r => fmtNum(r.qty), 'n', '4%'], ['Nguyên giá / Original Cost', r => lqN(r.original_value), 'n', '7.5%'], ['Giá trị còn lại / Residual Value', r => lqN(r.nbv), 'n', '7.5%'],
+      ['SL / Qnt.', r => cq(r) == null ? '' : fmtNum(cq(r)), 'n', '4%'], ['Nguyên giá / Original Cost', r => lqN(co(r)), 'n', '7.5%'], ['Giá trị còn lại / Residual Value', r => lqN(cr(r)), 'n', '7.5%'],
+      ['SL / Qnt.', r => cq(r) == null ? '' : fmtNum(cq(r) - n0(r.qty)), 'n', '4%'], ['Nguyên giá / Original Cost', r => co(r) == null ? '' : lqN(co(r) - n0(r.original_value)), 'n', '7%'],
       ['Giá trị còn lại / Residual Value', r => cr(r) == null ? '' : lqN(cr(r) - n0(r.nbv)), 'n', '7%'],
-      ['Ghi chú / Notes', r => [r.count_found === false ? 'Không thấy / Not found' : '', r.count_note || ''].filter(Boolean).join(' — '), '', '', 1]];
+      ['Ghi chú / Notes', r => [r.count_found === false ? 'Không thấy / Not found' : '', r.count_note || ''].filter(Boolean).join(' — '), '', '11%', 1]];
     const groups = [['STT / No.', 1, 2], ['Tên TSCĐ / Asset Name', 1, 2], ['Mã số / Asset Code', 1, 2], ['Bộ phận / Dept.', 1, 2], ['Theo sổ kế toán / Accounting Books', 3],
       ['Theo sổ kiểm kê / Asset Count', 3], ['Chênh lệch / Difference', 3], ['Ghi chú / Notes', 1, 2]];
     const head = [lqbHead(k, 'BIÊN BẢN KIỂM KÊ TÀI SẢN', 'MINUTES OF ASSET COUNT', b.code, b.count_date),
@@ -14853,10 +14979,10 @@ function lqbForm(k, c) {
   }
   if (k === '05') {
     const df = r => r.reval_value == null ? null : Number(r.reval_value) - n0(r.nbv);
-    const cols = [['', (r, i) => i + 1, 'c', '5%', 1], ['', r => r.name, '', '24%', 1], ['', r => r.asset_code || 'N/A', '', '16%', 1],
+    const cols = [['', (r, i) => i + 1, 'c', '4%', 1], ['', r => r.name, '', '20%', 1], ['', r => r.asset_code || 'N/A', '', '15%', 1],
       ['Nguyên giá / Original Cost', r => lqN(r.original_value), 'n', '10%'], ['Hao mòn lũy kế / Depreciation', r => lqN(r.depreciation), 'n', '10%'],
       ['Giá trị còn lại / Residual Value', r => lqN(r.nbv), 'n', '10%'], ['', r => lqN(r.reval_value), 'n', '11%', 1],
-      ['Tăng / Increase', r => df(r) > 0 ? lqN(df(r)) : '', 'n', '7%'], ['Giảm / Decrease', r => df(r) < 0 ? lqN(-df(r)) : '', 'n', '7%']];
+      ['Tăng / Increase', r => df(r) > 0 ? lqN(df(r)) : '', 'n', '10%'], ['Giảm / Decrease', r => df(r) < 0 ? lqN(-df(r)) : '', 'n', '10%']];
     const groups = [['STT / No.', 1, 2], ['Tên tài sản / Asset Name', 1, 2], ['Mã Tài sản / Asset Code', 1, 2], ['Giá trị đang ghi sổ / Book Value', 3],
       ['Đánh giá lại giá trị còn lại / Revaluated Residual Value', 1, 2], ['Chênh lệch / Difference', 2]];
     const head = [lqbHead(k, 'BIÊN BẢN ĐÁNH GIÁ LẠI TÀI SẢN', 'MINUTES OF ASSETS REVALUATION', b.code, b.valuation_date),
@@ -14872,13 +14998,14 @@ function lqbForm(k, c) {
   }
   // 06 — the liquidation minutes; results (buyer, value) come in phase 3.
   const cols = [['', (r, i) => i + 1, 'c', '4%', 1], ['', r => r.name, '', '18%', 1], ['', r => fmtNum(r.qty), 'n', '5%', 1], ['', r => r.asset_code || 'N/A', '', '13%', 1],
-    ['Mã hiệu / Model', r => A(r.asset_id).spec_model || '', '', '9%'], ['Năm sx / Year', r => A(r.asset_id).spec_mfg_year || '', 'c', '6%'], ['Nước sx / Country', r => A(r.asset_id).origin_iso2 || '', 'c', '6%'],
+    ['Mã hiệu / Model', r => A(r.asset_id).spec_model || '', '', '9%'], ['Năm sx / Year', r => A(r.asset_id).spec_mfg_year || '', 'c', '6%'], ['Nước sx / Country', r => lqCountry(A(r.asset_id).origin_iso2), 'c', '6%'],
     ['', r => { const a = A(r.asset_id); return String(a.in_use_date || a.purchase_date || '').slice(0, 4); }, 'c', '7%', 1], ['', r => r.dept_code, 'c', '6%', 1],
     ['', r => lqN(r.original_value), 'n', '9%', 1], ['', r => lqN(r.depreciation), 'n', '8%', 1], ['', r => lqN(r.nbv), 'n', '9%', 1]];
   const groups = [['STT / No.', 1, 2], ['Tên tài sản / Asset Name', 1, 2], ['SL / Qnt.', 1, 2], ['Số hiệu TSCĐ / Asset Code', 1, 2], ['Thông số kỹ thuật / Specification', 3],
     ['Năm đưa vào sử dụng / Year Usage', 1, 2], ['Thuộc bộ phận / Dept.', 1, 2], ['Nguyên giá / Original Cost', 1, 2], ['Giá trị hao mòn / Depreciation', 1, 2], ['Giá trị còn lại / Residual', 1, 2]];
-  const rcols = [['#', (r, i) => i + 1, 'c', '4%'], ['Tên tài sản / Item', r => r.name, '', '22%'], ['SL', r => fmtNum(r.qty), 'n', '5%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '14%'],
-    ['Bên thu mua — Họ tên / Bidder — Name', r => r.buyer || '', '', '16%'], ['ID / CMND / MST', r => r.buyer_id || '', '', '11%'], ['Thuộc phòng ban', r => r.dept_code, 'c', '7%'],
+  // No. / item / qty / code as wide as in the table above, so the two line up (user feedback 01/11/2026).
+  const rcols = [['STT / No.', (r, i) => i + 1, 'c', '4%'], ['Tên tài sản / Asset Name', r => r.name, '', '18%'], ['SL / Qnt.', r => fmtNum(r.qty), 'n', '5%'], ['Số hiệu TSCĐ / Asset Code', r => r.asset_code || 'N/A', '', '13%'],
+    ['Bên thu mua — Họ tên / Bidder — Name', r => r.buyer || '', '', '19%'], ['ID / CMND / MST', r => r.buyer_id || '', '', '12%'], ['Thuộc bộ phận / Dept.', r => r.dept_code, 'c', '8%'],
     ['Giá trị thanh lý (thu hồi) / Liquidation value', r => lqN(r.sale_value), 'n', '11%'], ['Chi phí thanh lý (nếu có) / Outstanding exps', r => lqN(r.sale_cost), 'n', '10%']];
   const head = [lqbHead(k, 'BIÊN BẢN THANH LÝ TÀI SẢN', 'MINUTES OF ASSET LIQUIDATION', b.code, b.liquidation_date),
     lqbBi(`- Căn cứ Quyết định số: ${b.code}, ngày ${lqD(b.decision_date || b.meeting_date)} của Hội Đồng Thanh Lý TSCĐ về việc thanh lý TSCĐ`,
@@ -14908,6 +15035,14 @@ function lqbForm(k, c) {
    08: minutes of the opening — who of the council was there, every quotation
    item by item, what was chosen. GP: the gate pass of a winning buyer (buyer,
    security, head of department sign). 11: the handover minutes of a winning buyer. */
+// The end of an opening's minutes: the reasons of the choices and the rule — or, for a round called
+// again (49_lq_bid_rounds.sql), that it did not succeed and why.
+const lqb08End = (R, rows) => R.last
+  ? [...rows.filter(r => r.award_note).map(r => lqbBi(`${r.asset_code || r.name}: ${r.award_note}`, '')),
+     lqbBi('Nguyên tắc: chọn giá cao nhất hợp lệ, đã được Hội đồng đánh giá tính hợp lý và so sánh với giá thị trường.',
+           'Rule: the highest valid price, assessed as reasonable by the council against the market price.')]
+  : [lqbBi(`Kết quả: không thành công — chào thầu lại (vòng ${R.round + 1}). Lý do: ${R.reason || ''}`,
+           `Result: unsuccessful — called again (round ${R.round + 1}). Reason: ${R.reason || ''}`)];
 function lqbForm3(k, c, q) {
   const { b } = c, d = (q && q.data) || {};
   const chairName = c.chair ? String(c.chair.full_name).toUpperCase() : '';
@@ -14917,17 +15052,33 @@ function lqbForm3(k, c, q) {
     lqbBi(d.kind === 'company' ? `Mã số thuế: ${d.tax_code || ''}${d.representative ? ' · Người đại diện: ' + d.representative : ''}` : `Số CCCD: ${d.id_no || ''}`,
           d.kind === 'company' ? 'Tax code · Representative' : 'ID card number'),
     lqbBi(`Địa chỉ: ${d.address || ''}`, 'Address'), lqbBi(`Điện thoại: ${d.phone || ''}${d.email ? ' · Email: ' + d.email : ''}`, d.kind === 'company' ? 'Phone · Invoice e-mail' : 'Phone · E-mail')]);
+  if (k === '07' && n0(d.lot_price) > 0) {
+    // A quotation for the whole lot: the items, and one price (user 01/11/2026).
+    const items = c.live.filter(r => r.mode === 'Sale' && r.count_found !== false), tot = n0(d.lot_price);
+    const cols = [['STT / No.', (r, i) => i + 1, 'c', '8%'], ['Tên tài sản / Item', r => r.name, '', '70%'], ['SL / Qnt.', r => `${fmtNum(qty(r))} ${r.unit || ''}`, 'n', '22%']];
+    return lqbPages(false, [lqbHead(k, 'THƯ BÁO GIÁ', 'QUOTATION LETTER', b.code + ((q.round || 1) > 1 ? ' · V' + q.round : ''), q.submitted_at),
+      lqbBi('Kính gửi: Công ty TNHH Liên Doanh Khách Sạn Plaza — Hội đồng thanh lý tài sản', 'To: Plaza Hotel Company Limited — Asset Liquidation Council'),
+      lqbSec('Thông tin bên chào mua', 'Buyer:'), buyerBlock(),
+      lqbBi('Sau khi xem tài sản thực tế, chúng tôi chào mua TRỌN LÔ các tài sản thanh lý sau với giá:', 'Having seen the assets, we offer to buy the WHOLE LOT of the following liquidated assets at:')],
+      items, (rows, at, last) => lqbTable(cols, rows, { start: at, total: last ? [el('td', { colSpan: 2, textContent: 'Giá chào trọn lô / Price for the whole lot (VND)' }), el('td', { className: 'n', textContent: lqN(tot) })] : null }),
+      [lqbBi(`Bằng chữ: ${lqWordsVi(tot)}`, `In words: ${lqWordsEn(tot)}`),
+       lqbBi(`Chi phí thanh lý / thu gom: ${d.cost ? lqN(d.cost) + ' VND' : 'Không có'}`, `Liquidation / collection cost: ${d.cost ? lqN(d.cost) + ' VND' : 'None'}`),
+       ...(d.note ? [lqbBi(`Ghi chú: ${d.note}`, 'Note')] : []),
+       lqbBi('Chúng tôi xác nhận thông tin trên là đúng và cam kết mua trọn lô theo giá đã chào nếu được chọn.', 'We confirm the information above and commit to buy the whole lot at the price offered if selected.'),
+       lqbSigns([['', '', ''], ['Bên chào mua', 'Buyer', String(d.name || '').toUpperCase()]])], 18, 34);
+  }
   if (k === '07') {
     const items = c.live.filter(r => lqPrice(q, r.id) > 0);
     const tot = items.reduce((a, r) => a + lqPrice(q, r.id) * qty(r), 0);
-    const cols = [['STT / No.', (r, i) => i + 1, 'c', '7%'], ['Tên tài sản / Item', r => r.name, '', '33%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '20%'],
-      ['SL / Qnt.', r => `${fmtNum(qty(r))} ${r.unit || ''}`, 'n', '10%'], ['Đơn giá / Unit price (VND)', r => lqN(lqPrice(q, r.id)), 'n', '15%'],
-      ['Thành tiền / Amount (VND)', r => lqN(lqPrice(q, r.id) * qty(r)), 'n', '15%']];
+    // No asset code column (user feedback 01/11/2026).
+    const cols = [['STT / No.', (r, i) => i + 1, 'c', '8%'], ['Tên tài sản / Item', r => r.name, '', '44%'],
+      ['SL / Qnt.', r => `${fmtNum(qty(r))} ${r.unit || ''}`, 'n', '12%'], ['Đơn giá / Unit price (VND)', r => lqN(lqPrice(q, r.id)), 'n', '18%'],
+      ['Thành tiền / Amount (VND)', r => lqN(lqPrice(q, r.id) * qty(r)), 'n', '18%']];
     return lqbPages(false, [lqbHead(k, 'THƯ BÁO GIÁ', 'QUOTATION LETTER', b.code, q.submitted_at),
       lqbBi('Kính gửi: Công ty TNHH Liên Doanh Khách Sạn Plaza — Hội đồng thanh lý tài sản', 'To: Plaza Hotel Company Limited — Asset Liquidation Council'),
       lqbSec('Thông tin bên chào mua', 'Buyer:'), buyerBlock(),
       lqbBi('Sau khi xem tài sản thực tế, chúng tôi chào mua các tài sản thanh lý với giá như sau:', 'Having seen the assets, we offer to buy the liquidated assets at the following prices:')],
-      items, (rows, at, last) => lqbTable(cols, rows, { start: at, total: last ? [el('td', { colSpan: 5, textContent: 'Tổng cộng / Total' }), el('td', { className: 'n', textContent: lqN(tot) })] : null }),
+      items, (rows, at, last) => lqbTable(cols, rows, { start: at, total: last ? [el('td', { colSpan: 4, textContent: 'Tổng cộng / Total' }), el('td', { className: 'n', textContent: lqN(tot) })] : null }),
       [lqbBi(`Bằng chữ: ${lqWordsVi(tot)}`, `In words: ${lqWordsEn(tot)}`),
        lqbBi(`Chi phí thanh lý / thu gom: ${d.cost ? lqN(d.cost) + ' VND' : 'Không có'}`, `Liquidation / collection cost: ${d.cost ? lqN(d.cost) + ' VND' : 'None'}`),
        ...(d.note ? [lqbBi(`Ghi chú: ${d.note}`, 'Note')] : []),
@@ -14935,42 +15086,65 @@ function lqbForm3(k, c, q) {
        lqbSigns([['', '', ''], ['Bên chào mua', 'Buyer', String(d.name || '').toUpperCase()]])], 18, 34);
   }
   if (k === '08') {
-    const quotes = (c.quotes || []), att = new Map(((c.bids || {}).attend || []).map(a => [a.member_id, a]));
+    // q: the round (lqbCapture: c.rounds) — its quotations, attendance, note; a closed round says why it was called again.
+    const R = q || { round: 1, quotes: c.quotes || [], attend: (c.bids || {}).attend || [], opened_at: b.opened_at, deadline: b.call_deadline, note: b.open_note, last: true };
+    const quotes = R.quotes || [], att = new Map((R.attend || []).map(a => [a.member_id, a]));
     const here = c.mem.filter(m => (att.get(m.id) || {}).present), away = c.mem.filter(m => att.has(m.id) && !att.get(m.id).present);
     const rows = c.live.filter(r => r.count_found !== false);
-    const w = Math.max(6, Math.floor(40 / Math.max(1, quotes.length)));
-    const cols = [['STT', (r, i) => i + 1, 'c', '4%'], ['Tên tài sản / Item', r => r.name, '', '17%'], ['Mã TS / Code', r => r.asset_code || 'N/A', '', '11%'],
-      ['SL / Qnt.', r => fmtNum(qty(r)), 'n', '5%'], ['Giá sàn / Floor', r => lqN(r.reval_value), 'n', '8%'],
+    // The columns add up to 100 %: nothing runs over its neighbour (user feedback 01/11/2026).
+    // The quotations share 34 % (6 % each at least); the other columns the rest.
+    const w = Math.max(6, Math.floor(3400 / Math.max(1, quotes.length)) / 100), rest = (100 - w * quotes.length) / 66;
+    const pc = v => (v * rest).toFixed(2) + '%';
+    const cols = [['STT', (r, i) => i + 1, 'c', pc(4)], ['Tên tài sản / Item', r => r.name, '', pc(15)], ['Mã TS / Code', r => r.asset_code || 'N/A', '', pc(13)],
+      ['SL / Qnt.', r => fmtNum(qty(r)), 'n', pc(4)], ['Giá sàn / Floor', r => lqN(r.reval_value), 'n', pc(8)],
       ...quotes.map(qq => [qq.data.name || qq.buyer.name, r => { const p = lqPrice(qq, r.id); return p > 0 ? lqN(p) : '—'; }, 'n', w + '%']),
-      ['Chọn / Chosen', r => r.outcome === 'destroy' ? 'Huỷ / Destroy' : r.buyer || '', '', '12%'], ['Giá trị / Value', r => lqN(r.sale_value), 'n', '9%']];
-    return lqbPages(true, [lqbHead(k, 'BIÊN BẢN MỞ THẦU THANH LÝ TÀI SẢN', 'MINUTES OF THE LIQUIDATION BID OPENING', b.code, b.opened_at),
-      lqbBi(`Thời điểm mở thầu: ${b.opened_at ? fmtDateTime(b.opened_at) : '…………'} · Hạn nộp báo giá: ${b.call_deadline ? fmtDateTime(b.call_deadline) : '…………'}`, 'Opening time · Quotation deadline'),
+      ['Chọn / Chosen', r => !R.last ? '' : r.outcome === 'destroy' ? 'Huỷ / Destroy' : r.buyer || '', '', pc(13)], ['Giá trị / Value', r => R.last ? lqN(r.sale_value) : '', 'n', pc(9)]];
+    if (R.lot) {
+      // By the lot: the items offered, then each buyer's one price (user 01/11/2026).
+      const lotCols = [['STT', (r, i) => i + 1, 'c', '6%'], ['Bên chào mua / Buyer', r => r.data.name || r.buyer.name, '', '40%'], ['MST / CCCD', r => lqBuyerId(r.data), '', '18%'],
+        ['Giá chào trọn lô / Lot price (VND)', r => lqN(r.data.lot_price), 'n', '20%'],
+        ['Chọn / Chosen', r => R.last && rows.some(x => x.outcome === 'sale' && x.sale_quote_id === r.id) ? '✓' : '', 'c', '16%']];
+      const itemCols = [['STT', (r, i) => i + 1, 'c', '6%'], ['Tên tài sản / Item', r => r.name, '', '44%'], ['Mã TS / Code', r => r.asset_code || 'N/A', '', '28%'],
+        ['SL / Qnt.', r => fmtNum(qty(r)), 'n', '10%'], ['Giá sàn / Floor', r => lqN(r.reval_value), 'n', '12%']];
+      return lqbPages(true, [lqbHead(k, 'BIÊN BẢN MỞ THẦU THANH LÝ TÀI SẢN', 'MINUTES OF THE LIQUIDATION BID OPENING', b.code + (R.round > 1 || !R.last ? ' · V' + R.round : ''), R.opened_at),
+        lqbBi(`Vòng ${R.round} · Thời điểm mở thầu: ${R.opened_at ? fmtDateTime(R.opened_at) : '…………'} · Hạn nộp báo giá: ${R.deadline ? fmtDateTime(R.deadline) : '…………'} · Báo giá trọn lô`,
+              `Round ${R.round} · Opening time · Quotation deadline · Quotation for the whole lot`),
+        lqbSec('I. Thành viên hội đồng có mặt', `Council members present (${here.length}/${c.mem.length}):`),
+        el('div', { className: 'lqmem2' }, here.map(m => el('div', { textContent: `${String(m.full_name).toUpperCase()} — ${m.position_vi || ''} / ${m.position_en || ''}` }))),
+        ...(away.length ? [lqbBi(`Vắng mặt: ${away.map(m => m.full_name).join(', ')}`, 'Absent')] : []),
+        lqbSec('II. Tài sản chào bán trọn lô', 'Assets offered as one lot:'), lqbTable(itemCols, rows.filter(r => r.mode !== 'Other')),
+        ...(R.note && quotes.length < 3 ? [lqbBi(`Giải trình (ít hơn 3 báo giá): ${R.note}`, 'Explanation (fewer than 3 quotations)')] : []),
+        lqbSec('III. Giá chào và kết quả', `Lot prices and result (${quotes.length} quotation(s)):`)],
+        quotes, (rr, at) => lqbTable(lotCols, rr, { start: at }), [...lqb08End(R, rows), lqbSigns(here.map(m => [m.role === 'chair' ? 'Chủ tịch hội đồng' : 'Thành viên hội đồng', m.role === 'chair' ? 'Chairman' : 'Member', String(m.full_name).toUpperCase()]))], 10, 18);
+    }
+    return lqbPages(true, [lqbHead(k, 'BIÊN BẢN MỞ THẦU THANH LÝ TÀI SẢN', 'MINUTES OF THE LIQUIDATION BID OPENING', b.code + (R.round > 1 || !R.last ? ' · V' + R.round : ''), R.opened_at),
+      lqbBi(`${R.round > 1 || !R.last ? 'Vòng ' + R.round + ' · ' : ''}Thời điểm mở thầu: ${R.opened_at ? fmtDateTime(R.opened_at) : '…………'} · Hạn nộp báo giá: ${R.deadline ? fmtDateTime(R.deadline) : '…………'}`,
+            `${R.round > 1 || !R.last ? 'Round ' + R.round + ' · ' : ''}Opening time · Quotation deadline`),
       lqbSec('I. Thành viên hội đồng có mặt', `Council members present (${here.length}/${c.mem.length}):`),
       el('div', { className: 'lqmem2' }, here.map(m => el('div', { textContent: `${String(m.full_name).toUpperCase()} — ${m.position_vi || ''} / ${m.position_en || ''}` }))),
       ...(away.length ? [lqbBi(`Vắng mặt: ${away.map(m => m.full_name).join(', ')}`, 'Absent')] : []),
       lqbSec('II. Các báo giá đã nộp', `Quotations submitted (${quotes.length}):`),
       el('div', { className: 'lqmem2' }, quotes.map((qq, i) => el('div', { textContent: `${i + 1}. ${qq.data.name || qq.buyer.name} · ${lqBuyerId(qq.data)} · ${fmtDateTime(qq.submitted_at)}` }))),
-      ...(b.open_note ? [lqbBi(`Giải trình (ít hơn 3 báo giá): ${b.open_note}`, 'Explanation (fewer than 3 quotations)')] : []),
+      ...(R.note && quotes.length < 3 ? [lqbBi(`Giải trình (ít hơn 3 báo giá): ${R.note}`, 'Explanation (fewer than 3 quotations)')] : []),
       lqbSec('III. So sánh giá và kết quả', 'Price comparison and result (unit prices, VND):')],
       rows, (rr, at, last) => lqbTable(cols, rr, { start: at, total: last ? [el('td', { colSpan: 5 + quotes.length + 1, textContent: 'Tổng giá trị thu hồi / Total' }),
-        el('td', { className: 'n', textContent: lqN(rows.reduce((a, r) => a + n0(r.sale_value), 0)) })] : null }),
-      [...rows.filter(r => r.award_note).map(r => lqbBi(`${r.asset_code || r.name}: ${r.award_note}`, '')),
-       lqbBi('Nguyên tắc: chọn giá cao nhất hợp lệ, đã được Hội đồng đánh giá tính hợp lý và so sánh với giá thị trường.',
-             'Rule: the highest valid price, assessed as reasonable by the council against the market price.'),
+        el('td', { className: 'n', textContent: R.last ? lqN(rows.reduce((a, r) => a + n0(r.sale_value), 0)) : '' })] : null }),
+      [...lqb08End(R, rows),
        lqbSigns(here.map(m => [m.role === 'chair' ? 'Chủ tịch hội đồng' : 'Thành viên hội đồng', m.role === 'chair' ? 'Chairman' : 'Member', String(m.full_name).toUpperCase()]))], 6, 18);
   }
   const mine = c.live.filter(r => r.outcome === 'sale' && r.sale_quote_id === q.id);
   const tot = mine.reduce((a, r) => a + n0(r.sale_value), 0);
   if (k === 'GP') {
-    const cols = [['STT / No.', (r, i) => i + 1, 'c', '8%'], ['Tên tài sản / Item', r => r.name, '', '42%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '25%'],
-      ['SL / Qnt.', r => `${fmtNum(qty(r))} ${r.unit || ''}`, 'n', '15%']];
+    // A picture of each item, for the guard at the gate (user feedback 01/11/2026).
+    const cols = [['STT / No.', (r, i) => i + 1, 'c', '7%'], ['Tên tài sản / Item', r => r.name, '', '33%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '24%'],
+      ['SL / Qnt.', r => `${fmtNum(qty(r))} ${r.unit || ''}`, 'n', '12%'], ['Hình ảnh / Picture', r => LQ.ph.get(r.lr_doc_id + ':' + r.line_key) || '', 'c', '24%']];
     return lqbPages(false, [lqbHead(k, 'GIẤY RA CỔNG — HÀNG THANH LÝ', 'GATE PASS — LIQUIDATED ASSETS', b.code, q.gate_date),
       lqbBi(`Đợt thanh lý: ${b.code} · Hoá đơn GTGT số: ${q.invoice_no || '…………'}${q.invoice_date ? ' ngày ' + lqD(q.invoice_date) : ''}`, 'Liquidation batch · VAT invoice'),
       lqbSec('Người nhận hàng (bên mua)', 'Receiver (buyer):'), buyerBlock(),
       lqbBi('Được phép mang ra khỏi khách sạn các tài sản sau:', 'Is allowed to take the following assets out of the hotel:')],
       mine, (rows, at) => lqbTable(cols, rows, { start: at }),
       [lqbBi('Phương tiện / biển số xe: ……………………   Giờ ra: ……………', 'Vehicle / plate number · Time out'),
-       lqbSigns([['Người nhận hàng', 'Receiver (buyer)', String(d.name || '').toUpperCase()], ['Bảo vệ', 'Security', ''], ['Trưởng bộ phận', 'Head of Department', '']])], 18, 34);
+       lqbSigns([['Người nhận hàng', 'Receiver (buyer)', String(d.name || '').toUpperCase()], ['Bảo vệ', 'Security', ''], ['Quản lý tài sản', 'Asset Manager', '']])], 10, 14);
   }
   // 11 — handover minutes.
   const cols = [['STT / No.', (r, i) => i + 1, 'c', '6%'], ['Tên tài sản / Item', r => r.name, '', '30%'], ['Mã tài sản / Asset Code', r => r.asset_code || 'N/A', '', '20%'],
@@ -14991,7 +15165,7 @@ function lqbForm3(k, c, q) {
 }
 
 // Every page of the chosen forms, fitted to A4 each, as one PDF / a print preview.
-async function lqbCapture(b, keys, fmt, out, quoteId) {
+async function lqbCapture(b, keys, fmt, out, quoteId, onlyRound) {
   const host = el('div', { className: 'fpdfhost' });
   try {
     msg(out, 'info', t('wf.pdfMaking'));
@@ -15002,24 +15176,33 @@ async function lqbCapture(b, keys, fmt, out, quoteId) {
       for (const a of await SB.select('am_asset', `select=id,asset_code,spec_model,origin_iso2,spec_mfg_year,in_use_date,purchase_date,location_code&id=in.(${ids.slice(i, i + 200).join(',')})`)) assets.set(a.id, a);
     const c = lqbCtx(b, assets);
     if (!c.live.length) throw new Error(t('lqb.noItems'));
+    if (keys.includes('GP')) await lqPhotosLoad(c.lrs);     // the pictures on the gate pass
     // Quotations for 07 / 08 / gate pass / 11: the opened ones (their prices are sealed before).
     if (keys.some(k => LQ_DOCS3.includes(k))) {
       c.bids = await lqbBidLoad(b);
-      c.quotes = (c.bids.buyers || []).filter(v => v.quote && v.quote.opened_at).map(v => Object.assign({ buyer: v }, v.quote));
+      c.round = c.bids.round || 1; c.lot = c.bids.mode === 'lot';
+      // Every opened quotation (all rounds: each letter is a record); the round now open for results, gate passes, handovers.
+      c.allQuotes = (c.bids.buyers || []).filter(v => v.quote && v.quote.opened_at).map(v => Object.assign({ buyer: v }, v.quote));
+      c.quotes = c.allQuotes.filter(q => (q.round || 1) === c.round);
+      // The opening minutes (08): one per round — the closed ones from their history, the open one as it stands.
+      c.rounds = [...(c.bids.history || []).map(h => ({ round: h.round, lot: h.mode === 'lot', opened_at: h.opened_at, deadline: h.deadline, note: h.open_note,
+                                                        reason: h.reason, attend: h.attend || [], quotes: c.allQuotes.filter(q => (q.round || 1) === h.round) })),
+                  { round: c.round, lot: c.lot, opened_at: b.opened_at, deadline: b.call_deadline, note: b.open_note, attend: c.bids.attend || [], quotes: c.quotes, last: true }];
     }
     document.body.append(host);
     const shots = [];
     for (const k of keys) {
       // Per-buyer forms: every opened quotation (07) / every winning buyer (GP, 11), or just the one asked for.
-      const per = k === '07' ? c.quotes : k === 'GP' || k === '11' ? c.quotes.filter(q => c.live.some(r => r.outcome === 'sale' && r.sale_quote_id === q.id)) : [null];
+      const per = k === '07' ? c.allQuotes : k === 'GP' || k === '11' ? c.quotes.filter(q => c.live.some(r => r.outcome === 'sale' && r.sale_quote_id === q.id))
+                : k === '08' ? c.rounds.filter(r => r.opened_at || r.last).filter(r => onlyRound == null || r.round === onlyRound) : [null];
       const list = quoteId ? per.filter(q => q && q.id === quoteId) : per;
-      if (k !== '08' && LQ_DOCS3.includes(k) && !list.length) continue;
+      if (LQ_DOCS3.includes(k) && !list.length) continue;
       for (const q of list) {
         const pages = fsPages(el('div', { className: 'lqsheet print' }, LQ_DOCS3.includes(k) ? lqbForm3(k, c, q) : lqbForm(k, c)));
         for (let i = 0; i < pages.length; i++) {
           host.innerHTML = ''; host.append(pages[i].box);
           const canvas = await html2canvas(pages[i].box, { scale: 2, backgroundColor: '#ffffff', logging: false });
-          shots.push({ label: `${b.code} - ${k}`, first: i === 0, doc: `${k} — ${t('lqb.f.' + k)}${q ? ' · ' + (q.data.name || q.buyer.name) : ''}`, land: pages[i].land, canvas });
+          shots.push({ label: `${b.code} - ${k}`, first: i === 0, doc: `${k} — ${t('lqb.f.' + k)}${q ? ' · ' + (q.data ? q.data.name || q.buyer.name : t('lqq.round', { n: q.round })) : ''}`, land: pages[i].land, canvas });
         }
       }
     }
@@ -15212,10 +15395,26 @@ function lqbBidBody(card, b, bl) {
   const edit = lqIsAm() && ['decided', 'bidding'].includes(b.status);
   const out = el('div');
   const live = lqBatchItems(b).filter(i => i.status === 'batched' || ['sold', 'destroyed', 'lost'].includes(i.status));
-  const quotes = bl.buyers.filter(v => v.quote && v.quote.status === 'submitted').map(v => Object.assign({ buyer: v }, v.quote));
+  // The round of the call now open (49_lq_bid_rounds.sql): its buyers and quotations; earlier rounds are history.
+  const R = bl.round || 1, lot = bl.mode === 'lot';
+  const buyers = bl.buyers.filter(v => (v.round || 1) === R);
+  const quotes = buyers.filter(v => v.quote && v.quote.status === 'submitted').map(v => Object.assign({ buyer: v }, v.quote));
   const opened = !!b.opened_at;
   card.append(out);
   const re = async () => { await lqLoad(); };
+  if (R > 1) card.append(el('div', { className: 'msg info', textContent: t('lqq.roundNow', { n: R }) }));
+  // The rounds that were closed for a new call: when, how many quotations, why — and their opening minutes (08).
+  for (const h of bl.history || []) {
+    const n = bl.buyers.filter(v => (v.round || 1) === h.round && v.quote && v.quote.opened_at).length;
+    card.append(el('div', { className: 'lqround' }, [el('b', { textContent: t('lqq.roundOld', { n: h.round }) }),
+      el('span', { textContent: t('lqq.roundOldTxt', { d: h.opened_at ? fmtDateTime(h.opened_at) : '—', q: n, m: t('lqq.mode.' + (h.mode || 'item')), why: h.reason || '' }) }),
+      el('button', { className: 'btn tiny', type: 'button', textContent: '🖨 ' + t('lqb.f.08'), onclick: () => lqbCapture(b, ['08'], 'preview', out, null, h.round) })]));
+  }
+  // Lot or item by item: chosen before any quotation of this round is in.
+  const modeSel = el('select', { disabled: !lqIsAm() || opened || quotes.length > 0 || !['open', 'hotel', 'amcheck', 'committee', 'decided', 'bidding'].includes(b.status) },
+    ['item', 'lot'].map(m => el('option', { value: m, textContent: t('lqq.mode.' + m) })));
+  modeSel.value = lot ? 'lot' : 'item';
+  modeSel.onchange = async () => { try { await SB.rpc('pm_lq_bid_mode', { p_batch: b.id, p_mode: modeSel.value }); await re(); } catch (e) { msg(out, 'err', e.message); modeSel.value = lot ? 'lot' : 'item'; } };
 
   // 1. The call: deadline and instructions.
   if (b.status === 'decided' || (b.status === 'bidding' && !opened)) {
@@ -15223,22 +15422,23 @@ function lqbBidBody(card, b, bl) {
     const terms = el('textarea', { rows: 3, value: b.call_terms || t('lqq.termsDef'), disabled: !edit });
     card.append(el('h3', { className: 'lqsub', textContent: t('lqq.call') }),
       el('div', { className: 'lqgrid' }, [el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.deadline') }), dl]),
+        el('div', { className: 'fld', title: t('lqq.modeHint') }, [el('label', { textContent: t('lqq.mode') }), modeSel]),
         el('div', { className: 'fld lqwide', style: 'grid-column:span 3' }, [el('label', { textContent: t('lqq.terms') }), terms])]));
     if (edit) card.append(el('div', { className: 'row', style: 'gap:8px;margin-top:6px' }, [
       el('button', { className: 'btn pri', type: 'button', textContent: t(b.status === 'decided' ? 'lqq.callOpen' : 'lqq.callSave'), onclick: async () => {
         if (!dl.value) return msg(out, 'err', t('lqq.needDeadline'));
         try { await SB.rpc('pm_lq_call_open', { p_batch: b.id, p_deadline: new Date(dl.value).toISOString(), p_terms: terms.value }); await re(); }
         catch (e) { msg(out, 'err', e.message); } } }),
-      ...(b.status === 'bidding' && !bl.buyers.length ? [el('button', { className: 'btn', type: 'button', textContent: t('lqq.callCancel'), onclick: async () => {
+      ...(b.status === 'bidding' && !buyers.length ? [el('button', { className: 'btn', type: 'button', textContent: t('lqq.callCancel'), onclick: async () => {
         try { await SB.rpc('pm_lq_call_cancel', { p_batch: b.id }); await re(); } catch (e) { msg(out, 'err', e.message); } } })] : [])]));
   }
 
   // 2. The buyers invited and where their quotation stands.
   if (b.status !== 'decided') {
-    card.append(el('h3', { className: 'lqsub', textContent: t('lqq.buyers', { n: bl.buyers.length, s: quotes.length }) }));
+    card.append(el('h3', { className: 'lqsub', textContent: t('lqq.buyers', { n: buyers.length, s: quotes.length }) + (R > 1 ? ' · ' + t('lqq.round', { n: R }) : '') + (lot ? ' · ' + t('lqq.mode.lot') : '') }));
     const linkBox = el('div');
     const tb = el('table', { className: 'lqbt' }, [el('tr', {}, ['lqq.b.name', 'lqq.b.contact', 'lqq.b.quote', 'lqq.b.link', ''].map(k => el('th', { textContent: k ? t(k) : '' })))]);
-    for (const v of bl.buyers) {
+    for (const v of buyers) {
       const q = v.quote;
       const st = !q ? t('lqq.q.none') : q.status === 'submitted' ? t('lqq.q.sub', { d: fmtDateTime(q.submitted_at) }) + (q.opened_at ? '' : ' · 🔒') : t('lqq.q.draft');
       tb.append(el('tr', {}, [el('td', {}, [el('b', { textContent: v.name }), q && q.data && q.data.name && q.data.name !== v.name ? el('small', { className: 'dim', textContent: ' · ' + q.data.name }) : '']),
@@ -15250,7 +15450,7 @@ function lqbBidBody(card, b, bl) {
           el('button', { className: 'btn tiny', type: 'button', textContent: v.revoked ? t('lqq.unrevoke') : t('lqq.revoke'), onclick: async () => {
             try { await SB.rpc('pm_lq_buyer_set', { p_buyer: v.id, p_days: null, p_revoke: !v.revoked, p_new_token: false }); await re(); } catch (e) { msg(out, 'err', e.message); } } })] : '')]));
     }
-    if (!bl.buyers.length) tb.append(el('tr', {}, el('td', { colSpan: 5, className: 'dim', textContent: t('lqq.noBuyers') })));
+    if (!buyers.length) tb.append(el('tr', {}, el('td', { colSpan: 5, className: 'dim', textContent: t('lqq.noBuyers') })));
     card.append(el('div', { className: 'wrap' }, tb), linkBox);
     if (edit && !opened) {
       const nm = el('input', { placeholder: t('lqq.b.name') }), ph = el('input', { placeholder: t('lqq.b.phone') }), em = el('input', { placeholder: 'Email' });
@@ -15268,12 +15468,13 @@ function lqbBidBody(card, b, bl) {
   // 3. The opening: who of the council is here.
   if (b.status === 'bidding' && !opened) {
     const mem = lqMembersOf(b.council_id);
-    const due = !b.call_deadline || new Date(b.call_deadline) <= new Date() || (bl.buyers.filter(v => !v.revoked).length > 0 && bl.buyers.filter(v => !v.revoked).every(v => v.quote && v.quote.status === 'submitted'));
+    const due = !b.call_deadline || new Date(b.call_deadline) <= new Date() || (buyers.filter(v => !v.revoked).length > 0 && buyers.filter(v => !v.revoked).every(v => v.quote && v.quote.status === 'submitted'));
     const boxes = mem.map(m => [m, el('input', { type: 'checkbox' })]);
     const note = el('textarea', { rows: 2, placeholder: t('lqq.fewWhy') });
-    const need = Math.floor(mem.length / 2) + 1;
+    // Present at the opening: more than half, or every member — Admin tool → settings, lq_open_quorum (user 01/11/2026).
+    const need = bl.quorum === 'all' ? mem.length : Math.floor(mem.length / 2) + 1;
     card.append(el('h3', { className: 'lqsub', textContent: t('lqq.opening') }),
-      el('div', { className: 'tdnote', textContent: t('lqq.openHint', { need, of: mem.length }) }),
+      el('div', { className: 'tdnote', textContent: t(bl.quorum === 'all' ? 'lqq.openHintAll' : 'lqq.openHint', { need, of: mem.length }) }),
       el('div', { className: 'lqpresent' }, boxes.map(([m, c]) => el('label', { className: 'chk' }, [c, el('span', { textContent: `${m.full_name} — ${t(m.role === 'chair' ? 'lqc.r.chair' : m.role === 'vice' ? 'lqc.r.vice' : m.permanent ? 'lqc.r.perm' : 'lqc.r.nonperm')}` })]))),
       ...(quotes.length < 3 ? [el('div', { className: 'msg warn', textContent: t('lqq.few', { n: quotes.length }) }), note] : []));
     if (edit) card.append(el('div', { className: 'row', style: 'gap:8px;margin-top:6px' }, [
@@ -15286,7 +15487,22 @@ function lqbBidBody(card, b, bl) {
   }
 
   // 4. The result, item by item (destroying needs no quotation; selling needs the opening).
-  if (['bidding', 'awarding', 'settling', 'closed'].includes(b.status)) lqbAward(card, b, bl, quotes, live, edit && b.status === 'bidding', out);
+  if (['bidding', 'awarding', 'settling', 'closed'].includes(b.status)) lqbAward(card, b, bl, quotes.filter(q => q.opened_at || !opened), live, edit && b.status === 'bidding', out, lot);
+  // 4b. An opening that did not succeed: close the round, with the reason, and call again (user 01/11/2026).
+  if (edit && b.status === 'bidding' && opened) {
+    const why = el('input', { placeholder: t('lqq.rebidWhy') });
+    const nm = el('select', {}, ['item', 'lot'].map(m => el('option', { value: m, textContent: t('lqq.mode.' + m) }))); nm.value = lot ? 'lot' : 'item';
+    card.append(el('details', { className: 'lqrebid' }, [el('summary', { textContent: t('lqq.rebid') }),
+      el('div', { className: 'tdnote', textContent: t('lqq.rebidHint') }),
+      el('div', { className: 'row', style: 'gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:6px' }, [
+        el('div', { className: 'fld', style: 'flex:1;min-width:240px' }, [el('label', { textContent: t('lqq.rebidWhyL') }), why]),
+        el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.mode') }), nm]),
+        el('button', { className: 'btn danger', type: 'button', textContent: t('lqq.rebidGo', { n: R + 1 }), onclick: async () => {
+          if (!why.value.trim()) return msg(out, 'err', t('lqq.rebidWhyNeed'));
+          if (!confirm(t('lqq.rebidQ', { n: R, c: b.code }))) return;
+          try { await SB.rpc('pm_lq_rebid', { p_batch: b.id, p_reason: why.value.trim(), p_mode: nm.value }); LQ.flash = t('lqq.rebidDone', { n: R + 1 }); await re(); }
+          catch (e) { msg(out, 'err', e.message); } } })])]));
+  }
   // 5. The winners' papers (after the committee approved the prices): uploaded here, the invoice by the Accountant.
   LQ.quotes = quotes;
   if (['settling', 'closed'].includes(b.status)) lqbWinners(card, b, bl, live, b.status === 'settling', out);
@@ -15306,23 +15522,46 @@ function lqLinkShow(host, name, token) {
 }
 
 // Items × quotations: each buyer's unit price, the highest marked; the choice, the price, the cost, why.
-function lqbAward(card, b, bl, quotes, live, edit, out) {
+function lqbAward(card, b, bl, quotes, live, edit, out, lot) {
   const opened = !!b.opened_at, canSet = edit && b.status !== 'closed';
   card.append(el('h3', { className: 'lqsub', textContent: t('lqq.result') }));
   if (!opened && b.status === 'bidding') card.append(el('div', { className: 'tdnote', textContent: t('lqq.sealedHint') }));
   const found = live.filter(i => i.count_found !== false), lost = live.filter(i => i.count_found === false);
   const draft = new Map(found.map(i => [i.id, { outcome: i.outcome || '', quote_id: i.sale_quote_id || '', price: i.sale_price, cost: i.sale_cost, note: i.award_note || '' }]));
+  // By the lot: one price per buyer, the whole lot to one of them; the items take their share of that price.
+  const lotPrice = q => n0(q && q.data && q.data.lot_price) || null;
+  const lotTake = q => { for (const i of found) { const dr = draft.get(i.id);
+    if (i.mode === 'Other') { if (!dr.outcome) dr.outcome = 'destroy'; continue; }
+    Object.assign(dr, q ? { outcome: 'sale', quote_id: q.id, price: lqPrice(q, i.id) } : { outcome: '', quote_id: '', price: null }); } };
+  if (lot && opened && quotes.length) {
+    const maxLot = Math.max(0, ...quotes.map(q => lotPrice(q) || 0));
+    const cur = found.find(i => i.outcome === 'sale');
+    const pick = el('select', { disabled: !canSet }, [el('option', { value: '', textContent: '—' }),
+      ...quotes.map(q => el('option', { value: q.id, textContent: `${q.data.name || q.buyer.name} · ${lqN(lotPrice(q))}${lotPrice(q) === maxLot ? ' ★' : ''}` }))]);
+    pick.value = cur ? cur.sale_quote_id : '';
+    const why = el('input', { placeholder: t('lqq.whyNeed'), value: (cur && cur.award_note) || '', disabled: !canSet });
+    pick.onchange = () => { lotTake(quotes.find(q => q.id === Number(pick.value))); };
+    why.onchange = () => { for (const i of found) { const dr = draft.get(i.id); if (dr.outcome === 'sale') dr.note = why.value.trim(); } };
+    card.append(el('div', { className: 'lqlot' }, [el('table', { className: 'lqbt' }, [
+      el('tr', {}, [el('th', { textContent: t('lqq.b.name') }), el('th', { className: 'num', textContent: t('lqq.lotPrice') })]),
+      ...quotes.map(q => el('tr', {}, [el('td', { textContent: q.data.name || q.buyer.name }),
+        el('td', { className: 'num' + (lotPrice(q) === maxLot ? ' best' : ''), textContent: lqN(lotPrice(q)) })]))]),
+      el('div', { className: 'row', style: 'gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:6px' }, [
+        el('div', { className: 'fld' }, [el('label', { textContent: t('lqq.lotWinner') }), pick]),
+        el('div', { className: 'fld', style: 'flex:1;min-width:220px' }, [el('label', { textContent: t('lqq.why') }), why])]),
+      el('div', { className: 'tdnote', textContent: t('lqq.lotHint') })]));
+  }
   const head = [t('lq.c.code'), t('lq.c.name'), t('lq.c.qty'), t('lqb.c.reval'), ...(opened ? quotes.map(q => q.data.name || q.buyer.name) : []), t('lqq.choice'), t('lqq.price'), t('lqq.value'), t('lqq.cost'), t('lqq.why')];
   const tb = el('table', { className: 'lqbt lqaward' }, [el('tr', {}, head.map((h, i) => el('th', { className: i === 2 || i === 3 || (i >= 4 && i < 4 + (opened ? quotes.length : 0)) || i >= head.length - 3 && i < head.length - 1 ? 'num' : '', textContent: h })))]);
   for (const i of found) {
     const dr = draft.get(i.id), qty = n0(i.count_qty ?? i.qty);
     const prices = opened ? quotes.map(q => lqPrice(q, i.id)) : [];
     const max = Math.max(0, ...prices.filter(p => p > 0));
-    const sel = el('select', { disabled: !canSet });
+    const sel = el('select', { disabled: !canSet || (lot && i.mode !== 'Other') });
     sel.append(el('option', { value: '', textContent: '—' }), el('option', { value: 'destroy', textContent: t('lqq.destroy') }));
     quotes.forEach((q, k) => { if (prices[k] > 0) sel.append(el('option', { value: 'q' + q.id, textContent: `${q.data.name || q.buyer.name} · ${lqN(prices[k])}` })); });
     sel.value = dr.outcome === 'destroy' ? 'destroy' : dr.outcome === 'sale' ? 'q' + dr.quote_id : '';
-    const pr = el('input', { className: 'lqrv', inputMode: 'decimal', value: dr.price != null ? fmtNum(dr.price) : '', disabled: !canSet || dr.outcome !== 'sale' });
+    const pr = el('input', { className: 'lqrv', inputMode: 'decimal', value: dr.price != null ? fmtNum(dr.price) : '', disabled: !canSet || dr.outcome !== 'sale' || lot });
     const cost = el('input', { className: 'lqrv', inputMode: 'decimal', value: dr.cost != null ? fmtNum(dr.cost) : '', disabled: !canSet || !dr.outcome });
     const why = el('input', { value: dr.note, disabled: !canSet, placeholder: '' });
     const val = el('td', { className: 'num', textContent: dr.outcome === 'sale' && dr.price ? lqN(dr.price * qty) : '' });
@@ -15353,6 +15592,7 @@ function lqbAward(card, b, bl, quotes, live, edit, out) {
   if (saleSum) card.append(el('div', { className: 'lqsum', textContent: t('lqq.saleSum', { v: lqN(saleSum) }) }));
   if (canSet) card.append(el('div', { className: 'row', style: 'gap:8px;margin-top:6px' }, [
     ...(opened ? [el('button', { className: 'btn', type: 'button', textContent: t('lqq.suggest'), onclick: () => {
+      if (lot) { const best = quotes.slice().sort((a, c) => (lotPrice(c) || 0) - (lotPrice(a) || 0))[0]; if (best) lotTake(best); return lqbSaveAward(b, draft, out); }
       for (const i of found) {
         const dr = draft.get(i.id); if (dr.outcome) continue;
         let best = null, bp = 0; for (const q of quotes) { const p = lqPrice(q, i.id); if (p > bp) { bp = p; best = q; } }

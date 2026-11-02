@@ -1012,7 +1012,7 @@ begin
     'evidence', '[]'::jsonb, 'total_qty', 3, 'total', 103500000,
     'lines', jsonb_build_array(
       jsonb_build_object('asset_item', p1.lab, 'asset_code', v_oldc[1], 'condition', 'Damaged', 'reason', 'High repair cost', 'after', 'Liquidation', 'qty', 1, 'unit', 'pcs', 'original_value', 42000000),
-      jsonb_build_object('asset_item', p1.lab, 'asset_code', v_oldc[2], 'condition', 'Damaged', 'reason', 'Irreparable', 'after', 'Liquidation', 'qty', 1, 'unit', 'pcs', 'original_value', 42000000),
+      jsonb_build_object('asset_item', p1.lab, 'asset_code', v_oldc[2], 'condition', 'Damaged', 'reason', 'Irreparable', 'ref_no', 'WO-2026-0418', 'after', 'Liquidation', 'qty', 1, 'unit', 'pcs', 'original_value', 42000000),
       jsonb_build_object('asset_item', p2.lab, 'asset_code', v_oldc[3], 'condition', 'Poor', 'reason', 'Obsolete', 'after', 'Spare', 'qty', 1, 'unit', 'pcs', 'original_value', 19500000))));
   perform am_demo_tick(am_demo_at(165, 10), c_sc, v_nm);
   perform pm_pkg_submit(v_pkg, v_sig);
@@ -1020,6 +1020,9 @@ begin
   perform am_demo_drive(v_pkg, 162, c_sc, v_nm, 'PA', jsonb_build_object(
     'date', (current_date - 160)::text, 'comparability', 'Comparable', 'risk_category', 'Technical Issues', 'possibility', 4, 'impact', 3, 'hide_ref', false,
     'evidence', '[]'::jsonb,
+    'amc_opinion', 'AMC đã kiểm tra tại chỗ 05/05: 2 bàn lạnh 2014 hỏng máy nén lần 3, không giữ được 2–4 °C — khả năng xảy ra 4 (Likely: 3–6 lần hỏng / 12 tháng), '
+      || 'ảnh hưởng 3 (Significant: nguy cơ không đạt HACCP, gián đoạn line nóng). Điểm 12 — mức High. Chi phí sửa đã vượt 40% giá mua mới, nên thay mới là hợp lý; '
+      || 'tủ lạnh 2016 còn chạy, chuyển làm dự phòng; 12 chảo là mua bổ sung theo nhu cầu line nóng.',
     'lines', jsonb_build_array(
       jsonb_build_object('asset_item', p1.lab, 'picture', 'Ảnh hiện trạng trong RR', 'qty', 2, 'location', c_loc, 'specs', 'Inox 304, 2 cánh, 1.800 mm', 'condition', 'Damaged', 'notes', 'Máy nén thay 2 lần; gioăng cửa rách, mặt inox rỉ'),
       jsonb_build_object('asset_item', p2.lab, 'picture', 'Ảnh hiện trạng kèm RR', 'qty', 1, 'location', c_loc, 'specs', '2 cánh, 650 L', 'condition', 'Poor', 'notes', 'Còn chạy, làm dự phòng'),
@@ -1077,8 +1080,21 @@ begin
       'oprices', jsonb_build_object('0', v_oh[k]),
       's_ability', (select jsonb_object_agg(v_la[j], v_sa[k][j]) from generate_series(1, 5) j),
       's_technique', (select jsonb_object_agg(v_lt[j], v_st[k][j]) from generate_series(1, 7) j),
-      'n_ability', jsonb_build_object(v_la[2], (array['14 bếp khách sạn 4–5 sao', '9 bếp khách sạn', '6 nhà hàng'])[k], v_la[5], (array['Đối tác 8 năm', 'Đối tác mới', 'Đối tác 3 năm'])[k]),
-      'n_technique', jsonb_build_object(v_lt[1], (array['Hàng có sẵn 60%', 'Nhập theo đơn', 'Nhập theo đơn'])[k], v_lt[3], (array['24 tháng, đổi mới 30 ngày', '24 tháng', '18 tháng'])[k]),
+      -- Every score has its explanation beside it (feedback 01/11/2026).
+      'n_ability', (select jsonb_object_agg(v_la[j], (array[
+          ['Vốn điều lệ 20 tỷ', 'Vốn điều lệ 10 tỷ', 'Vốn điều lệ 5 tỷ'],
+          ['14 bếp khách sạn 4–5 sao', '9 bếp khách sạn', '6 nhà hàng'],
+          ['HĐ tương tự 1,2–3 tỷ', 'HĐ tương tự 0,8–1,5 tỷ', 'HĐ tương tự dưới 1 tỷ'],
+          ['Xưởng và đội lắp đặt riêng', 'Đội lắp đặt thuê ngoài', 'Kho tại TP.HCM'],
+          ['Đối tác 8 năm', 'Đối tác mới', 'Đối tác 3 năm']])[j][k]) from generate_series(1, 5) j),
+      'n_technique', (select jsonb_object_agg(v_lt[j], (array[
+          ['Hàng có sẵn 60%', 'Nhập theo đơn', 'Nhập theo đơn'],
+          ['Lắp trong 2 ngày, ngoài giờ', 'Lắp trong 3 ngày', 'Lắp trong 4 ngày'],
+          ['24 tháng, đổi mới 30 ngày', '24 tháng', '18 tháng'],
+          ['Bảo dưỡng miễn phí 3 tháng/lần năm đầu', 'Bảo dưỡng 6 tháng/lần', 'Bảo dưỡng tính phí'],
+          ['Gas R290, máy nén inverter', 'Gas R290', 'Gas R134a'],
+          ['CO, CQ bản gốc', 'CO, CQ bản sao', 'CO, CQ bản sao'],
+          ['Hỗ trợ tại chỗ trong 24 giờ', 'Hỗ trợ trong 48 giờ', 'Hỗ trợ trong 72 giờ']])[j][k]) from generate_series(1, 7) j),
       'pay_score', v_pay[k], 'pay_term', '30% deposit on order; 70% after acceptance (within 15 days)',
       'pay_sched', jsonb_build_array(jsonb_build_object('pct', 30, 'when', 'deposit'), jsonb_build_object('pct', 70, 'when', 'acceptance', 'days', 15)),
       'delivery', (array['4 tuần', '5 tuần', '6 tuần'])[k], 'warranty', (array['24 tháng', '24 tháng', '18 tháng'])[k], 'validity', '30 ngày',
@@ -1101,7 +1117,9 @@ begin
   perform am_demo_tick(am_demo_at(146, 15), c_sc, v_nm);
   perform am_demo_drive((select pkg_id from pm_doc where id = v_qc), 145, c_sc, v_nm, 'MC', jsonb_build_object(
     'date', (current_date - 143)::text, 'b_vendor', 'Công ty TNHH Thiết bị Bếp Á Âu (mua 2014, 2016)', 'c_vendor', 'Giá niêm yết nhà phân phối (website, 09/2026)',
-    'note', 'So với giá mua cũ đã quy đổi (4,6%/năm) và giá niêm yết thị trường: giá nhà cung cấp A đều thấp hơn, trong biên độ cho phép.', 'evidence', '[]'::jsonb,
+    'note', 'So với giá mua cũ đã quy đổi (4,6%/năm) và giá niêm yết thị trường: giá nhà cung cấp A đều thấp hơn, trong biên độ cho phép.',
+    'evidence', jsonb_build_array(jsonb_build_object('label', 'Price reference — distributor price list 09/2026',
+                                                     'url', 'https://plazahotel.sharepoint.com/sites/AM/MarketCheck/demo-price-list-09-2026.pdf')),
     'lines', jsonb_build_array(
       jsonb_build_object('item', p1.lab, 'qty', 2, 'a_spec', 'Electrolux RCDR2M18, inox 304', 'a_price', v_u1[1], 'b_ref', v_oldc[1], 'b_asset', true, 'b_year', 2014, 'b_pv', 42000000,
                          'c_spec', 'Bàn mát 2 cánh 1,8 m inox', 'c_price', 61900000),
@@ -1333,11 +1351,16 @@ begin
     insert into pm_lq_council (decision_no, decision_date, active, note) values ('QĐ 01/2026/QĐ-PLZ [DEMO]', date '2026-01-05', true, '[DEMO] Hội đồng thanh lý')
     returning id into v_council;
     insert into pm_lq_member (council_id, sort, full_name, position_vi, position_en, role, permanent, user_id) values
-      (v_council, 1, am_demo_nm('demo.jvcgm@plaza-demo.test'), 'Tổng Giám đốc Liên doanh', 'JVC General Manager', 'chair', true, am_demo_uid('demo.jvcgm@plaza-demo.test')),
-      (v_council, 2, am_demo_nm('demo.dof@plaza-demo.test'), 'Giám đốc Tài chính khách sạn', 'Director of Finance', 'member', true, am_demo_uid('demo.dof@plaza-demo.test')),
+      (v_council, 1, am_demo_nm('demo.jvcgm@plaza-demo.test'), 'Tổng Giám đốc', 'General Manager', 'chair', true, am_demo_uid('demo.jvcgm@plaza-demo.test')),
+      (v_council, 2, am_demo_nm('demo.dof@plaza-demo.test'), 'Kiểm soát tài chính', 'Financial Controller', 'member', true, am_demo_uid('demo.dof@plaza-demo.test')),
       (v_council, 3, am_demo_nm('demo.chiefacc@plaza-demo.test'), 'Kế toán trưởng', 'Chief Accountant', 'member', true, am_demo_uid('demo.chiefacc@plaza-demo.test')),
       (v_council, 4, am_demo_nm('demo.cphead@plaza-demo.test'), 'Trưởng Ban quản lý cao ốc', 'Office Building Manager', 'member', true, am_demo_uid('demo.cphead@plaza-demo.test'));
   end if;
+  -- The demo council made before the feedback of 01/11/2026 takes the new titles.
+  update pm_lq_member m set position_vi = 'Tổng Giám đốc', position_en = 'General Manager'
+    from pm_lq_council c where c.id = m.council_id and c.note like '[DEMO]%' and m.position_vi = 'Tổng Giám đốc Liên doanh';
+  update pm_lq_member m set position_vi = 'Kiểm soát tài chính', position_en = 'Financial Controller'
+    from pm_lq_council c where c.id = m.council_id and c.note like '[DEMO]%' and m.position_vi = 'Giám đốc Tài chính khách sạn';
   perform am_demo_as('demo.hotelam@plaza-demo.test');
   v_b := pm_lq_batch_create(null, '{}'::jsonb);
   select array_agg(id order by id) into v_items from pm_lq_item where lr_doc_id = v_lr;
@@ -1351,8 +1374,8 @@ begin
            'causes_en', 'Two 2014 refrigerated tables in the Mezz hot kitchen, fully depreciated, with repeated compressor failures; replaced under project ' || c_sc || '.',
            'plan_vi', 'Bán thanh lý theo hình thức chào giá cạnh tranh (tối thiểu 3 bên mua); bên mua tự tháo dỡ, vận chuyển.',
            'plan_en', 'Sell by competitive quotation (at least 3 buyers); the buyer dismantles and removes the items.',
-           'conclusion_vi', 'Hội đồng thống nhất thanh lý 02 bàn lạnh, giá khởi điểm theo đánh giá lại; tiền thu nộp về tài khoản khách sạn.',
-           'conclusion_en', 'The committee agrees to dispose of the 2 refrigerated tables, starting from the revalued price; proceeds to the hotel account.')
+           'place_en', 'Meeting room, 3rd floor, the hotel',
+           'recipients', E'- Như Điều 2;\n- Phòng Kế toán;\n- Lưu VT.')
  where id = v_b;
   perform am_demo_tick(am_demo_at(70, 10), c_sc, v_nm);
   perform pm_lq_submit(v_b);

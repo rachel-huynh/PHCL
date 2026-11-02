@@ -1128,6 +1128,7 @@ async function aoAssetEdit(a) {
     }
     if (!Object.keys(patch).length) return msg(out, 'info', t('ao.e.none'));
     if (patch.name_vi === null) return msg(out, 'err', t('ao.e.needName'));
+    if ('location_code' in patch && !patch.location_code) return msg(out, 'err', t('ao.e.needLoc'));   // required (47_asset_required.sql)
     save.disabled = true;
     try {
       await SB.patch('am_asset', `id=eq.${a.id}`, patch);
