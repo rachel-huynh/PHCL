@@ -7,7 +7,7 @@
 /* Shown in the sidebar. If this does not match the ?v= on the script tag in
    AssetManagement.html, the browser is running a cached older app.js — which
    looks identical to "the change did not work". Check here first. */
-const APP_VERSION = '20261101e';
+const APP_VERSION = '20261103a';
 
 /* ------------------------------------------------------------------ util */
 const $  = (s, r = document) => r.querySelector(s);
@@ -4697,7 +4697,15 @@ function kindOf(ln) {
   if (ln.kind_manual === 'unique' || ln.kind_manual === 'low') return ln.kind_manual;
   return kindByPrice(ln);
 }
+/* "Vật tư phụ / Materials" and "Nhân công / Labor" are costs to be shared out over the assets later
+   (user 03/11/2026, the rule still to come): for now their price sets no limit — the kind follows
+   the category chosen, whatever the amount. */
+const inCostLine = ln => /^(vattuphu|nhancong|materials?|labou?r)/.test(hnorm(ln.name_vi));   // hnorm drops accents and spaces
 function kindByPrice(ln) {
+  if (inCostLine(ln)) {
+    const cat = (window.__CATS || []).find(c => c.code === ln.category_code);
+    return cat && cat.manage_by === 'code' ? 'unique' : 'low';
+  }
   const v = ln.unit_price;
   if (v === '' || v == null) return null;
   const p = Number(v);
@@ -4815,7 +4823,7 @@ async function inCheck() {
     }
     if (!(Number(ln.qty) >= 1)) E(n, t('in.errNoQty', { i: n }));
 
-    if (ln.category_code && price) {
+    if (ln.category_code && price && !inCostLine(ln)) {      // materials / labour: no price limit (inCostLine)
       try {
         const r = (await SB.rpc('am_classify', {
           p_unit_price: price, p_category_code: ln.category_code,
