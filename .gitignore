@@ -5,3 +5,11 @@ config.local.json
 
 # Ban clone long nhau do tai qua GitHub web - khong phai mot phan cua repo
 /PHCL/
+
+# Database dumps — personal data, never commit. Keep them in
+# "Cyber Security/db-backups" instead.
+db-backups/
+*-data-20*.sql
+*-schema-20*.sql
+*-roles-20*.sql
+*.dump
